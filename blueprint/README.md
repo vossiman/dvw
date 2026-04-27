@@ -38,7 +38,8 @@ The two MUST match the image's default user, or mounts land at the wrong path an
 
 | Image | `remoteUser` |
 |-------|--------------|
-| `mcr.microsoft.com/devcontainers/universal:2` | `codespace` |
+| `mcr.microsoft.com/devcontainers/universal:6` | `codespace` |
+| `mcr.microsoft.com/devcontainers/universal:2` (focal, legacy) | `codespace` |
 | `mcr.microsoft.com/devcontainers/python:3.12-bookworm` | `vscode` |
 | `mcr.microsoft.com/devcontainers/base:debian` | `vscode` |
 | `mcr.microsoft.com/devcontainers/javascript-node:22` | `node` |

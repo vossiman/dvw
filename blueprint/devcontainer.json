@@ -1,5 +1,5 @@
 {
-  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "image": "mcr.microsoft.com/devcontainers/universal:6",
   "remoteUser": "codespace",
   "mounts": [
     "source=/home/vossi/devpod/aicodingsetup,target=/home/codespace/.aicodingsetup,type=bind",
