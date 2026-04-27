@@ -76,6 +76,22 @@ ssh vossi@vossisrv 'chmod 600 /home/vossi/devpod/claude/.credentials.json /home/
 
 After the first container refreshes the OAuth tokens, vossisrv's copy stays current automatically.
 
+## MCP behavior to know about
+
+Three categories you'll hit when running `/mcp` in a workspace:
+
+**1. User-scope MCPs** — configured by `install.sh`, live in `~/.claude.json`. Persist across workspaces via the `~/.claude/` bind mount. Anything you `claude mcp add -s user` later also survives.
+
+**2. Project-scope MCPs** — defined in `.mcp.json` at the repo root. *Project scope wins over user scope* when names collide, so a broken project entry will mask a working user-scope MCP of the same name. If a user-scope MCP appears missing, check whether a `.mcp.json` in the repo is silently shadowing it.
+
+Docker-based project MCPs (`docker run …`) only work if the image is present in the dev container's Docker daemon and any bind-mounted paths actually exist on the workspace filesystem. Generated artifacts (e.g. `eval_results.db`) won't be there on a fresh container.
+
+**3. HTTP MCPs with OAuth** (logfire, claude.ai Google Drive, etc.) — show as `needs authentication`. Can't be set up by a script. Auth once via `claude` → `/mcp` → select the MCP → follow the browser link. State lands in `~/.claude/` and rides the bind mount, so every future workspace inherits the auth. Skip ones you don't actively use; unauthed is harmless.
+
+## Why authentication "just works" in this setup
+
+Claude Code reads OAuth tokens from `~/.claude/.credentials.json` *and* checks `~/.claude.json` (file at home root, NOT inside `.claude/`) for `hasCompletedOnboarding: true`. Without that flag, the CLI treats every session as a fresh install and prompts for login regardless of valid tokens. `aiCodingBaseSetup`'s `install.sh` writes that flag automatically; the bind-mounted `.credentials.json` carries the tokens. Together they make container auth seamless.
+
 ## Future productization (don't do now)
 
 If you end up with 3+ projects using this blueprint, build a custom image that bakes the `install.sh` result into a Docker layer:
