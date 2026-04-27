@@ -25,9 +25,10 @@ First spin-up runs `install.sh` from `aiCodingBaseSetup` — installs Claude Cod
 
 - **`image`** — base devcontainer image. Universal:2 is the kitchen sink (~5 GB), works for any language. Swap for leaner if the project is single-language.
 - **`remoteUser`** — must match the image's hardcoded user (see table below).
-- **`mounts`** — bind two directories from vossisrv into the container so secrets and Claude credentials persist across workspaces:
+- **`mounts`** — bind three directories from vossisrv into the container so secrets, Claude credentials, and opencode provider auth persist across workspaces:
   - `aicodingsetup` → `~/.aicodingsetup/` holds `.secrets.env` (API keys for firecrawl, brave, cloudflare).
   - `claude` → `~/.claude/` holds `.credentials.json`, `settings.json`, plugins, hooks, skills. Token refreshes write back to vossisrv, so logging in once persists across every container.
+  - `opencode` → `~/.local/share/opencode/` holds `auth.json` (provider tokens for Anthropic / OpenAI / Google / etc.). `opencode auth login <provider>` once in any container persists across every other.
 - **`postCreateCommand`** — clones `aiCodingBaseSetup` and runs its installer. The installer detects container mode automatically and auto-installs prerequisites (claude CLI, opencode, Go, Playwright browsers, jq, locales).
 - **`postStartCommand`** — runs on *every* container start (including reattach), not just first build. Used here for lightweight tool updates (`claude update`, `opencode upgrade`). Both wrapped in `|| true` so transient network failures never block startup. The object form runs the two updates in parallel.
 
@@ -67,15 +68,16 @@ The object form runs entries in parallel — only use it when the project step d
 ## Prerequisites on vossisrv (one-time)
 
 ```bash
-mkdir -p /home/vossi/devpod/aicodingsetup /home/vossi/devpod/claude
-chmod 700 /home/vossi/devpod /home/vossi/devpod/aicodingsetup /home/vossi/devpod/claude
-# Seed initial credentials (from a host where claude is already authed)
-scp ~/.claude/.credentials.json vossi@vossisrv:/home/vossi/devpod/claude/.credentials.json
-scp ~/.aicodingsetup/.secrets.env vossi@vossisrv:/home/vossi/devpod/aicodingsetup/.secrets.env
-ssh vossi@vossisrv 'chmod 600 /home/vossi/devpod/claude/.credentials.json /home/vossi/devpod/aicodingsetup/.secrets.env'
+mkdir -p /home/vossi/devpod/aicodingsetup /home/vossi/devpod/claude /home/vossi/devpod/opencode
+chmod 700 /home/vossi/devpod /home/vossi/devpod/aicodingsetup /home/vossi/devpod/claude /home/vossi/devpod/opencode
+# Seed initial credentials (from a host where claude/opencode are already authed)
+scp ~/.claude/.credentials.json                vossi@vossisrv:/home/vossi/devpod/claude/.credentials.json
+scp ~/.aicodingsetup/.secrets.env              vossi@vossisrv:/home/vossi/devpod/aicodingsetup/.secrets.env
+scp ~/.local/share/opencode/auth.json          vossi@vossisrv:/home/vossi/devpod/opencode/auth.json
+ssh vossi@vossisrv 'chmod 600 /home/vossi/devpod/claude/.credentials.json /home/vossi/devpod/aicodingsetup/.secrets.env /home/vossi/devpod/opencode/auth.json'
 ```
 
-After the first container refreshes the OAuth tokens, vossisrv's copy stays current automatically.
+After the first container refreshes the OAuth tokens or runs an `opencode auth login`, vossisrv's copies stay current automatically.
 
 ## MCP behavior to know about
 
