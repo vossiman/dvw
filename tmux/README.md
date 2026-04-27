@@ -10,12 +10,28 @@ Counterpart to `aiCodingBaseSetup/configs/tmux/tmux.conf` (deployed automaticall
 - **`ANALYSIS.md`** — investigation notes from when these were tuned.
 - **`FIX.md`** — concrete fixes applied (escape-time tweaks, OSC 10/11 handling, etc.).
 
-## Install on a host
+## Activation
+
+### On a host (Mint laptop / desktop)
 
 ```bash
 ln -sf ~/local_dev/devMachine/devpod/tmux/tmux-local.conf ~/.tmux.conf
 tmux kill-server   # if a session is running, restart to pick up the change
 ```
+
+### In a fresh DevPod container
+
+Nothing to do — `aiCodingBaseSetup/install.sh` runs as part of `postCreateCommand` and deploys `configs/tmux/tmux.conf` to `~/.tmux.conf` automatically.
+
+### In an existing DevPod container (without recreating)
+
+Pull the latest installer and re-run:
+
+```bash
+ssh -t <workspace>.devpod 'bash -lc "cd /tmp/aicoding && git pull origin main && bash install.sh"'
+```
+
+After it finishes, run `tmux kill-server` inside the container to restart any running sessions with the new config.
 
 ## Why local + remote differ
 
