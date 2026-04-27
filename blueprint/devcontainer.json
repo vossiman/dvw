@@ -8,6 +8,6 @@
   "postCreateCommand": "git clone https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh",
   "postStartCommand": {
     "claude-update": "claude update 2>/dev/null || true",
-    "opencode-upgrade": "$HOME/.opencode/bin/opencode upgrade 2>/dev/null || true"
+    "opencode-upgrade": "opencode upgrade 2>/dev/null || true"
   }
 }
