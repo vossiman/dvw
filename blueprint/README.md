@@ -29,6 +29,7 @@ First spin-up runs `install.sh` from `aiCodingBaseSetup` — installs Claude Cod
   - `aicodingsetup` → `~/.aicodingsetup/` holds `.secrets.env` (API keys for firecrawl, brave, cloudflare).
   - `claude` → `~/.claude/` holds `.credentials.json`, `settings.json`, plugins, hooks, skills. Token refreshes write back to vossisrv, so logging in once persists across every container.
 - **`postCreateCommand`** — clones `aiCodingBaseSetup` and runs its installer. The installer detects container mode automatically and auto-installs prerequisites (claude CLI, opencode, Go, Playwright browsers, jq, locales).
+- **`postStartCommand`** — runs on *every* container start (including reattach), not just first build. Used here for lightweight tool updates (`claude update`, `opencode upgrade`). Both wrapped in `|| true` so transient network failures never block startup. The object form runs the two updates in parallel.
 
 ## Image + remoteUser pairing
 
