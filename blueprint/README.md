@@ -2,6 +2,8 @@
 
 Drop-in `.devcontainer/devcontainer.json` for any project that should come up as a fully-configured AI coding workspace under DevPod (Mint or Win11 client → vossisrv backend).
 
+> **Source of truth:** the canonical generic template lives upstream at [`vossiman/aiCodingBaseSetup/devcontainer.json`](https://github.com/vossiman/aiCodingBaseSetup/blob/main/devcontainer.json). The copy here adds the vossisrv-specific `mounts` (aicodingsetup / claude / opencode bind paths) on top. When the upstream template changes, sync those changes into this copy and re-attach the mounts.
+
 ## How to use
 
 ```bash
@@ -30,7 +32,7 @@ First spin-up runs `install.sh` from `aiCodingBaseSetup` — installs Claude Cod
   - `claude` → `~/.claude/` holds `.credentials.json`, `settings.json`, plugins, hooks, skills. Token refreshes write back to vossisrv, so logging in once persists across every container.
   - `opencode` → `~/.local/share/opencode/` holds `auth.json` (provider tokens for Anthropic / OpenAI / Google / etc.). `opencode auth login <provider>` once in any container persists across every other.
 - **`postCreateCommand`** — clones `aiCodingBaseSetup` and runs its installer. The installer detects container mode automatically and auto-installs prerequisites (claude CLI, opencode, Go, Playwright browsers, jq, locales).
-- **`postStartCommand`** — runs on *every* container start (including reattach), not just first build. Used here for lightweight tool updates (`claude update`, `opencode upgrade`). Both wrapped in `|| true` so transient network failures never block startup. The object form runs the two updates in parallel.
+- **`postStartCommand`** — runs on *every* container start (including reattach), not just first build. Curls `update.sh` from `aiCodingBaseSetup` and pipes it to bash; the script self-stashes to `~/.aicodingsetup/update.sh`, re-execs under `env -u` to strip universal:6's broken `BASH_FUNC_nvs%%`/`nvsudo`/`nvm` exports (see KNOWN_ISSUES.md), then runs `claude update` and `opencode upgrade` (both `|| true` so transient network failures never block startup). Living in the central repo means we update behavior without re-rolling every project's `devcontainer.json`.
 
 ## Image + remoteUser pairing
 

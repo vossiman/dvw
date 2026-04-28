@@ -1,14 +1,16 @@
 {
   "image": "mcr.microsoft.com/devcontainers/universal:6",
   "remoteUser": "codespace",
+  "containerEnv": {
+    "BASH_FUNC_nvs%%": "() {  :; }",
+    "BASH_FUNC_nvsudo%%": "() {  :; }",
+    "BASH_FUNC_nvm%%": "() {  :; }"
+  },
   "mounts": [
     "source=/home/vossi/devpod/aicodingsetup,target=/home/codespace/.aicodingsetup,type=bind",
     "source=/home/vossi/devpod/claude,target=/home/codespace/.claude,type=bind",
     "source=/home/vossi/devpod/opencode,target=/home/codespace/.local/share/opencode,type=bind"
   ],
-  "postCreateCommand": "git clone https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh",
-  "postStartCommand": {
-    "claude-update": "unset 'BASH_FUNC_nvs%%' 'BASH_FUNC_nvsudo%%' 'BASH_FUNC_nvm%%' 2>/dev/null; claude update 2>/dev/null || true",
-    "opencode-upgrade": "unset 'BASH_FUNC_nvs%%' 'BASH_FUNC_nvsudo%%' 'BASH_FUNC_nvm%%' 2>/dev/null; opencode upgrade 2>/dev/null || true"
-  }
+  "postCreateCommand": "git clone --quiet https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh",
+  "postStartCommand": "curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/update.sh | bash"
 }

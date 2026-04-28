@@ -8,7 +8,17 @@ This was previously `universal:2` (Ubuntu 20.04 focal). Most workarounds below o
 
 ### Issues that lived on `:2` — re-check on `:6`
 
-- **`nvs` / `nvsudo` syntax errors** in non-interactive shells. universal:2 exported these as bash functions through env vars in a format the parser rejects. Mitigation: strip `BASH_FUNC_*%%` env vars at top of `install.sh` and in postStartCommand wrappers. May not be needed on `:6` — they likely changed Node tooling.
+- **`nvs` / `nvsudo` syntax errors** in non-interactive shells. Root cause: `mcr.microsoft.com/devcontainers/universal:6` ships `/etc/profile` sourcing `/usr/local/nvs/nvs.sh`, which `export -f`s multi-line `nvs`/`nvsudo` bash functions. Some layer in the devpod / `docker exec` / `su` chain truncates the multi-line function bodies to one line during env propagation — known long-standing devcontainer/VSCode bug ([vscode#3928](https://github.com/Microsoft/vscode/issues/3928), [vscode-remote-release#9457](https://github.com/microsoft/vscode-remote-release/issues/9457)). Every child bash that inherits the truncated env errors on import with `syntax error: unexpected end of file`.
+
+  **Failed-import env vars can't be removed from inside bash.** `unset -f nvs` is a no-op because the import failed and the function was never defined. `unset 'BASH_FUNC_nvs%%'` silently does nothing because `%%` makes the name an invalid identifier — bash refuses. (Earlier versions of `install.sh` and `postStartCommand` used these and quietly didn't work.) The only mechanism that actually strips them is `env -u` at the process boundary, before bash starts.
+
+  **Fixed via three layers:**
+  1. `containerEnv` overrides the (initially clean) container Config.Env with valid no-op function bodies, so any shell that inherits Config.Env imports cleanly.
+  2. `install.sh` re-execs itself via `env -u 'BASH_FUNC_nvs%%' -u 'BASH_FUNC_nvsudo%%' -u 'BASH_FUNC_nvm%%' bash "$0" "$@"` at the very top, guarded by `_AICODINGSETUP_NVS_STRIPPED=1`. This stops broken env from cascading into install.sh's children (apt, bw-AICode installer, etc.).
+  3. `postCreateCommand` and each `postStartCommand` entry in the blueprint are wrapped in `env -u 'BASH_FUNC_nvs%%' -u 'BASH_FUNC_nvsudo%%' -u 'BASH_FUNC_nvm%%' bash -c '...'`, so devpod's outer hook bash starts with the broken vars already removed.
+  4. (Defense-in-depth) `install.sh` also patches `/etc/profile` to `unset -f nvs nvsudo` after `nvs.sh` runs, so login shells that source `/etc/profile` after the import step still end up with clean env for their children.
+
+  Residual: the very first `Run command : … bash install.sh` may still emit one batch of errors during devpod's outermost bash startup, before our `env -u` wrappers can take effect — because devpod itself is what spawns that bash. Every other hook in the recreate and every later `up` should be completely clean. The `pull-git-lfs-artifacts.sh` line is a devpod-internal hook we can't wrap; it's clean once `/etc/profile` is patched.
 - **tmux 3.0a too old** — no `display-popup` (3.2+) or `allow-passthrough` (3.3+). Mitigation: `install.sh` builds tmux 3.5a from source. Noble ships ≥3.4, so the build step is probably superfluous on `:6`.
 - **`kitty-terminfo` not preinstalled** — `infocmp xterm-kitty` failed, tmux refused to start under kitty SSH. Mitigation: `apt install kitty-terminfo`.
 - **Yarn apt source ships a stale GPG key** (`NO_PUBKEY 62D54FD4003F6525`). Mitigation: `drop_broken_apt_sources()` in `install.sh` deletes the offending file. Likely fixed in `:6`.
@@ -25,7 +35,7 @@ This was previously `universal:2` (Ubuntu 20.04 focal). Most workarounds below o
 
 - **`devpod delete` leaves root-owned files behind** when the project's compose stack writes through bind mounts (e.g. `eval-api/data/`, `postgres/data/`, `minio_data/`). DevPod's agent runs as `vossi`, can't `rm` root-owned content, silently reports "successful delete" — next `up` finds the half-clone and falls back to a generic `base:ubuntu` image with no devcontainer.json detected. **Workaround:** `ssh vossi@vossisrv 'sudo rm -rf /home/vossi/.devpod/agent/contexts/default/workspaces/<name>'` after every `devpod delete`. **Real fix:** dataEnv-side switch from bind mounts to Docker named volumes.
 - **Lifecycle hooks bake at create time** — editing `.devcontainer/devcontainer.json` on the branch and `devpod up`'ing an existing workspace doesn't apply the new hooks. `--recreate` (or delete + up + the sudo-rm above) is required. Affects `mounts`, `postCreateCommand`, `postStartCommand`.
-- **Outer DevPod shell `nvs/nvsudo` warnings** — DevPod's wrapper bash invocation runs *before* our `install.sh` strip, so the very first batch of warnings is unfixable from our side. Cosmetic.
+- ~~**Outer DevPod shell `nvs/nvsudo` warnings**~~ — *Fixed.* `containerEnv` in blueprint overrides the broken `BASH_FUNC_*%%` exports with no-op bodies before any bash starts.
 - **`Could not find docker daemon config file` warning** — DevPod nags about `containerd-snapshotter`. Cosmetic; could be silenced by writing `/etc/docker/daemon.json` on vossisrv.
 
 ## Cursor (host integration)
@@ -54,4 +64,4 @@ This was previously `universal:2` (Ubuntu 20.04 focal). Most workarounds below o
 - Switch dataEnv's compose to named volumes so `devpod delete` works without sudo dance.
 - Drop tmux-from-source build step if `:6` ships a recent enough tmux.
 - Drop yarn-source-cleanup, kitty-terminfo apt step if `:6` doesn't ship the broken yarn list and includes the terminfo.
-- Strip the `BASH_FUNC_*` workarounds if `:6` doesn't have the broken NVS exports.
+- ~~Strip the `BASH_FUNC_*` workarounds if `:6` doesn't have the broken NVS exports.~~ *Resolved differently* — `:6` still has them; blueprint now overrides via `containerEnv`. `install.sh` strip stays as defense-in-depth.
