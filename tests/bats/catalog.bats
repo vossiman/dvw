@@ -88,3 +88,23 @@ teardown() {
   run catalog_read
   [ "$status" -ne 0 ]
 }
+
+@test "catalog_write: writes JSON atomically (no .tmp left behind)" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  catalog_init_if_missing
+  echo '{"version":1,"defaults":{"ide":"cursor","provider":"vossisrv"},"workspaces":[{"id":"x","repo":"r","branch":"b","ide":"cursor","provider":"vossisrv","created_at":"2026-04-29T00:00:00Z","last_used_at":"2026-04-29T00:00:00Z","created_on":"test"}],"repos":[]}' \
+    | catalog_write
+  [ -f "$DVW_CATALOG" ]
+  [ ! -f "$DVW_CATALOG.tmp" ]
+  jq -e '.workspaces[0].id == "x"' "$DVW_CATALOG"
+}
+
+@test "catalog_write: refuses to write malformed JSON" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  catalog_init_if_missing
+  before=$(cat "$DVW_CATALOG")
+  run bash -c 'source "$DVW_ROOT/lib/catalog.sh"; echo "{ bad json" | catalog_write'
+  [ "$status" -ne 0 ]
+  after=$(cat "$DVW_CATALOG")
+  [ "$before" = "$after" ]
+}

@@ -53,3 +53,17 @@ catalog_read() {
   fi
   cat "$path"
 }
+
+# Read JSON from stdin, validate, atomically write to catalog path.
+catalog_write() {
+  local path tmp content
+  path=$(catalog_path)
+  tmp="$path.tmp"
+  content=$(cat)
+  if ! echo "$content" | jq -e . >/dev/null 2>&1; then
+    echo "catalog_write: refusing to write malformed JSON" >&2
+    return 1
+  fi
+  printf '%s\n' "$content" > "$tmp"
+  mv "$tmp" "$path"
+}
