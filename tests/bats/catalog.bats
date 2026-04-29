@@ -190,3 +190,46 @@ teardown() {
   after=$(jq -r '.workspaces[] | select(.id=="myrepo-feature-x") | .last_used_at' "$DVW_CATALOG")
   [ "$before" != "$after" ]
 }
+
+@test "catalog_repo_upsert: appends a new repo entry" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/empty-catalog.json" "$DVW_CATALOG"
+  run catalog_repo_upsert git@github.com:foo/bar.git main
+  [ "$status" -eq 0 ]
+  jq -e '.repos | length == 1' "$DVW_CATALOG"
+  jq -e '.repos[0].url == "git@github.com:foo/bar.git"' "$DVW_CATALOG"
+  jq -e '.repos[0].last_branch == "main"' "$DVW_CATALOG"
+}
+
+@test "catalog_repo_upsert: updates last_branch and last_used_at on existing repo" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
+  before_used=$(jq -r '.repos[] | select(.url=="git@github.com:owner/myrepo.git") | .last_used_at' "$DVW_CATALOG")
+  sleep 1
+  run catalog_repo_upsert git@github.com:owner/myrepo.git different-branch
+  [ "$status" -eq 0 ]
+  jq -e '.repos | length == 2' "$DVW_CATALOG"
+  jq -e '.repos[] | select(.url=="git@github.com:owner/myrepo.git") | .last_branch == "different-branch"' "$DVW_CATALOG"
+  after_used=$(jq -r '.repos[] | select(.url=="git@github.com:owner/myrepo.git") | .last_used_at' "$DVW_CATALOG")
+  [ "$before_used" != "$after_used" ]
+}
+
+@test "catalog_repo_list: returns URLs in MRU order" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
+  run catalog_repo_list
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "git@github.com:owner/myrepo.git" ]
+  [ "${lines[1]}" = "git@github.com:owner/other.git" ]
+}
+
+@test "catalog_repo_last_branch: returns last branch for known URL, empty for unknown" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
+  run catalog_repo_last_branch git@github.com:owner/myrepo.git
+  [ "$status" -eq 0 ]
+  [ "$output" = "feature-x" ]
+  run catalog_repo_last_branch git@github.com:nope/nope.git
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}

@@ -121,3 +121,29 @@ catalog_workspace_touch() {
     '.workspaces |= map(if .id == $id then .last_used_at = $now else . end)' \
     | catalog_write
 }
+
+# Insert or update a repo entry (keyed by URL).
+catalog_repo_upsert() {
+  local url="$1" branch="$2" now
+  now=$(catalog_now)
+  catalog_read | jq --arg url "$url" --arg branch "$branch" --arg now "$now" '
+    if (.repos | map(.url) | index($url)) == null then
+      .repos += [{ url: $url, last_branch: $branch, last_used_at: $now }]
+    else
+      .repos |= map(if .url == $url
+                    then .last_branch = $branch | .last_used_at = $now
+                    else . end)
+    end' | catalog_write
+}
+
+# Print repo URLs in MRU order, one per line.
+catalog_repo_list() {
+  catalog_read | jq -r '.repos | sort_by(.last_used_at) | reverse | .[].url'
+}
+
+# Print last_branch for a URL, or empty if not in catalog.
+catalog_repo_last_branch() {
+  local url="$1"
+  catalog_read | jq -r --arg url "$url" \
+    '.repos[] | select(.url == $url) | .last_branch' 2>/dev/null
+}
