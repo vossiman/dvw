@@ -18,6 +18,8 @@ git push
 Then from any client:
 
 ```bash
+dvw new                                       # preferred: wizard adds to catalog
+# or, raw equivalent (skips the catalog):
 devpod up <repo-url>@<branch> --ide cursor
 ```
 
