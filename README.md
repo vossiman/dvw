@@ -1,38 +1,94 @@
-# devpod — DevPod helpers and operations
+# devpod — DevPod workspace orchestrator (`dvw`) and helpers
 
-Host-side scripts, configs, and operational notes for running DevPod workspaces on vossisrv with Cursor as the local IDE.
+Host-side scripts and operational notes for running DevPod workspaces on `vossisrv`. The main entrypoint is `dvw`, a bash CLI that replaces the DevPod Desktop app's missing cross-machine workspace sync via a catalog file kept in sync through the existing rclone Dropbox mount.
+
+## Why dvw exists
+
+The DevPod Desktop app stores workspace metadata locally per machine. Switching from Mint to WSL means the second machine sees an empty workspace list, even though all the containers are still running on `vossisrv`. `dvw` fixes that by writing every workspace to a shared JSON catalog at `~/Dropbox-remote/dvw/catalog.json`. Any client that has the rclone mount and the dvw script sees the same workspaces and can connect, start, stop, and create new ones.
 
 ## Folder layout
 
 | Path | Purpose |
 |------|---------|
-| `dvw` | Workspace picker + tmux attach helper |
-| `blueprint/` | Copy-paste `devcontainer.json` template + usage docs |
-| `tmux/` | Host-side tmux configs (`tmux-local.conf`) and diagnostics |
+| `dvw` | CLI entrypoint (sources `lib/*`) |
+| `lib/` | catalog, connect, wizard, commands, UI |
+| `systemd/rclone-dropbox.service` | rclone mount as a systemd user unit |
+| `dvw-install.sh` | idempotent bootstrap for Mint and WSL |
+| `tests/bats/` | bats test suite for catalog logic |
+| `blueprint/` | `devcontainer.json` template |
+| `tmux/` | host-side tmux config |
 | `cursor-shim.sh`, `install-cursor-shim.sh` | Cursor AppImage triple-launch workaround |
-| `KNOWN_ISSUES.md` | Catalog of current rough edges and their workarounds |
+| `KNOWN_ISSUES.md` | catalog of current rough edges |
+
+## Subcommands
+
+| Command | Effect |
+|--|--|
+| `dvw` | top-level menu (Connect/New/Status/Stop/Start/Remove/Doctor) |
+| `dvw <id>` | connect to workspace, attach `work` tmux session |
+| `dvw -l` | list workspaces (MRU order) |
+| `dvw new` | wizard: create a new workspace, append to catalog |
+| `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
+| `dvw stop <id>` | `devpod stop` |
+| `dvw start <id>` | `devpod up` with the workspace's saved IDE |
+| `dvw status` | one-line per workspace: id, repo@branch, ide, running?, last used |
+| `dvw doctor` | health check: rclone mount, catalog, devpod, gum, orphans |
+
+## Install on Mint
+
+```bash
+git clone <this repo>
+cd devMachine
+./devpod/dvw-install.sh
+dvw doctor
+```
+
+The installer is idempotent — re-run it any time. It will install missing apt packages, set up the systemd rclone-dropbox unit, and symlink `dvw` into `~/.local/bin`.
+
+## Install on WSL Ubuntu
+
+```bash
+git clone <this repo>
+cd devMachine
+./devpod/dvw-install.sh
+```
+
+**First run on a fresh WSL** will detect that systemd is not enabled, write `/etc/wsl.conf`, and stop with this message:
+> systemd is now enabled, but WSL must be restarted. From Windows PowerShell: `wsl --shutdown`. Then re-open WSL and re-run.
+
+After `wsl --shutdown` and reopening WSL, re-run `./devpod/dvw-install.sh`. It will continue from where it left off (configure rclone, drop the systemd unit, install dvw).
+
+If you do not yet have an rclone Dropbox remote configured, the installer will instruct you to run `rclone config` interactively (one-time per machine).
 
 ## Daily workflow
 
-### Connect to a workspace and attach tmux
+### Connect to a workspace
 
 ```bash
-dvw                  # auto-picks if only one workspace, otherwise fzf/numbered menu
+dvw                  # menu, defaults to Connect
 dvw <workspace-id>   # direct
 dvw -l               # list and exit
 ```
 
-`dvw` SSHes into `<workspace>.devpod` (the alias DevPod creates per workspace), starts the container if it's stopped, and runs `tmux new -A -s work` — attaches to a session named `work` if it exists, creates it if not. Detach with `Ctrl-b d`; re-`dvw` to come back to the same session.
-
-### Spin up a new workspace
+### Create a new workspace
 
 ```bash
-devpod up git@github.com:<owner>/<repo>.git@<branch> --ide cursor
+dvw new
 ```
 
-**Always use SSH URLs (`git@…`), not HTTPS** — private repos fail with HTTPS because vossisrv has no GitHub credentials in its remote-clone path.
+Wizard: pick repo (from saved list, or enter new) → branch (defaults to last-used per repo) → workspace name (auto-suggested) → IDE (defaults to `cursor`) → confirm. On success, `devpod up` runs and the catalog is updated.
 
-The branch is appended via `@<branch>` in the URL (e.g. `git@github.com:foo/bar.git@devpod`). DevPod's `--branch` flag does not exist.
+### Recreate a workspace cleanly
+
+If you've changed mounts, postCreateCommand, or the base image — or you just want a fresh slate — see the manual recreate procedure (still required because of root-owned bind mounts):
+
+```bash
+dvw rm <workspace-id>
+ssh -t vossi@vossisrv 'sudo rm -rf /home/vossi/.devpod/agent/contexts/default/workspaces/<workspace-id>'
+dvw new
+```
+
+The `sudo rm` step requires interactive auth; don't try to script past it.
 
 ### Pull the latest `install.sh` into a running workspace
 
@@ -40,25 +96,20 @@ The branch is appended via `@<branch>` in the URL (e.g. `git@github.com:foo/bar.
 ssh -t <workspace>.devpod 'bash -lc "cd /tmp/aicoding && git pull origin main && bash install.sh"'
 ```
 
-Refreshes Claude Code, opencode, MCPs, plugins, hooks, skills. Does **not** apply changes to mounts or lifecycle hooks (those are baked at container create time and need a recreate to update).
+## Catalog location and sync
 
-### Recreate a workspace cleanly
+- Catalog: `~/Dropbox-remote/dvw/catalog.json` — single JSON file, hand-editable.
+- Sync: rclone mount of the `dropbox:` remote, running as a systemd user service. Poll interval 30s; staleness is bounded by that.
+- Conflicts: ignored by design (single user, two machines, no concurrent writes). `dvw doctor` flags any `*conflicted copy*` files Dropbox might create.
 
-If you've changed mounts, postCreateCommand, or the base image — or you just want a fresh slate:
+## What to do if rclone mount dies
 
 ```bash
-devpod delete <workspace-id>
-
-# Interactive sudo: type your password when prompted.
-# `-t` allocates a TTY so the sudo prompt actually appears on your terminal.
-ssh -t vossi@vossisrv 'sudo rm -rf /home/vossi/.devpod/agent/contexts/default/workspaces/<workspace-id>'
-
-devpod up git@github.com:<owner>/<repo>.git@<branch> --ide cursor
+systemctl --user status rclone-dropbox
+systemctl --user restart rclone-dropbox
 ```
 
-**Why the manual `sudo rm`:** if the project's compose stack writes through bind mounts (e.g. `eval-api/data/`, `postgres/data/`, `minio_data/`), Docker-in-docker creates those files as root. DevPod's agent runs as `vossi`, can't `rm` them, silently reports "successfully deleted workspace" while leaving root-owned junk behind. The next `devpod up` finds the half-clone, can't write a fresh git checkout over it, and falls back to a generic `base:ubuntu` image with no `devcontainer.json` detected — symptom is a workspace with `eval-api/` and a 55-byte `.devcontainer.json` and nothing else.
-
-The `sudo rm -rf` requires interactive auth. Don't try to script it past the password prompt.
+dvw will refuse to run when the mount is down rather than silently using a stale local copy. If the catalog directory itself looks fine but you suspect bad cached state, `fusermount -u ~/Dropbox-remote && systemctl --user restart rclone-dropbox`.
 
 ## Cursor shim (cursor-shim.sh)
 
@@ -81,14 +132,22 @@ Prerequisites:
 ## Hook-firing rules (subtle but bites)
 
 | Hook | Fires |
-|------|-------|
+|------|---|
 | `postCreateCommand` | Once when container is first built. Never again. |
 | `postStartCommand` | Every container start: initial create-time start AND after `devpod stop` → `devpod up`, vossisrv reboots, etc. **NOT on simple reattach when the container is already running.** |
 
 Editing `.devcontainer/devcontainer.json` after a container exists doesn't update the in-place container — DevPod baked the old hooks at creation. Recreate to apply new hooks.
 
+## Tests
+
+```bash
+./devpod/tests/bats/run.sh
+```
+
+Catalog logic is covered by bats. Wizard and TUI behavior is verified manually.
+
 ## See also
 
-- [`blueprint/README.md`](blueprint/README.md) — exact `devcontainer.json` template + how to drop it into a project
+- [`blueprint/README.md`](blueprint/README.md) — `devcontainer.json` template
 - [`tmux/README.md`](tmux/README.md) — host-side tmux config installation
 - [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — current quirks log
