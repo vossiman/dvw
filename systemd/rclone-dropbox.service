@@ -8,7 +8,7 @@ ExecStart=/usr/bin/rclone mount dropbox: %h/Dropbox-remote \
   --vfs-cache-mode minimal \
   --dir-cache-time 5m \
   --poll-interval 30s
-ExecStop=/bin/fusermount -u %h/Dropbox-remote
+ExecStop=/bin/fusermount3 -u %h/Dropbox-remote
 Restart=on-failure
 RestartSec=10
 

@@ -31,7 +31,10 @@ cmd_rm() {
     echo "devpod delete failed; catalog not modified" >&2
     return 1
   }
-  catalog_workspace_remove "$id"
+  catalog_workspace_remove "$id" || {
+    echo "[WARN] devpod delete succeeded but catalog write failed — run \`dvw doctor\`" >&2
+    return 1
+  }
 }
 
 cmd_stop() {
@@ -97,10 +100,11 @@ cmd_doctor() {
   fi
 
   # catalog readable
-  if catalog_read >/dev/null 2>&1; then
-    echo "[OK]  catalog: readable, version=$(catalog_read | jq -r .version)"
+  local cat_data
+  if cat_data=$(catalog_read 2>&1); then
+    echo "[OK]  catalog: readable, version=$(echo "$cat_data" | jq -r .version)"
   else
-    echo "[FAIL] catalog: $(catalog_read 2>&1 || true)"
+    echo "[FAIL] catalog: $cat_data"
     fail=1
   fi
 

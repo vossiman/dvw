@@ -26,9 +26,13 @@ step "checking gum"
 if ! command -v gum >/dev/null; then
   echo "installing gum from Charm apt repo"
   sudo mkdir -p /etc/apt/keyrings
-  curl -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
-  echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
-    | sudo tee /etc/apt/sources.list.d/charm.list
+  if [[ ! -f /etc/apt/keyrings/charm.gpg ]]; then
+    curl -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
+  fi
+  if [[ ! -f /etc/apt/sources.list.d/charm.list ]]; then
+    echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
+      | sudo tee /etc/apt/sources.list.d/charm.list
+  fi
   sudo apt update
   sudo apt install -y gum
 fi
@@ -78,7 +82,18 @@ install -m 0644 "$SCRIPT_DIR/systemd/rclone-dropbox.service" \
 mkdir -p "$HOME/Dropbox-remote"
 systemctl --user daemon-reload
 systemctl --user enable --now rclone-dropbox.service
-sleep 2
+
+step "waiting for rclone mount to come up"
+for _ in $(seq 1 15); do
+  if mountpoint -q "$HOME/Dropbox-remote"; then break; fi
+  sleep 1
+done
+if ! mountpoint -q "$HOME/Dropbox-remote"; then
+  echo "rclone mount did not appear within 15s. Check:"
+  echo "  systemctl --user status rclone-dropbox"
+  echo "Re-run this installer once the mount is live."
+  exit 1
+fi
 systemctl --user status rclone-dropbox.service --no-pager || true
 
 step "installing dvw to $TARGET_BIN"

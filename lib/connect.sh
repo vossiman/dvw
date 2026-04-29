@@ -9,10 +9,12 @@ cmd_connect() {
   fi
 
   if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "${ws}.devpod" true 2>/dev/null; then
-    local ide="none"
-    if catalog_workspace_get "$ws" >/dev/null 2>&1; then
-      ide=$(catalog_workspace_get "$ws" | jq -r '.ide')
+    local ide="none" ws_json
+    if ws_json=$(catalog_workspace_get "$ws" 2>/dev/null); then
+      ide=$(echo "$ws_json" | jq -r '.ide')
       [[ "$ide" == "ssh" ]] && ide="none"
+    else
+      echo "(workspace not in catalog — defaulting to --ide none)"
     fi
     echo "starting workspace $ws (ide=$ide) ..."
     devpod up "$ws" --ide "$ide"
