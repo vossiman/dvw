@@ -5,8 +5,29 @@ cmd_list() {
 }
 
 cmd_rm() { echo "rm: not yet implemented" >&2; return 2; }
-cmd_stop() { echo "stop: not yet implemented" >&2; return 2; }
-cmd_start() { echo "start: not yet implemented" >&2; return 2; }
+
+cmd_stop() {
+  local id="${1:-}"
+  if [[ -z "$id" ]]; then
+    echo "usage: dvw stop <workspace-id>" >&2
+    return 1
+  fi
+  devpod stop "$id"
+}
+
+cmd_start() {
+  local id="${1:-}"
+  if [[ -z "$id" ]]; then
+    echo "usage: dvw start <workspace-id>" >&2
+    return 1
+  fi
+  local ide="none"
+  if catalog_workspace_get "$id" >/dev/null 2>&1; then
+    ide=$(catalog_workspace_get "$id" | jq -r '.ide')
+    [[ "$ide" == "ssh" ]] && ide="none"
+  fi
+  devpod up "$id" --ide "$ide"
+}
 
 # One line per workspace: <id>  <repo>@<branch>  <ide>  <running?>  last:<last_used_at>  on:<created_on>
 cmd_status() {
