@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "defaults": { "ide": "cursor", "provider": "vossisrv" },
+  "workspaces": [
+    {
+      "id": "myrepo-feature-x",
+      "repo": "git@github.com:owner/myrepo.git",
+      "branch": "feature-x",
+      "ide": "cursor",
+      "provider": "vossisrv",
+      "created_at": "2026-04-28T14:32:00Z",
+      "last_used_at": "2026-04-28T15:10:00Z",
+      "created_on": "mint"
+    },
+    {
+      "id": "other-main",
+      "repo": "git@github.com:owner/other.git",
+      "branch": "main",
+      "ide": "ssh",
+      "provider": "vossisrv",
+      "created_at": "2026-04-27T10:00:00Z",
+      "last_used_at": "2026-04-28T09:00:00Z",
+      "created_on": "wsl"
+    }
+  ],
+  "repos": [
+    {
+      "url": "git@github.com:owner/myrepo.git",
+      "last_branch": "feature-x",
+      "last_used_at": "2026-04-28T14:32:00Z"
+    },
+    {
+      "url": "git@github.com:owner/other.git",
+      "last_branch": "main",
+      "last_used_at": "2026-04-27T10:00:00Z"
+    }
+  ]
+}
