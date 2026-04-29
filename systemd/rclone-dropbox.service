@@ -1,0 +1,16 @@
+[Unit]
+Description=Rclone Dropbox Mount
+After=default.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/rclone mount dropbox: %h/Dropbox-remote \
+  --vfs-cache-mode minimal \
+  --dir-cache-time 5m \
+  --poll-interval 30s
+ExecStop=/bin/fusermount -u %h/Dropbox-remote
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
