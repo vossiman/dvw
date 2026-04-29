@@ -4,7 +4,35 @@ cmd_list() {
   catalog_workspace_ids
 }
 
-cmd_rm() { echo "rm: not yet implemented" >&2; return 2; }
+cmd_rm() {
+  local id="${1:-}"
+  if [[ -z "$id" ]]; then
+    echo "usage: dvw rm <workspace-id>" >&2
+    return 1
+  fi
+  if ! catalog_workspace_get "$id" >/dev/null 2>&1; then
+    echo "workspace not in catalog: $id" >&2
+    echo "(if it exists in DevPod but not the catalog, use \`devpod delete $id\` directly)" >&2
+    return 1
+  fi
+  local running="no"
+  if devpod list --output json 2>/dev/null \
+       | jq -e --arg id "$id" '.[] | select(.id == $id and .status == "Running")' \
+         >/dev/null 2>&1; then
+    running="yes"
+  fi
+  if [[ "$running" == "yes" ]]; then
+    if ! gum confirm "Workspace $id is running. Delete it?"; then
+      echo "aborted"
+      return 1
+    fi
+  fi
+  devpod delete "$id" || {
+    echo "devpod delete failed; catalog not modified" >&2
+    return 1
+  }
+  catalog_workspace_remove "$id"
+}
 
 cmd_stop() {
   local id="${1:-}"
