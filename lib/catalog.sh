@@ -30,3 +30,26 @@ catalog_init_if_missing() {
 }
 JSON
 }
+
+# Print catalog JSON to stdout, validating schema version.
+# Caller is responsible for catalog_init_if_missing if they want auto-create.
+catalog_read() {
+  local path
+  path=$(catalog_path)
+  if [[ ! -f "$path" ]]; then
+    echo "catalog not found: $path" >&2
+    return 1
+  fi
+  if ! jq -e . "$path" >/dev/null 2>&1; then
+    echo "catalog malformed (parse failed): $path" >&2
+    echo "open it in an editor and fix; dvw will not overwrite" >&2
+    return 1
+  fi
+  local version
+  version=$(jq -r '.version // 0' "$path")
+  if (( version > 1 )); then
+    echo "catalog version $version is newer than this dvw supports — upgrade this machine" >&2
+    return 1
+  fi
+  cat "$path"
+}

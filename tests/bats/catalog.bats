@@ -57,3 +57,34 @@ teardown() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"catalog unreachable"* ]] || [[ "$output" == *"rclone mount"* ]]
 }
+
+@test "catalog_read: returns valid catalog content" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
+  run catalog_read
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"version": 1'* ]]
+}
+
+@test "catalog_read: fails loudly on malformed JSON" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/malformed-catalog.json" "$DVW_CATALOG"
+  run catalog_read
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"malformed"* ]] || [[ "$output" == *"parse"* ]]
+}
+
+@test "catalog_read: fails loudly on future schema version" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/future-version-catalog.json" "$DVW_CATALOG"
+  run catalog_read
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"newer"* ]] || [[ "$output" == *"version"* ]]
+}
+
+@test "catalog_read: fails when catalog file missing (does NOT auto-create)" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  [ ! -f "$DVW_CATALOG" ]
+  run catalog_read
+  [ "$status" -ne 0 ]
+}
