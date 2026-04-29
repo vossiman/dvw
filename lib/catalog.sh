@@ -67,3 +67,19 @@ catalog_write() {
   printf '%s\n' "$content" > "$tmp"
   mv "$tmp" "$path"
 }
+
+# Print workspace IDs, one per line, sorted by last_used_at descending.
+catalog_workspace_ids() {
+  catalog_read | jq -r '.workspaces | sort_by(.last_used_at) | reverse | .[].id'
+}
+
+# Print the workspace object for the given ID. Exit 1 if not found.
+catalog_workspace_get() {
+  local id="$1"
+  local result
+  result=$(catalog_read | jq -e --arg id "$id" '.workspaces[] | select(.id == $id)') || {
+    echo "workspace not found in catalog: $id" >&2
+    return 1
+  }
+  echo "$result"
+}

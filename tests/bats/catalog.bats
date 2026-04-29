@@ -108,3 +108,36 @@ teardown() {
   after=$(cat "$DVW_CATALOG")
   [ "$before" = "$after" ]
 }
+
+@test "catalog_workspace_ids: lists IDs in last-used-desc order" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
+  run catalog_workspace_ids
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "myrepo-feature-x" ]
+  [ "${lines[1]}" = "other-main" ]
+}
+
+@test "catalog_workspace_ids: empty list when no workspaces" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/empty-catalog.json" "$DVW_CATALOG"
+  run catalog_workspace_ids
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "catalog_workspace_get: returns workspace JSON for known ID" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
+  run catalog_workspace_get myrepo-feature-x
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.id == "myrepo-feature-x"'
+  echo "$output" | jq -e '.ide == "cursor"'
+}
+
+@test "catalog_workspace_get: exits non-zero for unknown ID" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
+  run catalog_workspace_get nonexistent
+  [ "$status" -ne 0 ]
+}
