@@ -141,3 +141,52 @@ teardown() {
   run catalog_workspace_get nonexistent
   [ "$status" -ne 0 ]
 }
+
+@test "catalog_workspace_add: appends a new workspace entry" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/empty-catalog.json" "$DVW_CATALOG"
+  run catalog_workspace_add new-ws \
+    git@github.com:foo/bar.git main cursor vossisrv testhost
+  [ "$status" -eq 0 ]
+  jq -e '.workspaces | length == 1' "$DVW_CATALOG"
+  jq -e '.workspaces[0].id == "new-ws"' "$DVW_CATALOG"
+  jq -e '.workspaces[0].ide == "cursor"' "$DVW_CATALOG"
+  jq -e '.workspaces[0].created_on == "testhost"' "$DVW_CATALOG"
+  jq -e '.workspaces[0].created_at | test("[0-9]{4}-[0-9]{2}-[0-9]{2}T")' "$DVW_CATALOG"
+}
+
+@test "catalog_workspace_add: rejects duplicate ID" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
+  run catalog_workspace_add myrepo-feature-x \
+    git@github.com:foo/bar.git main cursor vossisrv testhost
+  [ "$status" -ne 0 ]
+}
+
+@test "catalog_workspace_remove: removes by ID" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
+  run catalog_workspace_remove myrepo-feature-x
+  [ "$status" -eq 0 ]
+  jq -e '.workspaces | length == 1' "$DVW_CATALOG"
+  jq -e '.workspaces[0].id == "other-main"' "$DVW_CATALOG"
+}
+
+@test "catalog_workspace_remove: no-op on unknown ID returns success" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
+  run catalog_workspace_remove nonexistent
+  [ "$status" -eq 0 ]
+  jq -e '.workspaces | length == 2' "$DVW_CATALOG"
+}
+
+@test "catalog_workspace_touch: bumps last_used_at" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
+  before=$(jq -r '.workspaces[] | select(.id=="myrepo-feature-x") | .last_used_at' "$DVW_CATALOG")
+  sleep 1
+  run catalog_workspace_touch myrepo-feature-x
+  [ "$status" -eq 0 ]
+  after=$(jq -r '.workspaces[] | select(.id=="myrepo-feature-x") | .last_used_at' "$DVW_CATALOG")
+  [ "$before" != "$after" ]
+}

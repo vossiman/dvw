@@ -83,3 +83,41 @@ catalog_workspace_get() {
   }
   echo "$result"
 }
+
+# ISO-8601 UTC timestamp helper.
+catalog_now() {
+  date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+# Append a new workspace. Args: id repo branch ide provider hostname
+catalog_workspace_add() {
+  local id="$1" repo="$2" branch="$3" ide="$4" provider="$5" host="$6"
+  local now content
+  now=$(catalog_now)
+  content=$(catalog_read) || return 1
+  if echo "$content" | jq -e --arg id "$id" '.workspaces[] | select(.id == $id)' >/dev/null; then
+    echo "workspace ID already exists: $id" >&2
+    return 1
+  fi
+  echo "$content" | jq --arg id "$id" --arg repo "$repo" --arg branch "$branch" \
+    --arg ide "$ide" --arg provider "$provider" --arg host "$host" --arg now "$now" \
+    '.workspaces += [{
+       id: $id, repo: $repo, branch: $branch, ide: $ide, provider: $provider,
+       created_at: $now, last_used_at: $now, created_on: $host
+     }]' | catalog_write
+}
+
+# Remove workspace by ID. Returns success even if ID not present.
+catalog_workspace_remove() {
+  local id="$1"
+  catalog_read | jq --arg id "$id" '.workspaces |= map(select(.id != $id))' | catalog_write
+}
+
+# Bump last_used_at on a workspace. Returns success even if ID missing.
+catalog_workspace_touch() {
+  local id="$1" now
+  now=$(catalog_now)
+  catalog_read | jq --arg id "$id" --arg now "$now" \
+    '.workspaces |= map(if .id == $id then .last_used_at = $now else . end)' \
+    | catalog_write
+}
