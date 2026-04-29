@@ -147,3 +147,9 @@ catalog_repo_last_branch() {
   catalog_read | jq -r --arg url "$url" \
     '.repos[] | select(.url == $url) | .last_branch' 2>/dev/null
 }
+
+# Read a default value by key (e.g., "ide", "provider").
+catalog_default() {
+  local key="$1"
+  catalog_read | jq -r --arg k "$key" '.defaults[$k] // ""'
+}

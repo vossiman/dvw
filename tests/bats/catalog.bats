@@ -233,3 +233,22 @@ teardown() {
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+@test "catalog_default: returns default value for known key" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
+  run catalog_default ide
+  [ "$status" -eq 0 ]
+  [ "$output" = "cursor" ]
+  run catalog_default provider
+  [ "$status" -eq 0 ]
+  [ "$output" = "vossisrv" ]
+}
+
+@test "catalog_default: empty for unknown key" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
+  run catalog_default unknown_key
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
