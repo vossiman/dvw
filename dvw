@@ -1,65 +1,42 @@
 #!/usr/bin/env bash
-# dvw — Connect to a DevPod workspace and attach (or create) the `work` tmux session.
-#
-# Usage:
-#   dvw                  # pick from list (fzf if available, else numeric menu)
-#   dvw <workspace-id>   # connect directly
-#   dvw -l               # just list workspaces and exit
+# dvw — DevPod workspace orchestrator. See devpod/README.md.
 set -euo pipefail
 
-# Strip ANSI colors and pull the first pipe-separated column from `devpod list`,
-# skipping header (NAME) and separator rows (---+---).
-list_workspaces() {
-  devpod list 2>/dev/null \
-    | sed -r 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
-    | awk -F'|' '
-        $1 ~ /[[:alnum:]]/ && $1 !~ /^[[:space:]]*NAME[[:space:]]*$/ {
-          gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1)
-          if ($1 != "") print $1
-        }'
+DVW_ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+# shellcheck source=lib/catalog.sh
+. "$DVW_ROOT/lib/catalog.sh"
+# shellcheck source=lib/connect.sh
+. "$DVW_ROOT/lib/connect.sh"
+# shellcheck source=lib/commands.sh
+. "$DVW_ROOT/lib/commands.sh"
+# shellcheck source=lib/wizard.sh
+. "$DVW_ROOT/lib/wizard.sh"
+# shellcheck source=lib/ui.sh
+. "$DVW_ROOT/lib/ui.sh"
+
+main() {
+  catalog_init_if_missing || exit 1
+
+  case "${1:-}" in
+    -l|--list)
+      cmd_list ;;
+    new)
+      shift; cmd_new "$@" ;;
+    rm)
+      shift; cmd_rm "$@" ;;
+    stop)
+      shift; cmd_stop "$@" ;;
+    start)
+      shift; cmd_start "$@" ;;
+    status)
+      cmd_status ;;
+    doctor)
+      cmd_doctor ;;
+    "")
+      ui_top_menu ;;
+    *)
+      cmd_connect "$1" ;;
+  esac
 }
 
-if [[ "${1:-}" == "-l" || "${1:-}" == "--list" ]]; then
-  list_workspaces
-  exit 0
-fi
-
-ws="${1:-}"
-
-if [[ -z "$ws" ]]; then
-  mapfile -t workspaces < <(list_workspaces)
-  count=${#workspaces[@]}
-
-  if (( count == 0 )); then
-    echo "no DevPod workspaces found (try: devpod list)" >&2
-    exit 1
-  elif (( count == 1 )); then
-    ws="${workspaces[0]}"
-    echo "→ $ws"
-  elif command -v fzf &>/dev/null; then
-    ws="$(printf '%s\n' "${workspaces[@]}" | fzf --prompt='workspace> ' --height=30% --reverse)"
-  else
-    echo "available workspaces:"
-    PS3='> '
-    select picked in "${workspaces[@]}"; do
-      [[ -n "$picked" ]] && { ws="$picked"; break; }
-    done
-  fi
-fi
-
-[[ -n "$ws" ]] || { echo "no workspace selected" >&2; exit 1; }
-
-# Reachability check. If SSH fails, start the workspace (no IDE handoff).
-if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "${ws}.devpod" true 2>/dev/null; then
-  echo "starting workspace $ws ..."
-  devpod up "$ws" --ide none
-fi
-
-# Pass our local TERM through, but fall back to xterm-256color if the remote
-# doesn't have a terminfo entry for it (e.g. xterm-kitty on a fresh container
-# before install.sh has installed kitty-terminfo). Generic — also handles
-# alacritty, wezterm, etc.
-# `bash -lc` so tmux is found even outside the non-interactive PATH.
-# `tmux new -A` attaches to `work` if it exists, else creates it.
-exec ssh -t "${ws}.devpod" \
-  'infocmp -1 "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color; bash -lc "tmux new -A -s work"'
+main "$@"
