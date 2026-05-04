@@ -35,7 +35,7 @@ ssh_sync_refresh() {
   [[ -f "$blueprint" ]] || return 0
 
   if [[ ! -f "$DVW_SSH_LOCAL" ]]; then
-    cp -p "$blueprint" "$DVW_SSH_LOCAL"
+    cp -- "$blueprint" "$DVW_SSH_LOCAL"
     chmod 600 "$DVW_SSH_LOCAL"
     return 0
   fi
@@ -44,7 +44,7 @@ ssh_sync_refresh() {
   b_mtime=$(stat -c %Y "$blueprint" 2>/dev/null || echo 0)
   l_mtime=$(stat -c %Y "$DVW_SSH_LOCAL" 2>/dev/null || echo 0)
   if (( b_mtime > l_mtime )); then
-    cp -p "$blueprint" "$DVW_SSH_LOCAL"
+    cp -- "$blueprint" "$DVW_SSH_LOCAL"
     chmod 600 "$DVW_SSH_LOCAL"
   fi
 }
