@@ -77,7 +77,7 @@ _dvw_decorated_workspaces() {
         .id,
         ((.repo | shortrepo) + "@" + .branch),
         .ide,
-        (if (.id as $id | $r | index($id)) then "●running" else "○stopped" end)
+        (if (.id as $id | $r | index($id)) then "● running" else "○ stopped" end)
       ] | @tsv
   ')
   [[ -z "$raw" ]] && return 0
@@ -100,8 +100,8 @@ _dvw_decorated_workspaces() {
     | column -t -s $'\t' -o '  ·  ' \
     | sed -E "
         s|^([^ ]+)|${b}${accent}\\1${r}|
-        s|●running|${green}●running${r}|g
-        s|○stopped|${grey}○stopped${r}|g
+        s|● running|${green}● running${r}|g
+        s|○ stopped|${grey}○ stopped${r}|g
         s|(  )(·)(  )(cursor)([ ]+)|\\1${d}\\2${r}\\3${teal}\\4${r}\\5|g
         s|(  )(·)(  )(ssh)([ ]+)|\\1${d}\\2${r}\\3${yellow}\\4${r}\\5|g
         s|(  )(·)(  )(vscode)([ ]+)|\\1${d}\\2${r}\\3${blue}\\4${r}\\5|g
