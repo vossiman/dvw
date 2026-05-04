@@ -58,6 +58,23 @@ cmd_start() {
   devpod up "$id" --ide "$ide"
 }
 
+# Force-rebuild the container so a freshly-pushed devcontainer.json (or any
+# image/postCreate change) takes effect. Same IDE resolution as cmd_start.
+cmd_recreate() {
+  local id="${1:-}"
+  if [[ -z "$id" ]]; then
+    ui_error "usage: dvw recreate <workspace-id>"
+    return 1
+  fi
+  local ide="none"
+  if catalog_workspace_get "$id" >/dev/null 2>&1; then
+    ide=$(catalog_workspace_get "$id" | jq -r '.ide')
+    [[ "$ide" == "ssh" ]] && ide="none"
+  fi
+  ui_action "recreating" "$id (ide=$ide)"
+  devpod up "$id" --recreate --ide "$ide"
+}
+
 # Banner + column-aligned colored rows. Columns: id, repo@branch, ide,
 # ●running/○stopped, last:<ts>, on:<host>. Same colorization as the picker.
 cmd_status() {
@@ -90,32 +107,14 @@ cmd_status() {
     | sed 's/^/  /'
 }
 
-# Drop the canonical devcontainer.json from devpod/blueprint/ into a target
-# repo's .devcontainer/. Useful for repos that don't yet have one — after
-# running this, commit and push the new file, then `dvw new` against the
-# branch to bring up a properly-configured workspace.
+# Drop the canonical devcontainer.json from devpod/blueprint/ into the in-
+# container checkout of a running DevPod workspace. The file lands in the
+# workspace's repo working tree (/workspaces/<repo-basename>/.devcontainer/),
+# from where the user can commit + push it. The live container is NOT
+# reconfigured — the blueprint takes effect on the next workspace rebuild
+# (or a fresh `dvw new`) once the change is in the remote branch.
 cmd_blueprint() {
-  local target="${1:-}"
-
-  ui_banner "install blueprint" "drop devcontainer.json into a target repo so dvw new can build a proper workspace"
-
-  if [[ -z "$target" ]]; then
-    local default="$PWD"
-    [[ "$PWD" == "$HOME" && -d "$HOME/local_dev" ]] && default="$HOME/local_dev"
-    target=$(gum input \
-      --value "$default" \
-      --header "target repo directory (absolute path)" \
-      --header.foreground "$DVW_SUBTLE")
-  fi
-  [[ -z "$target" ]] && { ui_info "aborted: no target"; return 1; }
-  target="${target/#\~/$HOME}"
-  if ! target=$(cd "$target" 2>/dev/null && pwd); then
-    ui_error "target directory does not exist: ${1:-$target}"
-    return 1
-  fi
-  if ! git -C "$target" rev-parse --git-dir >/dev/null 2>&1; then
-    ui_status_warn "$target is not a git repository (blueprint will still be copied)"
-  fi
+  ui_banner "install blueprint" "push devcontainer.json into a running workspace's checkout"
 
   local src="$DVW_ROOT/blueprint/devcontainer.json"
   if [[ ! -f "$src" ]]; then
@@ -123,30 +122,54 @@ cmd_blueprint() {
     return 1
   fi
 
-  local dst_dir="$target/.devcontainer"
-  local dst="$dst_dir/devcontainer.json"
+  local id
+  id=$(ui_pick_workspace "blueprint into> ") || { ui_info "aborted"; return 1; }
 
-  if [[ -f "$dst" ]]; then
-    if cmp -s "$src" "$dst"; then
-      ui_status_ok "$dst already matches the blueprint — nothing to do"
-      return 0
-    fi
-    ui_status_warn "$dst already exists and differs from the blueprint"
-    ui_info "  (run \`diff -u $dst $src\` to inspect)"
+  # DevPod (vossisrv setup) clones the repo into /workspaces/<workspace-id>
+  # — the in-container folder name is the workspace id, not the repo basename.
+  local container_dir="/workspaces/$id"
+  local container_dst="$container_dir/.devcontainer/devcontainer.json"
+
+  # Wake the workspace if it's not reachable. Same probe pattern as cmd_connect.
+  if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "${id}.devpod" true 2>/dev/null; then
+    ui_info "workspace not reachable — starting (devpod up --ide none)..."
+    devpod up "$id" --ide none >/dev/null || { ui_error "failed to start $id"; return 1; }
+  fi
+
+  if ! ssh "${id}.devpod" "test -d $container_dir" 2>/dev/null; then
+    ui_error "repo working tree not found at $container_dir inside $id"
+    ui_info "  (devpod may have cloned to a non-standard path — open a shell with \`dvw $id\` to check)"
+    return 1
+  fi
+
+  # Skip the write if the blueprint is already in place and identical.
+  local remote_md5 local_md5
+  remote_md5=$(ssh "${id}.devpod" "md5sum $container_dst 2>/dev/null | awk '{print \$1}'") || true
+  local_md5=$(md5sum "$src" | awk '{print $1}')
+  if [[ -n "$remote_md5" && "$remote_md5" == "$local_md5" ]]; then
+    ui_status_ok "$container_dst already matches the blueprint — nothing to do"
+    return 0
+  fi
+  if [[ -n "$remote_md5" ]]; then
+    ui_status_warn "$container_dst already exists and differs from the blueprint"
     gum confirm "Overwrite with the blueprint?" || { ui_info "aborted"; return 1; }
   fi
 
-  mkdir -p "$dst_dir"
-  cp -- "$src" "$dst"
-  ui_action "installed" "$dst"
+  if ssh "${id}.devpod" "mkdir -p $container_dir/.devcontainer && cat > $container_dst" < "$src"; then
+    ui_action "installed" "${id}:$container_dst"
+  else
+    ui_error "failed to write $container_dst inside $id"
+    return 1
+  fi
 
   echo
-  ui_info "next steps:"
-  ui_info "  cd $target"
-  ui_info "  git add .devcontainer/devcontainer.json"
-  ui_info "  git commit -m 'add devpod blueprint'"
-  ui_info "  git push"
-  ui_info "  dvw new    # then create a workspace from the new branch"
+  ui_info "next step (apply the blueprint to this workspace):"
+  ui_info "  dvw recreate $id"
+  ui_info ""
+  ui_info "the file is in the working tree but uncommitted. To make the blueprint"
+  ui_info "stick for any future \`dvw new\` from this repo, also commit + push:"
+  ui_info "  dvw $id   # attach"
+  ui_info "  cd $container_dir && git add .devcontainer && git commit -m 'add devpod blueprint' && git push"
 }
 
 cmd_doctor() {

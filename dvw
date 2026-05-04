@@ -40,6 +40,8 @@ main() {
       shift; cmd_stop "$@" ;;
     start)
       shift; cmd_start "$@" ;;
+    recreate|rebuild)
+      shift; cmd_recreate "$@" ;;
     status)
       cmd_status ;;
     doctor)

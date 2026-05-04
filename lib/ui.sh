@@ -232,10 +232,11 @@ ui_top_menu() {
     --header "what would you like to do?" \
     "❯ Connect to workspace" \
     "+ Create new workspace" \
-    "⊞ Install blueprint into a repo" \
+    "⊞ Install blueprint into a workspace" \
     "● Status" \
     "■ Stop a workspace" \
     "▶ Start a workspace" \
+    "↻ Recreate a workspace" \
     "✕ Remove a workspace" \
     "⚕ Doctor")
 
@@ -247,7 +248,7 @@ ui_top_menu() {
     *"Create new workspace")
       cmd_new
       ;;
-    *"Install blueprint into a repo")
+    *"Install blueprint into a workspace")
       cmd_blueprint
       ;;
     *"Status")
@@ -260,6 +261,10 @@ ui_top_menu() {
     *"Start a workspace")
       local ws; ws=$(ui_pick_workspace "start> ") || return 1
       cmd_start "$ws"
+      ;;
+    *"Recreate a workspace")
+      local ws; ws=$(ui_pick_workspace "recreate> ") || return 1
+      cmd_recreate "$ws"
       ;;
     *"Remove a workspace")
       local ws; ws=$(ui_pick_workspace "remove> ") || return 1
