@@ -4,7 +4,7 @@ Counterpart to `aiCodingBaseSetup/configs/tmux/tmux.conf` (deployed automaticall
 
 ## Files
 
-- **`tmux-local.conf`** — laptop/desktop config. Uses `Ctrl+a` prefix so it doesn't collide with the container's `Ctrl+b` when nesting tmux sessions.
+- **`tmux-local.conf`** — laptop/desktop config. Uses `Ctrl+a` prefix (same as container — we don't nest tmux).
 - **`tmux-diag.sh`** — diagnostic script for clipboard/escape-sequence issues.
 - **`clipboard-test.sh`** — dedicated clipboard-flow tester (OSC 52, xsel, xclip).
 - **`ANALYSIS.md`** — investigation notes from when these were tuned.
@@ -33,13 +33,13 @@ ssh -t <workspace>.devpod 'bash -lc "cd /tmp/aicoding && git pull origin main &&
 
 After it finishes, run `tmux kill-server` inside the container to restart any running sessions with the new config.
 
-## Why local + remote differ
+## Prefix
 
-Two coexisting tmux instances need different prefixes, otherwise the inner instance never sees the prefix because the outer captures it. Convention here:
+`Ctrl+a` everywhere — host and container. No tmux-in-tmux, so no collision.
 
 | Where | Prefix | Config source |
 |-------|--------|---------------|
 | Host (Mint/Win11) | `Ctrl+a` | `tmux-local.conf` (this dir) |
-| Container (DevPod workspace) | `Ctrl+b` | `aiCodingBaseSetup/configs/tmux/tmux.conf` |
+| Container (DevPod workspace) | `Ctrl+a` | `aiCodingBaseSetup/configs/tmux/tmux.conf` |
 
 Originated as a separate repo (`vossiman/tmuxing-archive` on GitHub holds the original commit `cfc787a` for reference).
