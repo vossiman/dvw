@@ -68,6 +68,12 @@ This was previously `universal:2` (Ubuntu 20.04 focal). Most workarounds below o
 
 - 🟢 **MITIGATED — Locale forwarding warnings** — host SSH forwards `LC_*=de_AT.UTF-8`, container only has `en_US.UTF-8` and `C.UTF-8` generated. `install.sh` runs `locale-gen de_AT.UTF-8 en_US.UTF-8` (via `ensure_locales`).
 - 🟢 **MITIGATED — Non-interactive SSH PATH** — `ssh host 'cmd'` doesn't source rc files, so nvm/Node-managed binaries are missing. `dvw` uses `bash -lc` to force a login shell.
+- 🟢 **MITIGATED — `Include` directive shadows when nested in a Host block** — OpenSSH propagates the enclosing Host block's `activep` flag into `Include` directives. So `Include "dvw.conf"` placed at the bottom of `~/.ssh/config` (inside the last user-managed Host block) silently ignores its content for the queried hostname; `Host *.devpod` inside the include never matches. `dvw`'s installer (`ssh_sync_init` in `lib/ssh-sync.sh`) prepends the Include line at the very top of `~/.ssh/config`, before any Host block, so `activep=TRUE` carries into the include. `dvw doctor` warns if a stale install left the line at the bottom; `ssh_sync_init` auto-relocates.
+
+## Host-side rclone
+
+- 🟢 **MITIGATED — Ubuntu noble's apt rclone (1.60.1) has FUSE/Dropbox stability bugs** — Long-since fixed in upstream 1.69+. `dvw-install.sh` checks for rclone ≥ 1.65 and otherwise (a) `apt remove`s the dpkg-owned binary, then (b) installs upstream via `curl https://rclone.org/install.sh | sudo bash`. **Order matters:** the upstream installer drops at `/usr/bin/rclone` (NOT `/usr/local/bin/`). If you upstream-install first then `apt remove rclone`, dpkg deletes the upstream binary because it still owns the path. The installer does this in the right order automatically; manual upgrades need to apt-remove first.
+- 🟢 **MITIGATED — Mount silently wedges or systemd state goes stale** — Earlier unit had `Restart=on-failure` (only catches non-zero exits), no `ExecStartPre` cleanup, and pinned `/usr/bin/rclone`. Now: `Restart=always`, `ExecStartPre=-/bin/fusermount3 -u` cleans stale FUSE handles, `ExecStartPre=/bin/mkdir -p` ensures the mountpoint dir exists, `--vfs-cache-mode writes` (was `minimal`) handles intermittent network better, and `ExecStart=/usr/bin/env rclone` with `Environment=PATH=…` makes the unit work for both apt and upstream rclone paths.
 
 ## Open questions / future work
 

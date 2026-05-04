@@ -43,7 +43,7 @@ cd devMachine
 dvw doctor
 ```
 
-The installer is idempotent — re-run it any time. It will install missing apt packages, set up the systemd rclone-dropbox unit, and symlink `dvw` into `~/.local/bin`.
+The installer is idempotent — re-run it any time. It will install missing apt packages (jq, fuse3, gum, devpod), pull rclone ≥ 1.65 from the upstream installer (replacing apt's old 1.60.1 if present, since noble's stale rclone has known FUSE/Dropbox stability bugs), set up the systemd rclone-dropbox unit, wire up the SSH config sync, and symlink `dvw` into `~/.local/bin`.
 
 ## Install on WSL Ubuntu
 
@@ -101,6 +101,7 @@ ssh -t <workspace>.devpod 'bash -lc "cd /tmp/aicoding && git pull origin main &&
 - Catalog: `~/Dropbox-remote/dvw/catalog.json` — single JSON file, hand-editable.
 - Sync: rclone mount of the `dropbox:` remote, running as a systemd user service. Poll interval 30s; staleness is bounded by that.
 - Conflicts: ignored by design (single user, two machines, no concurrent writes). `dvw doctor` flags any `*conflicted copy*` files Dropbox might create.
+- Mount hardening (`systemd/rclone-dropbox.service`): `ExecStartPre` cleans stale FUSE handles + ensures the mountpoint dir exists; `Restart=always` (was `on-failure`) catches clean exits and FUSE wedges; `--vfs-cache-mode writes` (was `minimal`) for resilience under intermittent connectivity; `Environment=PATH=/usr/local/bin:/usr/bin:/bin` + `ExecStart=/usr/bin/env rclone …` so the unit works whether rclone is at the apt path or the upstream path.
 
 ## SSH config sync
 
@@ -108,22 +109,28 @@ Same Dropbox-backed pattern as the catalog. A blueprint at
 `~/Dropbox-remote/dvw/ssh-blueprint.conf` is the single source of truth.
 On every `dvw` invocation, `lib/ssh-sync.sh` refreshes the local copy at
 `~/.ssh/dvw.conf` if the blueprint is newer (mtime check). Your real
-`~/.ssh/config` is untouched apart from one appended `Include "dvw.conf"`
-line that the installer adds once.
+`~/.ssh/config` is untouched apart from one `Include "dvw.conf"` line
+that the installer prepends at the top of the file.
 
 The seeded blueprint contains a `Host *.devpod` block with
 `ControlMaster auto` for SSH multiplexing — first connect to a workspace
-takes ~1s, every subsequent ssh to the same host within 10 minutes is
-near-instant.
+takes ~2s, every subsequent ssh to the same host within 10 minutes is
+near-instant (~5ms; verified: 400× speedup on second connect).
 
 To roll out a config change to all machines, edit
 `~/Dropbox-remote/dvw/ssh-blueprint.conf` on either box. Within ~30s the
 other machine sees the new blueprint and the next `dvw` call refreshes
 its local copy.
 
-`Host *.devpod` here doesn't fight DevPod's per-workspace stanzas —
-DevPod's settings appear above the `Include` line in `~/.ssh/config` and
-OpenSSH applies first-match-wins per option, so the layers compose.
+**Why the Include sits at the top of `~/.ssh/config`:** OpenSSH
+propagates the enclosing Host block's `activep` flag into `Include`
+directives. An Include nested inside a non-matching Host block silently
+shadows its content for the queried hostname. Top-of-file = no
+enclosing Host block = options apply. `dvw doctor` flags an
+incorrectly-positioned Include and the installer auto-relocates a
+stale one. DevPod's per-workspace stanzas live below the Include but
+still apply (they match by exact hostname before `Host *.devpod`'s
+wildcard pattern is evaluated).
 
 Private SSH keys are **not** synced via dvw; use per-machine keypairs and
 list both pubkeys in each server's `authorized_keys`.
