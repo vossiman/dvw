@@ -11,7 +11,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | Path | Purpose |
 |------|---------|
 | `dvw` | CLI entrypoint (sources `lib/*`) |
-| `lib/` | catalog, connect, wizard, commands, UI |
+| `lib/` | catalog, ssh-sync, connect, wizard, commands, UI |
 | `systemd/rclone-dropbox.service` | rclone mount as a systemd user unit |
 | `dvw-install.sh` | idempotent bootstrap for Mint and WSL |
 | `tests/bats/` | bats test suite for catalog logic |
@@ -32,7 +32,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw stop <id>` | `devpod stop` |
 | `dvw start <id>` | `devpod up` with the workspace's saved IDE |
 | `dvw status` | one-line per workspace: id, repo@branch, ide, running?, last used |
-| `dvw doctor` | health check: rclone mount, catalog, devpod, gum, orphans |
+| `dvw doctor` | health check: rclone mount, catalog, ssh-sync, devpod, gum, orphans |
 
 ## Install on Mint
 
@@ -101,6 +101,32 @@ ssh -t <workspace>.devpod 'bash -lc "cd /tmp/aicoding && git pull origin main &&
 - Catalog: `~/Dropbox-remote/dvw/catalog.json` — single JSON file, hand-editable.
 - Sync: rclone mount of the `dropbox:` remote, running as a systemd user service. Poll interval 30s; staleness is bounded by that.
 - Conflicts: ignored by design (single user, two machines, no concurrent writes). `dvw doctor` flags any `*conflicted copy*` files Dropbox might create.
+
+## SSH config sync
+
+Same Dropbox-backed pattern as the catalog. A blueprint at
+`~/Dropbox-remote/dvw/ssh-blueprint.conf` is the single source of truth.
+On every `dvw` invocation, `lib/ssh-sync.sh` refreshes the local copy at
+`~/.ssh/dvw.conf` if the blueprint is newer (mtime check). Your real
+`~/.ssh/config` is untouched apart from one appended `Include "dvw.conf"`
+line that the installer adds once.
+
+The seeded blueprint contains a `Host *.devpod` block with
+`ControlMaster auto` for SSH multiplexing — first connect to a workspace
+takes ~1s, every subsequent ssh to the same host within 10 minutes is
+near-instant.
+
+To roll out a config change to all machines, edit
+`~/Dropbox-remote/dvw/ssh-blueprint.conf` on either box. Within ~30s the
+other machine sees the new blueprint and the next `dvw` call refreshes
+its local copy.
+
+`Host *.devpod` here doesn't fight DevPod's per-workspace stanzas —
+DevPod's settings appear above the `Include` line in `~/.ssh/config` and
+OpenSSH applies first-match-wins per option, so the layers compose.
+
+Private SSH keys are **not** synced via dvw; use per-machine keypairs and
+list both pubkeys in each server's `authorized_keys`.
 
 ## What to do if rclone mount dies
 

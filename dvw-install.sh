@@ -108,5 +108,10 @@ step "first-run catalog init"
 mkdir -p "$HOME/Dropbox-remote/dvw"
 "$TARGET_BIN" -l >/dev/null
 
+step "ssh blueprint sync (Include + first refresh)"
+# shellcheck source=lib/ssh-sync.sh
+. "$SCRIPT_DIR/lib/ssh-sync.sh"
+ssh_sync_init
+
 echo
 echo "✓ install complete. Try: dvw doctor"

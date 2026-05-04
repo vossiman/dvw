@@ -114,6 +114,9 @@ cmd_doctor() {
     fail=1
   fi
 
+  # ssh blueprint sync
+  ssh_sync_doctor
+
   # devpod
   if command -v devpod >/dev/null; then
     echo "[OK]  devpod: $(devpod version 2>/dev/null | head -1)"
