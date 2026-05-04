@@ -122,6 +122,71 @@ catalog_workspace_touch() {
     | catalog_write
 }
 
+# Print the active devpod context name (the .name where .default == true).
+# Falls back to "default" if devpod is unavailable.
+catalog_devpod_context() {
+  if ! command -v devpod >/dev/null 2>&1; then
+    echo "default"
+    return 0
+  fi
+  local ctx
+  ctx=$(devpod context list --output json 2>/dev/null \
+        | jq -r '.[] | select(.default == true) | .name' 2>/dev/null)
+  echo "${ctx:-default}"
+}
+
+# Print the absolute path to devpod's local workspace.json for <id>.
+catalog_devpod_workspace_json_path() {
+  local id="$1" ctx
+  ctx=$(catalog_devpod_context)
+  echo "$HOME/.devpod/contexts/$ctx/workspaces/$id/workspace.json"
+}
+
+# Snapshot devpod's local workspace.json for <id> into the catalog entry.
+# Sets two fields: .uid (convenience copy of .workspace.uid) and .devpod_state
+# (the verbatim devpod workspace.json contents as an object). Atomic via
+# catalog_write. Returns 1 if the local workspace.json doesn't exist or the
+# catalog entry isn't present.
+catalog_workspace_set_devpod_state() {
+  local id="$1"
+  local path snapshot uid
+  path=$(catalog_devpod_workspace_json_path "$id")
+  if [[ ! -f "$path" ]]; then
+    echo "catalog_workspace_set_devpod_state: $path not found" >&2
+    return 1
+  fi
+  if ! snapshot=$(jq -e . "$path" 2>/dev/null); then
+    echo "catalog_workspace_set_devpod_state: $path is not valid JSON" >&2
+    return 1
+  fi
+  uid=$(echo "$snapshot" | jq -r '.workspace.uid // empty')
+  catalog_read \
+    | jq --arg id "$id" --arg uid "$uid" --argjson state "$snapshot" '
+        .workspaces |= map(
+          if .id == $id then
+            (if $uid == "" then . else .uid = $uid end)
+            | .devpod_state = $state
+          else . end)
+      ' | catalog_write
+}
+
+# Print the .devpod_state object for <id>. Exit 1 if absent.
+catalog_workspace_get_devpod_state() {
+  local id="$1"
+  catalog_read \
+    | jq -e --arg id "$id" '.workspaces[] | select(.id == $id) | .devpod_state // empty | select(. != null and . != {})' \
+    >/dev/null 2>&1 || { echo "catalog_workspace_get_devpod_state: no snapshot for $id" >&2; return 1; }
+  catalog_read \
+    | jq --arg id "$id" '.workspaces[] | select(.id == $id) | .devpod_state'
+}
+
+# Print the .uid convenience field for <id>, or empty.
+catalog_workspace_get_uid() {
+  local id="$1"
+  catalog_read \
+    | jq -r --arg id "$id" '.workspaces[] | select(.id == $id) | .uid // empty'
+}
+
 # Insert or update a repo entry (keyed by URL).
 catalog_repo_upsert() {
   local url="$1" branch="$2" now

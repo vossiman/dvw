@@ -92,6 +92,14 @@ cmd_new() {
   host=$(hostname -s)
   catalog_workspace_add "$name" "$repo" "$branch" "$ide" "$provider" "$host"
   catalog_repo_upsert "$repo" "$branch"
+  # Snapshot devpod's local workspace.json (carries the uid that binds the
+  # workspace ID to the remote agent dir + dind volumes) into the catalog so
+  # other machines can synthesize their local devpod state without re-running
+  # `devpod up <repo>@<branch>` (which provisions a fresh workspace and
+  # destroys the existing remote one).
+  if ! catalog_workspace_set_devpod_state "$name"; then
+    ui_status_warn "could not snapshot devpod state for $name into catalog (next \`dvw $name\` will retry)"
+  fi
   printf '%s✓%s added to catalog: %s%s%s\n' \
     "$(_ansi "$DVW_GREEN" bold)" "$(ui_reset)" \
     "$(_ansi "$DVW_ACCENT" bold)" "$name" "$(ui_reset)"

@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 # Connect to a workspace via SSH (terminal + tmux session) or Cursor (GUI).
+#
+# Multi-machine model: the catalog (Dropbox-shared) carries each workspace's
+# devpod `workspace.json` snapshot; on a fresh machine, the synthesizer below
+# materializes the local devpod state from that snapshot — without ever
+# running `devpod up <repo>@<branch> --id <id>`, which provisions a brand-new
+# workspace and would clobber the existing remote state.
 
 cmd_connect() {
   local ws="$1"
@@ -25,6 +31,12 @@ cmd_connect() {
   if ws_json=$(catalog_workspace_get "$ws" 2>/dev/null); then
     default_ide=$(echo "$ws_json" | jq -r '.ide // "ssh"')
   fi
+
+  # Materialize devpod local state from the catalog snapshot if missing,
+  # then reconcile any uid drift against the remote provider. Both are no-ops
+  # on the happy path. If neither succeeds we bail before touching devpod.
+  _dvw_ensure_local_devpod_state "$ws" || return 1
+  _dvw_reconcile_uid "$ws" || return 1
 
   local mode="$forced_mode"
   if [[ -z "$mode" ]]; then
@@ -73,7 +85,8 @@ _connect_ssh() {
   local ws="$1"
   if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "${ws}.devpod" true 2>/dev/null; then
     ui_action "starting" "$ws (ide=none)"
-    devpod up "$ws" --ide none
+    devpod up "$ws" --ide none || { ui_error "devpod up failed for $ws"; return 1; }
+    catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
   fi
   catalog_workspace_touch "$ws" 2>/dev/null || true
   # Single ssh call: probe tmux inside the same login shell that will host
@@ -96,5 +109,154 @@ _connect_cursor() {
   local ws="$1"
   catalog_workspace_touch "$ws" 2>/dev/null || true
   ui_action "opening" "$ws in Cursor"
-  exec devpod up "$ws" --ide cursor
+  if ! devpod up "$ws" --ide cursor; then
+    ui_error "devpod up --ide cursor failed for $ws"
+    return 1
+  fi
+  catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
+}
+
+# ----------------------------------------------------------------------------
+# Multi-machine sync helpers
+#
+# These bridge the catalog (Dropbox, shared) and devpod's per-machine state
+# (~/.devpod/contexts/<ctx>/workspaces/<id>/workspace.json). The catalog stores
+# a verbatim snapshot of workspace.json plus a top-level `uid` field.
+# ----------------------------------------------------------------------------
+
+# Materialize ~/.devpod/.../workspaces/<id>/workspace.json on this machine
+# from the catalog snapshot, if it doesn't already exist locally. No-op if
+# the local file is already present. Returns 1 if neither exists.
+_dvw_ensure_local_devpod_state() {
+  local id="$1" path snapshot
+  path=$(catalog_devpod_workspace_json_path "$id")
+  if [[ -f "$path" ]]; then
+    return 0
+  fi
+  if ! snapshot=$(catalog_workspace_get_devpod_state "$id" 2>/dev/null); then
+    ui_error "\"$id\" is not registered on this machine and the catalog has no devpod_state snapshot"
+    ui_info "(legacy catalog entry from before multi-machine sync — \`dvw rm $id\` then \`dvw new\` to migrate)"
+    return 1
+  fi
+  mkdir -p "$(dirname "$path")"
+  local tmp="$path.tmp"
+  if ! printf '%s' "$snapshot" | jq -c . > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    ui_error "could not write synthesized workspace.json for \"$id\""
+    return 1
+  fi
+  mv "$tmp" "$path"
+  ui_status_ok "registered \"$id\" locally from catalog snapshot"
+}
+
+# Detect uid drift (local vs catalog vs remote provider) and rewrite the
+# losers to match the elected uid. Best-effort — if SSH to provider fails
+# we proceed without reconciling.
+_dvw_reconcile_uid() {
+  local id="$1" path local_uid cat_uid
+  path=$(catalog_devpod_workspace_json_path "$id")
+  [[ -f "$path" ]] || return 0
+  local_uid=$(jq -r '.workspace.uid // empty' "$path" 2>/dev/null)
+  cat_uid=$(catalog_workspace_get_uid "$id" 2>/dev/null)
+
+  # Happy path: catalog hasn't recorded a uid yet (legacy or pre-snapshot
+  # creation) → reverse-sync after the next successful connect will fill it.
+  # Or local and catalog already agree → nothing to do.
+  if [[ -z "$cat_uid" ]] || [[ "$local_uid" == "$cat_uid" ]]; then
+    return 0
+  fi
+
+  local host
+  host=$(jq -r '.workspace.provider.options.HOST.value // empty' "$path" 2>/dev/null)
+  if [[ -z "$host" ]]; then
+    ui_status_warn "uid drift: local=$local_uid catalog=$cat_uid (no provider HOST in workspace.json — skipping reconcile)"
+    return 0
+  fi
+
+  ui_action "probing" "$host for live uid (local=$local_uid catalog=$cat_uid)"
+  local probe
+  if ! probe=$(_dvw_probe_remote_uid "$host" "$id" 2>/dev/null); then
+    ui_status_warn "could not probe $host; skipping reconcile (will use local uid=$local_uid)"
+    return 0
+  fi
+
+  local remote_uid
+  remote_uid=$(echo "$probe" | jq -r '.remote_uid // empty')
+  local has_content
+  has_content=$(echo "$probe" | jq -r '.has_content // false')
+  local volumes
+  volumes=$(echo "$probe" | jq -r '.volumes[]? // empty')
+
+  # Score each candidate: +1 per signal of "live" state.
+  local winner="" winner_score=-1
+  local cand
+  for cand in "$remote_uid" "$local_uid" "$cat_uid"; do
+    [[ -z "$cand" ]] && continue
+    local score=0
+    [[ "$cand" == "$remote_uid" ]] && score=$((score+1))
+    grep -qx "dind-var-lib-docker-$cand" <<<"$volumes" && score=$((score+1))
+    [[ "$cand" == "$remote_uid" && "$has_content" == "true" ]] && score=$((score+1))
+    if (( score > winner_score )); then
+      winner="$cand"
+      winner_score=$score
+    fi
+  done
+
+  if [[ -z "$winner" ]] || (( winner_score == 0 )); then
+    ui_error "neither uid resolves to live state on $host — workspace lost"
+    ui_info "(\`dvw rm $id\` then \`dvw new\` to recreate)"
+    return 1
+  fi
+
+  if [[ "$winner" == "$local_uid" ]] && [[ "$winner" == "$cat_uid" ]]; then
+    return 0
+  fi
+
+  local updated=()
+  if [[ "$local_uid" != "$winner" ]]; then
+    _dvw_rewrite_local_uid "$id" "$winner" || return 1
+    updated+=("local")
+  fi
+  if [[ "$cat_uid" != "$winner" ]]; then
+    catalog_workspace_set_devpod_state "$id" >/dev/null 2>&1 || {
+      ui_status_warn "could not push uid=$winner to catalog (will retry after next connect)"
+    }
+    updated+=("catalog")
+  fi
+  if [[ -n "$remote_uid" ]] && [[ "$remote_uid" != "$winner" ]]; then
+    ui_status_warn "remote workspace.json on $host still has uid=$remote_uid (not auto-rewritten — fix manually if needed)"
+  fi
+
+  ui_status_ok "uid drift resolved: local=$local_uid catalog=$cat_uid remote=$remote_uid → elected=$winner (updated: ${updated[*]:-none})"
+}
+
+# Single SSH round-trip to the provider host. Returns JSON with remote_uid,
+# has_content, volumes (array of dind volume names with the devpod prefix).
+_dvw_probe_remote_uid() {
+  local host="$1" id="$2"
+  ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" "
+    set +e
+    ws_dir=\$HOME/.devpod/agent/contexts/default/workspaces/$id
+    remote_uid=\$(jq -r '.workspace.uid // empty' \"\$ws_dir/workspace.json\" 2>/dev/null)
+    has_content=false
+    [[ -d \"\$ws_dir/content\" ]] && has_content=true
+    vols=\$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep '^dind-var-lib-docker-' || true)
+    jq -cn --arg uid \"\$remote_uid\" --arg hc \"\$has_content\" --arg vols \"\$vols\" '
+      { remote_uid: \$uid,
+        has_content: (\$hc == \"true\"),
+        volumes: (\$vols | split(\"\n\") | map(select(. != \"\"))) }'
+  "
+}
+
+# Rewrite .workspace.uid in the local workspace.json atomically.
+_dvw_rewrite_local_uid() {
+  local id="$1" new_uid="$2" path tmp
+  path=$(catalog_devpod_workspace_json_path "$id")
+  tmp="$path.tmp"
+  if ! jq --arg uid "$new_uid" '.workspace.uid = $uid' "$path" > "$tmp"; then
+    rm -f "$tmp"
+    ui_error "failed to rewrite local workspace.json uid for \"$id\""
+    return 1
+  fi
+  mv "$tmp" "$path"
 }

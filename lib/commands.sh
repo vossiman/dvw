@@ -15,20 +15,37 @@ cmd_rm() {
     ui_info "(if it exists in DevPod but not the catalog, use \`devpod delete $id\` directly)"
     return 1
   fi
-  _dvw_load_running_ids
-  if printf '%s\n' "$DVW_RUNNING_IDS" | grep -qFx "$id"; then
-    if ! gum confirm "Workspace $id is running. Delete it?"; then
+
+  local known_locally=0
+  if command -v devpod >/dev/null 2>&1 \
+     && devpod list --output json 2>/dev/null \
+        | jq -e --arg id "$id" '.[] | select(.id == $id)' >/dev/null; then
+    known_locally=1
+  fi
+
+  if (( known_locally )); then
+    _dvw_load_running_ids
+    if printf '%s\n' "$DVW_RUNNING_IDS" | grep -qFx "$id"; then
+      if ! gum confirm "Workspace $id is running. Delete it?"; then
+        ui_info "aborted"
+        return 1
+      fi
+    fi
+    ui_action "removing" "$id"
+    devpod delete "$id" || {
+      ui_error "devpod delete failed; catalog not modified"
+      return 1
+    }
+  else
+    ui_action "removing" "$id (catalog-only — not registered with this machine's devpod)"
+    if ! gum confirm "Remove catalog entry only? Remote provider state may be left orphaned."; then
       ui_info "aborted"
       return 1
     fi
   fi
-  ui_action "removing" "$id"
-  devpod delete "$id" || {
-    ui_error "devpod delete failed; catalog not modified"
-    return 1
-  }
+
   catalog_workspace_remove "$id" || {
-    ui_status_warn "devpod delete succeeded but catalog write failed — run \`dvw doctor\`"
+    ui_status_warn "catalog write failed — run \`dvw doctor\`"
     return 1
   }
 }
@@ -49,13 +66,16 @@ cmd_start() {
     ui_error "usage: dvw start <workspace-id>"
     return 1
   fi
+  _dvw_ensure_local_devpod_state "$id" || return 1
+  _dvw_reconcile_uid "$id" || return 1
   local ide="none"
   if catalog_workspace_get "$id" >/dev/null 2>&1; then
     ide=$(catalog_workspace_get "$id" | jq -r '.ide')
     [[ "$ide" == "ssh" ]] && ide="none"
   fi
   ui_action "starting" "$id (ide=$ide)"
-  devpod up "$id" --ide "$ide"
+  devpod up "$id" --ide "$ide" || return 1
+  catalog_workspace_set_devpod_state "$id" 2>/dev/null || true
 }
 
 # Force-rebuild the container so a freshly-pushed devcontainer.json (or any
@@ -66,13 +86,16 @@ cmd_recreate() {
     ui_error "usage: dvw recreate <workspace-id>"
     return 1
   fi
+  _dvw_ensure_local_devpod_state "$id" || return 1
+  _dvw_reconcile_uid "$id" || return 1
   local ide="none"
   if catalog_workspace_get "$id" >/dev/null 2>&1; then
     ide=$(catalog_workspace_get "$id" | jq -r '.ide')
     [[ "$ide" == "ssh" ]] && ide="none"
   fi
   ui_action "recreating" "$id (ide=$ide)"
-  devpod up "$id" --recreate --ide "$ide"
+  devpod up "$id" --recreate --ide "$ide" || return 1
+  catalog_workspace_set_devpod_state "$id" 2>/dev/null || true
 }
 
 # Banner + column-aligned colored rows. Columns: id, repo@branch, ide,
@@ -132,8 +155,11 @@ cmd_blueprint() {
 
   # Wake the workspace if it's not reachable. Same probe pattern as cmd_connect.
   if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "${id}.devpod" true 2>/dev/null; then
+    _dvw_ensure_local_devpod_state "$id" || return 1
+    _dvw_reconcile_uid "$id" || return 1
     ui_info "workspace not reachable — starting (devpod up --ide none)..."
     devpod up "$id" --ide none >/dev/null || { ui_error "failed to start $id"; return 1; }
+    catalog_workspace_set_devpod_state "$id" 2>/dev/null || true
   fi
 
   if ! ssh "${id}.devpod" "test -d $container_dir" 2>/dev/null; then
@@ -212,8 +238,16 @@ cmd_doctor() {
   ssh_sync_doctor
 
   # devpod
+  local devpod_providers=""
   if command -v devpod >/dev/null; then
     ui_status_ok "devpod: $(devpod version 2>/dev/null | head -1)"
+    devpod_providers=$(devpod provider list --output json 2>/dev/null | jq -r 'keys[]?' || true)
+    if [[ -z "$devpod_providers" ]]; then
+      ui_status_fail "devpod providers: none configured (run \`devpod provider add ssh --name vossisrv --option HOST=<user@host>\` then \`devpod provider use vossisrv\`)"
+      fail=$((fail+1))
+    else
+      ui_status_ok "devpod providers: $(printf '%s\n' "$devpod_providers" | paste -sd, -)"
+    fi
   else
     ui_status_fail "devpod: not on PATH (install: https://devpod.sh)"
     fail=$((fail+1))
@@ -235,17 +269,61 @@ cmd_doctor() {
     fail=$((fail+1))
   fi
 
-  # orphan check: catalog references workspace devpod doesn't know
+  # Per-workspace registration status. Catalog is the cross-machine source of
+  # truth (Dropbox-synced); local devpod state is per-machine and may not yet
+  # exist for catalog entries created elsewhere — that's fine, the synthesizer
+  # in connect.sh will materialize it on first connect. This block is purely
+  # informational and never tries to "fix" anything.
   if command -v devpod >/dev/null && catalog_read >/dev/null 2>&1; then
     local known_to_devpod
     known_to_devpod=$(devpod list --output json 2>/dev/null | jq -r '.[].id' || true)
     while IFS= read -r id; do
       [[ -z "$id" ]] && continue
-      if ! grep -qx "$id" <<<"$known_to_devpod"; then
-        ui_status_warn "catalog has \"$id\" but devpod does not (run \`dvw rm $id\` to prune, or re-register with \`devpod up $id\`)"
+      local has_snapshot=0
+      if catalog_workspace_get_devpod_state "$id" >/dev/null 2>&1; then
+        has_snapshot=1
+      fi
+      if grep -qx "$id" <<<"$known_to_devpod"; then
+        ui_status_ok "workspace \"$id\": registered locally"
+      elif (( has_snapshot )); then
+        ui_status_ok "workspace \"$id\": pending sync (will register on first \`dvw $id\`)"
+      else
+        ui_status_warn "workspace \"$id\": legacy entry — no devpod_state snapshot in catalog (\`dvw rm $id\` then \`dvw new\` to migrate)"
         warn=$((warn+1))
       fi
     done < <(catalog_workspace_ids)
+  fi
+
+  # If devpod has no providers but the catalog references some, offer to add
+  # them as SSH providers (using a matching ~/.ssh/config Host alias).
+  if [[ -z "$devpod_providers" ]] && [[ -t 0 ]] && command -v gum >/dev/null \
+     && catalog_read >/dev/null 2>&1; then
+    local -a needed_providers
+    mapfile -t needed_providers < <(catalog_read | jq -r '.workspaces[].provider // empty' | grep -v '^$' | sort -u)
+    if (( ${#needed_providers[@]} > 0 )); then
+      local p added_any=0
+      for p in "${needed_providers[@]}"; do
+        if ! ssh -G "$p" >/dev/null 2>&1; then
+          echo
+          ui_status_warn "can't auto-add provider \"$p\": no matching \`Host $p\` in ~/.ssh/config"
+          continue
+        fi
+        echo
+        if gum confirm "Add devpod SSH provider \"$p\" using SSH host alias \"$p\"?"; then
+          ui_action "adding provider" "$p (devpod provider add ssh --name $p --option HOST=$p)"
+          if devpod provider add ssh --name "$p" --option "HOST=$p"; then
+            ui_status_ok "added provider \"$p\""
+            added_any=1
+          else
+            ui_status_warn "failed to add provider \"$p\" (run \`devpod provider add ssh --name $p --option HOST=$p\` manually)"
+          fi
+        fi
+      done
+      if (( added_any )); then
+        devpod_providers=$(devpod provider list --output json 2>/dev/null | jq -r 'keys[]?' || true)
+        [[ -n "$devpod_providers" ]] && fail=$((fail-1))
+      fi
+    fi
   fi
 
   echo
