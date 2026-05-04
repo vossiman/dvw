@@ -13,6 +13,97 @@ DVW_YELLOW="#ebcb8b"        # aurora yellow / sand (ssh)
 DVW_PEACH="#d08770"         # aurora copper (jetbrains)
 DVW_BG_HL="#3b4252"         # polar2 (fzf highlighted-row bg)
 
+# ─── UI helpers ─────────────────────────────────────────────────────────────
+# All printers below assume an ANSI-capable terminal (true-color). Used by
+# every command surface in commands.sh, connect.sh, wizard.sh, and ssh-sync.sh.
+
+# _ansi <hex> [bold] -> emit '\033[...m' for embedding into format strings.
+_ansi() {
+  local hex="$1" mod="${2:-}"
+  local r=$((16#${hex:1:2})) g=$((16#${hex:3:2})) b=$((16#${hex:5:2}))
+  if [[ "$mod" == "bold" ]]; then
+    printf '\033[1;38;2;%d;%d;%dm' "$r" "$g" "$b"
+  else
+    printf '\033[38;2;%d;%d;%dm' "$r" "$g" "$b"
+  fi
+}
+ui_reset() { printf '\033[0m'; }
+
+# ui_banner "Title" ["subtitle"]  — Nord double-border title block.
+ui_banner() {
+  local title="$1" sub="${2:-}"
+  if [[ -n "$sub" ]]; then
+    gum join --vertical \
+      "$(gum style \
+          --border double --padding "0 2" \
+          --foreground "$DVW_ACCENT" --border-foreground "$DVW_ACCENT" \
+          --bold \
+          "$title")" \
+      "$(gum style \
+          --foreground "$DVW_SUBTLE" --margin "0 0 1 2" \
+          "$sub")"
+  else
+    gum style \
+      --border double --padding "0 2" --margin "0 0 1 0" \
+      --foreground "$DVW_ACCENT" --border-foreground "$DVW_ACCENT" \
+      --bold \
+      "$title"
+  fi
+}
+
+# Colored [OK]/[WARN]/[FAIL] markers. Detail string follows on the same line.
+ui_status_ok()   { printf '%s[OK]%s    %s\n' "$(_ansi "$DVW_GREEN"  bold)" "$(ui_reset)" "$1"; }
+ui_status_warn() { printf '%s[WARN]%s  %s\n' "$(_ansi "$DVW_YELLOW" bold)" "$(ui_reset)" "$1"; }
+ui_status_fail() { printf '%s[FAIL]%s  %s\n' "$(_ansi "$DVW_RED"    bold)" "$(ui_reset)" "$1"; }
+
+# ui_action "verb" "subject"  — short colored line: "▸ verb  subject"
+ui_action() {
+  local verb="$1" subject="$2"
+  printf '%s▸%s %s%s%s %s%s%s\n' \
+    "$(_ansi "$DVW_ACCENT")" "$(ui_reset)" \
+    "$(_ansi "$DVW_SUBTLE")" "$verb" "$(ui_reset)" \
+    "$(_ansi "$DVW_ACCENT" bold)" "$subject" "$(ui_reset)"
+}
+
+# ui_info "msg"  — subdued info (prints to stdout). For hints/notes.
+ui_info() {
+  printf '%s%s%s\n' "$(_ansi "$DVW_SUBTLE")" "$1" "$(ui_reset)"
+}
+
+# ui_error "msg"  — red error (prints to stderr).
+ui_error() {
+  printf '%s✗%s %s%s%s\n' "$(_ansi "$DVW_RED" bold)" "$(ui_reset)" \
+    "$(_ansi "$DVW_RED")" "$1" "$(ui_reset)" >&2
+}
+
+# Apply the picker/status row colorization. Reads stdin (already column-aligned),
+# writes ANSI-colored to stdout.
+_ui_colorize_workspace_row() {
+  local r b d
+  r=$(printf '\033[0m'); b=$(printf '\033[1m'); d=$(printf '\033[2m')
+  local A T Y B2 P GR G
+  A=$(_ansi  "$DVW_ACCENT")
+  T=$(_ansi  "$DVW_TEAL")
+  Y=$(_ansi  "$DVW_YELLOW")
+  B2=$(_ansi "$DVW_BLUE")
+  P=$(_ansi  "$DVW_PEACH")
+  GR=$(_ansi "$DVW_GREY")
+  G=$(_ansi  "$DVW_GREEN")
+  sed -E "
+    s|^([^ ]+)|${b}${A}\\1${r}|
+    s|● running|${G}● running${r}|g
+    s|○ stopped|${GR}○ stopped${r}|g
+    s|(  )(·)(  )(cursor)([ ]+)|\\1${d}\\2${r}\\3${T}\\4${r}\\5|g
+    s|(  )(·)(  )(ssh)([ ]+)|\\1${d}\\2${r}\\3${Y}\\4${r}\\5|g
+    s|(  )(·)(  )(vscode)([ ]+)|\\1${d}\\2${r}\\3${B2}\\4${r}\\5|g
+    s|(  )(·)(  )(jetbrains)([ ]+)|\\1${d}\\2${r}\\3${P}\\4${r}\\5|g
+    s|(  )(·)(  )(none)([ ]+)|\\1${d}\\2${r}\\3${GR}\\4${r}\\5|g
+    s|(last:[^ ]+)|${d}\\1${r}|g
+    s|(on:[^ ]+)|${d}\\1${r}|g
+    s|  ·  |  ${d}·${r}  |g
+  "
+}
+
 # Memoized list of running workspace ids. Set once via _dvw_load_running_ids
 # at first call; reused across the menu, picker, and cmd_status.
 #
@@ -81,34 +172,9 @@ _dvw_decorated_workspaces() {
       ] | @tsv
   ')
   [[ -z "$raw" ]] && return 0
-
-  # ANSI helpers (built once per call).
-  local r b d
-  r=$(printf '\033[0m')
-  b=$(printf '\033[1m')
-  d=$(printf '\033[2m')
-  local accent teal yellow blue peach grey green
-  accent=$(printf '\033[38;2;136;192;208m')   # #88c0d0 frost cyan
-  teal=$(printf '\033[38;2;143;188;187m')     # #8fbcbb
-  yellow=$(printf '\033[38;2;235;203;139m')   # #ebcb8b
-  blue=$(printf '\033[38;2;129;161;193m')     # #81a1c1
-  peach=$(printf '\033[38;2;208;135;112m')    # #d08770
-  grey=$(printf '\033[38;2;76;86;106m')       # #4c566a polar1
-  green=$(printf '\033[38;2;163;190;140m')    # #a3be8c
-
   printf '%s\n' "$raw" \
     | column -t -s $'\t' -o '  ·  ' \
-    | sed -E "
-        s|^([^ ]+)|${b}${accent}\\1${r}|
-        s|● running|${green}● running${r}|g
-        s|○ stopped|${grey}○ stopped${r}|g
-        s|(  )(·)(  )(cursor)([ ]+)|\\1${d}\\2${r}\\3${teal}\\4${r}\\5|g
-        s|(  )(·)(  )(ssh)([ ]+)|\\1${d}\\2${r}\\3${yellow}\\4${r}\\5|g
-        s|(  )(·)(  )(vscode)([ ]+)|\\1${d}\\2${r}\\3${blue}\\4${r}\\5|g
-        s|(  )(·)(  )(jetbrains)([ ]+)|\\1${d}\\2${r}\\3${peach}\\4${r}\\5|g
-        s|(  )(·)(  )(none)([ ]+)|\\1${d}\\2${r}\\3${grey}\\4${r}\\5|g
-        s|  ·  |  ${d}·${r}  |g
-      "
+    | _ui_colorize_workspace_row
 }
 
 # Pick a workspace via fzf (preferred) or gum filter. Returns the id only.
@@ -155,21 +221,7 @@ ui_top_menu() {
   total=$(catalog_read 2>/dev/null | jq -r '.workspaces | length' 2>/dev/null || echo 0)
   running=$(printf '%s\n' "$DVW_RUNNING_IDS" | grep -c . || true)
 
-  # Banner: a thicker double border with the title bold-mauve and the
-  # subtitle in muted overlay grey for visual hierarchy.
-  gum join --vertical \
-    "$(gum style \
-        --border double \
-        --padding "0 2" \
-        --margin "0 0 0 0" \
-        --foreground "$DVW_ACCENT" \
-        --border-foreground "$DVW_ACCENT" \
-        --bold \
-        "dvw — devpod workspaces")" \
-    "$(gum style \
-        --foreground "$DVW_SUBTLE" \
-        --margin "0 0 1 2" \
-        "$total total · $running running")"
+  ui_banner "dvw — devpod workspaces" "$total total · $running running"
 
   local action
   action=$(gum choose \

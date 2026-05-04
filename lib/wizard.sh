@@ -12,38 +12,44 @@ _repo_leaf() {
 }
 
 cmd_new() {
-  command -v gum >/dev/null || { echo "gum not installed; run dvw doctor" >&2; return 1; }
-  command -v devpod >/dev/null || { echo "devpod not installed; run dvw doctor" >&2; return 1; }
+  command -v gum >/dev/null || { ui_error "gum not installed; run dvw doctor"; return 1; }
+  command -v devpod >/dev/null || { ui_error "devpod not installed; run dvw doctor"; return 1; }
+
+  ui_banner "new workspace" "wizard creates a workspace, brings the container up, and adds it to the catalog"
 
   # 1. Repo
   local repos repo
   repos=$(catalog_repo_list)
   if [[ -z "$repos" ]]; then
-    repo=$(gum input --placeholder "git@github.com:owner/repo.git" --header "repo URL")
+    repo=$(gum input --placeholder "git@github.com:owner/repo.git" --header "repo URL" \
+            --header.foreground "$DVW_SUBTLE")
   else
     repo=$(printf "+ enter new...\n%s\n" "$repos" \
       | gum filter --placeholder "pick a repo (or '+ enter new...')")
     if [[ "$repo" == "+ enter new..." || -z "$repo" ]]; then
-      repo=$(gum input --placeholder "git@github.com:owner/repo.git" --header "repo URL")
+      repo=$(gum input --placeholder "git@github.com:owner/repo.git" --header "repo URL" \
+              --header.foreground "$DVW_SUBTLE")
     fi
   fi
-  [[ -z "$repo" ]] && { echo "aborted: no repo" >&2; return 1; }
+  [[ -z "$repo" ]] && { ui_info "aborted: no repo"; return 1; }
 
   # 2. Branch
   local default_branch branch
   default_branch=$(catalog_repo_last_branch "$repo")
   default_branch="${default_branch:-main}"
-  branch=$(gum input --value "$default_branch" --header "branch")
-  [[ -z "$branch" ]] && { echo "aborted: no branch" >&2; return 1; }
+  branch=$(gum input --value "$default_branch" --header "branch" \
+            --header.foreground "$DVW_SUBTLE")
+  [[ -z "$branch" ]] && { ui_info "aborted: no branch"; return 1; }
 
   # 3. Workspace name
   local default_name name
   default_name=$(_sanitize_ws_name "$(_repo_leaf "$repo")-$branch")
-  name=$(gum input --value "$default_name" --header "workspace name")
+  name=$(gum input --value "$default_name" --header "workspace name" \
+          --header.foreground "$DVW_SUBTLE")
   name=$(_sanitize_ws_name "$name")
-  [[ -z "$name" ]] && { echo "aborted: no name" >&2; return 1; }
+  [[ -z "$name" ]] && { ui_info "aborted: no name"; return 1; }
   if catalog_workspace_get "$name" >/dev/null 2>&1; then
-    echo "workspace ID already exists in catalog: $name" >&2
+    ui_error "workspace ID already exists in catalog: $name"
     return 1
   fi
 
@@ -51,19 +57,31 @@ cmd_new() {
   local default_ide ide
   default_ide=$(catalog_default ide)
   default_ide="${default_ide:-cursor}"
-  ide=$(gum choose --selected "$default_ide" cursor ssh)
-  [[ -z "$ide" ]] && { echo "aborted: no ide" >&2; return 1; }
+  ide=$(gum choose \
+          --selected "$default_ide" \
+          --cursor "❯ " \
+          --cursor.foreground "$DVW_ACCENT" \
+          --selected.foreground "$DVW_ACCENT" \
+          --header.foreground "$DVW_SUBTLE" \
+          --header "IDE" \
+          cursor ssh)
+  [[ -z "$ide" ]] && { ui_info "aborted: no ide"; return 1; }
 
-  # 5. Confirm
+  # 5. Confirm — show a styled summary box.
   local devpod_ide="$ide"
   [[ "$ide" == "ssh" ]] && devpod_ide="none"
   echo
-  echo "Will run: devpod up '${repo}@${branch}' --id '$name' --ide $devpod_ide"
-  gum confirm "Proceed?" || { echo "aborted"; return 1; }
+  gum style \
+    --border rounded --padding "0 2" --margin "0 0 1 0" \
+    --foreground "$DVW_SUBTLE" --border-foreground "$DVW_ACCENT" \
+    "$(printf 'repo    %s\nbranch  %s\nname    %s\nIDE     %s' \
+        "$repo" "$branch" "$name" "$ide")"
+  gum confirm "Create workspace?" || { ui_info "aborted"; return 1; }
 
   # 6. Run devpod up
+  ui_action "creating" "$name (ide=$devpod_ide)"
   if ! devpod up "${repo}@${branch}" --id "$name" --ide "$devpod_ide"; then
-    echo "devpod up failed; catalog not modified" >&2
+    ui_error "devpod up failed; catalog not modified"
     return 1
   fi
 
@@ -74,5 +92,7 @@ cmd_new() {
   host=$(hostname -s)
   catalog_workspace_add "$name" "$repo" "$branch" "$ide" "$provider" "$host"
   catalog_repo_upsert "$repo" "$branch"
-  echo "added to catalog: $name"
+  printf '%s✓%s added to catalog: %s%s%s\n' \
+    "$(_ansi "$DVW_GREEN" bold)" "$(ui_reset)" \
+    "$(_ansi "$DVW_ACCENT" bold)" "$name" "$(ui_reset)"
 }

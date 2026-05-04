@@ -7,32 +7,28 @@ cmd_list() {
 cmd_rm() {
   local id="${1:-}"
   if [[ -z "$id" ]]; then
-    echo "usage: dvw rm <workspace-id>" >&2
+    ui_error "usage: dvw rm <workspace-id>"
     return 1
   fi
   if ! catalog_workspace_get "$id" >/dev/null 2>&1; then
-    echo "workspace not in catalog: $id" >&2
-    echo "(if it exists in DevPod but not the catalog, use \`devpod delete $id\` directly)" >&2
+    ui_error "workspace not in catalog: $id"
+    ui_info "(if it exists in DevPod but not the catalog, use \`devpod delete $id\` directly)"
     return 1
   fi
-  local running="no"
-  if devpod list --output json 2>/dev/null \
-       | jq -e --arg id "$id" '.[] | select(.id == $id and .status == "Running")' \
-         >/dev/null 2>&1; then
-    running="yes"
-  fi
-  if [[ "$running" == "yes" ]]; then
+  _dvw_load_running_ids
+  if printf '%s\n' "$DVW_RUNNING_IDS" | grep -qFx "$id"; then
     if ! gum confirm "Workspace $id is running. Delete it?"; then
-      echo "aborted"
+      ui_info "aborted"
       return 1
     fi
   fi
+  ui_action "removing" "$id"
   devpod delete "$id" || {
-    echo "devpod delete failed; catalog not modified" >&2
+    ui_error "devpod delete failed; catalog not modified"
     return 1
   }
   catalog_workspace_remove "$id" || {
-    echo "[WARN] devpod delete succeeded but catalog write failed — run \`dvw doctor\`" >&2
+    ui_status_warn "devpod delete succeeded but catalog write failed — run \`dvw doctor\`"
     return 1
   }
 }
@@ -40,16 +36,17 @@ cmd_rm() {
 cmd_stop() {
   local id="${1:-}"
   if [[ -z "$id" ]]; then
-    echo "usage: dvw stop <workspace-id>" >&2
+    ui_error "usage: dvw stop <workspace-id>"
     return 1
   fi
+  ui_action "stopping" "$id"
   devpod stop "$id"
 }
 
 cmd_start() {
   local id="${1:-}"
   if [[ -z "$id" ]]; then
-    echo "usage: dvw start <workspace-id>" >&2
+    ui_error "usage: dvw start <workspace-id>"
     return 1
   fi
   local ide="none"
@@ -57,86 +54,103 @@ cmd_start() {
     ide=$(catalog_workspace_get "$id" | jq -r '.ide')
     [[ "$ide" == "ssh" ]] && ide="none"
   fi
+  ui_action "starting" "$id (ide=$ide)"
   devpod up "$id" --ide "$ide"
 }
 
-# One line per workspace: <id>  <repo>@<branch>  <ide>  <running?>  last:<last_used_at>  on:<created_on>
+# Banner + column-aligned colored rows. Columns: id, repo@branch, ide,
+# ●running/○stopped, last:<ts>, on:<host>. Same colorization as the picker.
 cmd_status() {
   _dvw_load_running_ids
-  catalog_read | jq -r --arg running "$DVW_RUNNING_IDS" '
+  ui_banner "dvw status"
+  local raw
+  raw=$(catalog_read 2>/dev/null | jq -r --arg running "$DVW_RUNNING_IDS" '
     ($running | split("\n") | map(select(. != ""))) as $r |
+    def shortrepo:
+      sub("^git@github\\.com:"; "")
+      | sub("^https://github\\.com/"; "")
+      | sub("\\.git$"; "");
     .workspaces | sort_by(.last_used_at) | reverse | .[]
     | [
         .id,
-        (.repo + "@" + .branch),
+        ((.repo | shortrepo) + "@" + .branch),
         .ide,
-        (if (.id as $id | $r | index($id)) then "running" else "stopped" end),
+        (if (.id as $id | $r | index($id)) then "● running" else "○ stopped" end),
         ("last:" + .last_used_at),
         ("on:" + .created_on)
-      ] | @tsv'
+      ] | @tsv
+  ')
+  if [[ -z "$raw" ]]; then
+    ui_info "no workspaces in catalog"
+    return 0
+  fi
+  printf '%s\n' "$raw" \
+    | column -t -s $'\t' -o '  ·  ' \
+    | _ui_colorize_workspace_row \
+    | sed 's/^/  /'
 }
 
 cmd_doctor() {
-  local fail=0
-  local cat_path
+  local fail=0 warn=0
+  local cat_path cat_dir
   cat_path=$(catalog_path)
-  local cat_dir
   cat_dir=$(dirname "$cat_path")
 
-  echo "== dvw doctor =="
+  ui_banner "dvw doctor" "health check across all dvw surfaces"
 
   # rclone mount
   if mountpoint -q "$cat_dir" 2>/dev/null \
      || mountpoint -q "$(dirname "$cat_dir")" 2>/dev/null; then
-    echo "[OK]  rclone mount: $cat_dir is on a FUSE mount"
+    ui_status_ok "rclone mount: $cat_dir is on a FUSE mount"
   elif [[ -d "$cat_dir" ]]; then
-    echo "[WARN] rclone mount: $cat_dir exists but is not a mountpoint (regular directory)"
+    ui_status_warn "rclone mount: $cat_dir exists but is not a mountpoint (regular directory)"
+    warn=$((warn+1))
   else
-    echo "[FAIL] rclone mount: $cat_dir does not exist"
-    echo "       try: systemctl --user status rclone-dropbox"
-    fail=1
+    ui_status_fail "rclone mount: $cat_dir does not exist"
+    ui_info "          try: systemctl --user status rclone-dropbox"
+    fail=$((fail+1))
   fi
 
   # catalog readable
   local cat_data
   if cat_data=$(catalog_read 2>&1); then
-    echo "[OK]  catalog: readable, version=$(echo "$cat_data" | jq -r .version)"
+    ui_status_ok "catalog: readable, version=$(echo "$cat_data" | jq -r .version)"
   else
-    echo "[FAIL] catalog: $cat_data"
-    fail=1
+    ui_status_fail "catalog: $cat_data"
+    fail=$((fail+1))
   fi
 
   # conflicted-copy detection
   if compgen -G "$cat_dir/*conflicted copy*" >/dev/null; then
-    echo "[WARN] Dropbox conflicted-copy file(s) present in $cat_dir"
-    fail=1
+    ui_status_warn "Dropbox conflicted-copy file(s) present in $cat_dir"
+    warn=$((warn+1))
   fi
 
-  # ssh blueprint sync
+  # ssh blueprint sync (delegates to ssh-sync.sh, which uses ui_status_*)
   ssh_sync_doctor
 
   # devpod
   if command -v devpod >/dev/null; then
-    echo "[OK]  devpod: $(devpod version 2>/dev/null | head -1)"
+    ui_status_ok "devpod: $(devpod version 2>/dev/null | head -1)"
   else
-    echo "[FAIL] devpod: not on PATH (install: https://devpod.sh)"
-    fail=1
+    ui_status_fail "devpod: not on PATH (install: https://devpod.sh)"
+    fail=$((fail+1))
   fi
 
   # gum
   if command -v gum >/dev/null; then
-    echo "[OK]  gum: $(gum --version 2>/dev/null)"
+    ui_status_ok "gum: $(gum --version 2>/dev/null)"
   else
-    echo "[FAIL] gum: not on PATH (install: https://github.com/charmbracelet/gum)"
-    fail=1
+    ui_status_fail "gum: not on PATH (install: https://github.com/charmbracelet/gum)"
+    fail=$((fail+1))
   fi
 
   # jq
   if command -v jq >/dev/null; then
-    echo "[OK]  jq: $(jq --version)"
+    ui_status_ok "jq: $(jq --version)"
   else
-    echo "[FAIL] jq: not on PATH"
-    fail=1
+    ui_status_fail "jq: not on PATH"
+    fail=$((fail+1))
   fi
 
   # orphan check: catalog references workspace devpod doesn't know
@@ -146,10 +160,26 @@ cmd_doctor() {
     while IFS= read -r id; do
       [[ -z "$id" ]] && continue
       if ! grep -qx "$id" <<<"$known_to_devpod"; then
-        echo "[WARN] catalog has \"$id\" but devpod does not (run \`dvw rm $id\` to prune, or re-register with \`devpod up $id\`)"
+        ui_status_warn "catalog has \"$id\" but devpod does not (run \`dvw rm $id\` to prune, or re-register with \`devpod up $id\`)"
+        warn=$((warn+1))
       fi
     done < <(catalog_workspace_ids)
   fi
 
+  echo
+  if (( fail > 0 )); then
+    printf '%s✗%s %s%d failure(s)%s, %s%d warning(s)%s\n' \
+      "$(_ansi "$DVW_RED" bold)" "$(ui_reset)" \
+      "$(_ansi "$DVW_RED")" "$fail" "$(ui_reset)" \
+      "$(_ansi "$DVW_YELLOW")" "$warn" "$(ui_reset)"
+  elif (( warn > 0 )); then
+    printf '%s⚠%s %s%d warning(s)%s\n' \
+      "$(_ansi "$DVW_YELLOW" bold)" "$(ui_reset)" \
+      "$(_ansi "$DVW_YELLOW")" "$warn" "$(ui_reset)"
+  else
+    printf '%s✓%s %sall checks passed%s\n' \
+      "$(_ansi "$DVW_GREEN" bold)" "$(ui_reset)" \
+      "$(_ansi "$DVW_SUBTLE")" "$(ui_reset)"
+  fi
   return "$fail"
 }

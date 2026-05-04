@@ -5,7 +5,7 @@ cmd_connect() {
   local ws="$1"
   shift || true
   if [[ -z "$ws" ]]; then
-    echo "cmd_connect: workspace ID required" >&2
+    ui_error "cmd_connect: workspace ID required"
     return 1
   fi
 
@@ -17,7 +17,7 @@ cmd_connect() {
     --ssh)    forced_mode="ssh" ;;
     --cursor) forced_mode="cursor" ;;
     "")       : ;;
-    *) echo "unknown flag: $1 (expected --ssh or --cursor)" >&2; return 1 ;;
+    *) ui_error "unknown flag: $1 (expected --ssh or --cursor)"; return 1 ;;
   esac
 
   # Catalog's ide field is the default highlighted option; user can override.
@@ -35,7 +35,7 @@ cmd_connect() {
   case "$mode" in
     ssh)    _connect_ssh "$ws" ;;
     cursor) _connect_cursor "$ws" ;;
-    *)      echo "unknown connect mode: $mode" >&2; return 1 ;;
+    *)      ui_error "unknown connect mode: $mode"; return 1 ;;
   esac
 }
 
@@ -72,7 +72,7 @@ _connect_choose_mode() {
 _connect_ssh() {
   local ws="$1"
   if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "${ws}.devpod" true 2>/dev/null; then
-    echo "starting workspace $ws (ide=none) ..."
+    ui_action "starting" "$ws (ide=none)"
     devpod up "$ws" --ide none
   fi
   catalog_workspace_touch "$ws" 2>/dev/null || true
@@ -95,6 +95,6 @@ _connect_ssh() {
 _connect_cursor() {
   local ws="$1"
   catalog_workspace_touch "$ws" 2>/dev/null || true
-  echo "opening $ws in Cursor ..."
+  ui_action "opening" "$ws in Cursor"
   exec devpod up "$ws" --ide cursor
 }

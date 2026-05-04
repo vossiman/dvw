@@ -117,29 +117,29 @@ ssh_sync_doctor() {
   blueprint=$(ssh_sync_blueprint_path)
 
   if [[ -f "$blueprint" ]]; then
-    echo "[OK]  ssh blueprint: $blueprint"
+    ui_status_ok "ssh blueprint: $blueprint"
   else
-    echo "[WARN] ssh blueprint: $blueprint not present (mount down, or never installed)"
+    ui_status_warn "ssh blueprint: $blueprint not present (mount down, or never installed)"
   fi
 
   if [[ -f "$DVW_SSH_LOCAL" ]]; then
     local mode b_mtime l_mtime
     mode=$(stat -c %a "$DVW_SSH_LOCAL" 2>/dev/null || echo "?")
     if [[ "$mode" != "600" ]]; then
-      echo "[WARN] ssh local copy: $DVW_SSH_LOCAL has mode $mode (should be 600)"
+      ui_status_warn "ssh local copy: $DVW_SSH_LOCAL has mode $mode (should be 600)"
     elif [[ -f "$blueprint" ]]; then
       b_mtime=$(stat -c %Y "$blueprint" 2>/dev/null || echo 0)
       l_mtime=$(stat -c %Y "$DVW_SSH_LOCAL" 2>/dev/null || echo 0)
       if (( b_mtime > l_mtime )); then
-        echo "[WARN] ssh local copy: $DVW_SSH_LOCAL is older than blueprint (run \`dvw -l\` to refresh)"
+        ui_status_warn "ssh local copy: $DVW_SSH_LOCAL is older than blueprint (run \`dvw -l\` to refresh)"
       else
-        echo "[OK]  ssh local copy: $DVW_SSH_LOCAL"
+        ui_status_ok "ssh local copy: $DVW_SSH_LOCAL"
       fi
     else
-      echo "[OK]  ssh local copy: $DVW_SSH_LOCAL (blueprint unreachable, can't compare mtime)"
+      ui_status_ok "ssh local copy: $DVW_SSH_LOCAL (blueprint unreachable, can't compare mtime)"
     fi
   else
-    echo "[WARN] ssh local copy: $DVW_SSH_LOCAL missing — run dvw-install.sh"
+    ui_status_warn "ssh local copy: $DVW_SSH_LOCAL missing — run dvw-install.sh"
   fi
 
   if [[ -f "$DVW_SSH_CONFIG" ]] && grep -qF "$DVW_SSH_INCLUDE_LINE" "$DVW_SSH_CONFIG"; then
@@ -147,12 +147,12 @@ ssh_sync_doctor() {
     first_host=$(grep -nE '^Host[[:space:]]' "$DVW_SSH_CONFIG" 2>/dev/null | head -1 | cut -d: -f1 || true)
     first_include=$(grep -nF "$DVW_SSH_INCLUDE_LINE" "$DVW_SSH_CONFIG" 2>/dev/null | head -1 | cut -d: -f1 || true)
     if [[ -z "$first_host" ]] || (( first_include < first_host )); then
-      echo "[OK]  ssh include: $DVW_SSH_CONFIG references dvw.conf (positioned above any Host block)"
+      ui_status_ok "ssh include: $DVW_SSH_CONFIG references dvw.conf (positioned above any Host block)"
     else
-      echo "[WARN] ssh include: dvw.conf Include is BELOW a Host block (line $first_include after line $first_host) — run dvw-install.sh to relocate; SSH shadows Includes inside non-matching Host blocks"
+      ui_status_warn "ssh include: dvw.conf Include is BELOW a Host block (line $first_include after line $first_host) — run dvw-install.sh to relocate; SSH shadows Includes inside non-matching Host blocks"
     fi
   else
-    echo "[WARN] ssh include: $DVW_SSH_CONFIG does not contain $DVW_SSH_INCLUDE_LINE — run dvw-install.sh"
+    ui_status_warn "ssh include: $DVW_SSH_CONFIG does not contain $DVW_SSH_INCLUDE_LINE — run dvw-install.sh"
   fi
 
   return 0
