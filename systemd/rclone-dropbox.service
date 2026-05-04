@@ -7,13 +7,19 @@ StartLimitBurst=5
 
 [Service]
 Type=notify
+# PATH covers both the apt rclone (/usr/bin/rclone) and the upstream
+# installer's path (/usr/local/bin/rclone). Whichever wins precedence
+# in PATH is what runs. systemd user units default to a minimal PATH,
+# so we set it explicitly.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
 # Pre-start: ensure the mountpoint exists and isn't holding a stale FUSE
 # handle. The leading - on fusermount makes a missing/already-clean mount
 # non-fatal; mkdir is idempotent.
 ExecStartPre=-/bin/fusermount3 -u %h/Dropbox-remote
 ExecStartPre=/bin/mkdir -p %h/Dropbox-remote
 
-ExecStart=/usr/bin/rclone mount dropbox: %h/Dropbox-remote \
+ExecStart=/usr/bin/env rclone mount dropbox: %h/Dropbox-remote \
   --vfs-cache-mode writes \
   --vfs-cache-max-age 12h \
   --dir-cache-time 5m \
