@@ -36,17 +36,18 @@ ssh_sync_refresh() {
 
   if [[ ! -f "$DVW_SSH_LOCAL" ]]; then
     cp -- "$blueprint" "$DVW_SSH_LOCAL"
-    chmod 600 "$DVW_SSH_LOCAL"
-    return 0
+  else
+    local b_mtime l_mtime
+    b_mtime=$(stat -c %Y "$blueprint" 2>/dev/null || echo 0)
+    l_mtime=$(stat -c %Y "$DVW_SSH_LOCAL" 2>/dev/null || echo 0)
+    if (( b_mtime > l_mtime )); then
+      cp -- "$blueprint" "$DVW_SSH_LOCAL"
+    fi
   fi
 
-  local b_mtime l_mtime
-  b_mtime=$(stat -c %Y "$blueprint" 2>/dev/null || echo 0)
-  l_mtime=$(stat -c %Y "$DVW_SSH_LOCAL" 2>/dev/null || echo 0)
-  if (( b_mtime > l_mtime )); then
-    cp -- "$blueprint" "$DVW_SSH_LOCAL"
-    chmod 600 "$DVW_SSH_LOCAL"
-  fi
+  # Always re-assert mode 600. Cheap, and self-heals an earlier botched
+  # install (e.g. cp -p failure leaving the file at the umask default).
+  chmod 600 "$DVW_SSH_LOCAL" 2>/dev/null || true
 }
 
 # One-shot bootstrap, idempotent. Called by dvw-install.sh.
@@ -77,13 +78,36 @@ ssh_sync_init() {
 
   ssh_sync_refresh
 
-  if ! grep -qF "$DVW_SSH_INCLUDE_LINE" "$DVW_SSH_CONFIG"; then
-    {
-      echo ""
-      echo "# dvw — managed by devpod/lib/ssh-sync.sh; edit ~/Dropbox-remote/dvw/ssh-blueprint.conf"
-      echo "$DVW_SSH_INCLUDE_LINE"
-    } >> "$DVW_SSH_CONFIG"
+  _ssh_sync_ensure_include_at_top
+}
+
+# Ensure `Include "dvw.conf"` sits at the top of ~/.ssh/config, above any
+# Host block. SSH propagates the enclosing Host block's activep flag into
+# Includes, so an Include inside a non-matching Host block silently
+# shadows its content for the queried hostname. Top-of-file = no
+# enclosing Host = activep=TRUE for the include's content.
+_ssh_sync_ensure_include_at_top() {
+  local first_host first_include
+  first_host=$(grep -nE '^Host[[:space:]]' "$DVW_SSH_CONFIG" 2>/dev/null | head -1 | cut -d: -f1 || true)
+  first_include=$(grep -nF "$DVW_SSH_INCLUDE_LINE" "$DVW_SSH_CONFIG" 2>/dev/null | head -1 | cut -d: -f1 || true)
+
+  # Already at the top (before any Host block, or no Host block exists).
+  if [[ -n "$first_include" ]] && { [[ -z "$first_host" ]] || (( first_include < first_host )); }; then
+    return 0
   fi
+
+  # Either missing entirely, or sitting after a Host block. Strip any
+  # existing copies of the line + its managed-by comment, then prepend.
+  local tmp
+  tmp=$(mktemp)
+  grep -vE '^# dvw — managed by devpod/lib/ssh-sync\.sh|^Include "dvw\.conf"$' "$DVW_SSH_CONFIG" > "$tmp" || true
+  {
+    echo "# dvw — managed by devpod/lib/ssh-sync.sh; edit ~/Dropbox-remote/dvw/ssh-blueprint.conf"
+    echo "$DVW_SSH_INCLUDE_LINE"
+    echo ""
+    cat "$tmp"
+  } > "$DVW_SSH_CONFIG"
+  rm -f "$tmp"
 }
 
 # Three [OK]/[WARN]/[FAIL] lines for `dvw doctor`. Returns 0 always —
@@ -119,7 +143,14 @@ ssh_sync_doctor() {
   fi
 
   if [[ -f "$DVW_SSH_CONFIG" ]] && grep -qF "$DVW_SSH_INCLUDE_LINE" "$DVW_SSH_CONFIG"; then
-    echo "[OK]  ssh include: $DVW_SSH_CONFIG references dvw.conf"
+    local first_host first_include
+    first_host=$(grep -nE '^Host[[:space:]]' "$DVW_SSH_CONFIG" 2>/dev/null | head -1 | cut -d: -f1 || true)
+    first_include=$(grep -nF "$DVW_SSH_INCLUDE_LINE" "$DVW_SSH_CONFIG" 2>/dev/null | head -1 | cut -d: -f1 || true)
+    if [[ -z "$first_host" ]] || (( first_include < first_host )); then
+      echo "[OK]  ssh include: $DVW_SSH_CONFIG references dvw.conf (positioned above any Host block)"
+    else
+      echo "[WARN] ssh include: dvw.conf Include is BELOW a Host block (line $first_include after line $first_host) — run dvw-install.sh to relocate; SSH shadows Includes inside non-matching Host blocks"
+    fi
   else
     echo "[WARN] ssh include: $DVW_SSH_CONFIG does not contain $DVW_SSH_INCLUDE_LINE — run dvw-install.sh"
   fi

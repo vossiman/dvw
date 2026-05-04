@@ -75,6 +75,17 @@ if ! rclone listremotes 2>/dev/null | grep -qx 'dropbox:'; then
   exit 1
 fi
 
+# Ubuntu noble ships rclone 1.60 (late-2022); upstream is 1.69+ with
+# meaningful FUSE/Dropbox fixes. Warn (don't block) if we're on apt's old one.
+RCLONE_VER=$(rclone --version 2>/dev/null | head -1 | awk '{print $2}' | sed 's/^v//;s/-.*//')
+RCLONE_MAJOR=${RCLONE_VER%%.*}
+RCLONE_MINOR=$(echo "$RCLONE_VER" | cut -d. -f2)
+if (( RCLONE_MAJOR < 1 )) || { (( RCLONE_MAJOR == 1 )) && (( ${RCLONE_MINOR:-0} < 65 )); }; then
+  echo "WARNING: rclone $RCLONE_VER is older than 1.65 — known FUSE/Dropbox stability issues."
+  echo "         Upstream installer (recommended): curl https://rclone.org/install.sh | sudo bash"
+  echo "         Continuing with the installed version."
+fi
+
 step "installing systemd user unit"
 mkdir -p "$HOME/.config/systemd/user"
 install -m 0644 "$SCRIPT_DIR/systemd/rclone-dropbox.service" \

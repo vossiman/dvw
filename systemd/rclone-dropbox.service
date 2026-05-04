@@ -1,16 +1,34 @@
 [Unit]
 Description=Rclone Dropbox Mount
 After=default.target
+# StartLimit* belong in [Unit], not [Service] (systemd flagged this).
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=notify
+# Pre-start: ensure the mountpoint exists and isn't holding a stale FUSE
+# handle. The leading - on fusermount makes a missing/already-clean mount
+# non-fatal; mkdir is idempotent.
+ExecStartPre=-/bin/fusermount3 -u %h/Dropbox-remote
+ExecStartPre=/bin/mkdir -p %h/Dropbox-remote
+
 ExecStart=/usr/bin/rclone mount dropbox: %h/Dropbox-remote \
-  --vfs-cache-mode minimal \
+  --vfs-cache-mode writes \
+  --vfs-cache-max-age 12h \
   --dir-cache-time 5m \
-  --poll-interval 30s
+  --poll-interval 30s \
+  --attr-timeout 10s \
+  --buffer-size 32M \
+  --log-systemd
+
 ExecStop=/bin/fusermount3 -u %h/Dropbox-remote
-Restart=on-failure
-RestartSec=10
+
+# Restart=always catches clean exits too (e.g. FUSE goes away mid-flight);
+# RestartSec=5 recovers fast.
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
 
 [Install]
 WantedBy=default.target
