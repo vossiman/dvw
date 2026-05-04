@@ -90,6 +90,65 @@ cmd_status() {
     | sed 's/^/  /'
 }
 
+# Drop the canonical devcontainer.json from devpod/blueprint/ into a target
+# repo's .devcontainer/. Useful for repos that don't yet have one — after
+# running this, commit and push the new file, then `dvw new` against the
+# branch to bring up a properly-configured workspace.
+cmd_blueprint() {
+  local target="${1:-}"
+
+  ui_banner "install blueprint" "drop devcontainer.json into a target repo so dvw new can build a proper workspace"
+
+  if [[ -z "$target" ]]; then
+    local default="$PWD"
+    [[ "$PWD" == "$HOME" && -d "$HOME/local_dev" ]] && default="$HOME/local_dev"
+    target=$(gum input \
+      --value "$default" \
+      --header "target repo directory (absolute path)" \
+      --header.foreground "$DVW_SUBTLE")
+  fi
+  [[ -z "$target" ]] && { ui_info "aborted: no target"; return 1; }
+  target="${target/#\~/$HOME}"
+  if ! target=$(cd "$target" 2>/dev/null && pwd); then
+    ui_error "target directory does not exist: ${1:-$target}"
+    return 1
+  fi
+  if ! git -C "$target" rev-parse --git-dir >/dev/null 2>&1; then
+    ui_status_warn "$target is not a git repository (blueprint will still be copied)"
+  fi
+
+  local src="$DVW_ROOT/blueprint/devcontainer.json"
+  if [[ ! -f "$src" ]]; then
+    ui_error "blueprint not found at $src"
+    return 1
+  fi
+
+  local dst_dir="$target/.devcontainer"
+  local dst="$dst_dir/devcontainer.json"
+
+  if [[ -f "$dst" ]]; then
+    if cmp -s "$src" "$dst"; then
+      ui_status_ok "$dst already matches the blueprint — nothing to do"
+      return 0
+    fi
+    ui_status_warn "$dst already exists and differs from the blueprint"
+    ui_info "  (run \`diff -u $dst $src\` to inspect)"
+    gum confirm "Overwrite with the blueprint?" || { ui_info "aborted"; return 1; }
+  fi
+
+  mkdir -p "$dst_dir"
+  cp -- "$src" "$dst"
+  ui_action "installed" "$dst"
+
+  echo
+  ui_info "next steps:"
+  ui_info "  cd $target"
+  ui_info "  git add .devcontainer/devcontainer.json"
+  ui_info "  git commit -m 'add devpod blueprint'"
+  ui_info "  git push"
+  ui_info "  dvw new    # then create a workspace from the new branch"
+}
+
 cmd_doctor() {
   local fail=0 warn=0
   local cat_path cat_dir

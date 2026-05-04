@@ -232,6 +232,7 @@ ui_top_menu() {
     --header "what would you like to do?" \
     "❯ Connect to workspace" \
     "+ Create new workspace" \
+    "⊞ Install blueprint into a repo" \
     "● Status" \
     "■ Stop a workspace" \
     "▶ Start a workspace" \
@@ -245,6 +246,9 @@ ui_top_menu() {
       ;;
     *"Create new workspace")
       cmd_new
+      ;;
+    *"Install blueprint into a repo")
+      cmd_blueprint
       ;;
     *"Status")
       cmd_status

@@ -17,6 +17,15 @@ DVW_ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 . "$DVW_ROOT/lib/ui.sh"
 
 main() {
+  # `blueprint` is a pure file copy from this repo's blueprint/ directory
+  # into a target repo. It doesn't touch the catalog or need the rclone
+  # mount, so it should work even when those are unavailable. Short-circuit
+  # before the catalog gate.
+  if [[ "${1:-}" == "blueprint" ]]; then
+    shift; cmd_blueprint "$@"
+    return $?
+  fi
+
   catalog_init_if_missing || exit 1
   ssh_sync_refresh
 

@@ -30,6 +30,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw <id> --cursor` | skip the prompt; open in Cursor via `devpod up --ide cursor` |
 | `dvw -l` | list workspaces (MRU order) |
 | `dvw new` | wizard: create a new workspace, append to catalog |
+| `dvw blueprint [path]` | drop `blueprint/devcontainer.json` into `<path>/.devcontainer/` so `dvw new` can build a proper workspace from that repo |
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
 | `dvw stop <id>` | `devpod stop` |
 | `dvw start <id>` | `devpod up` with the workspace's saved IDE |
