@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Top-level interactive menu for bare `dvw`.
 
-# Catppuccin Mocha palette — used across banner / picker / chooser chrome.
-DVW_ACCENT="#cba6f7"        # mauve (primary accent)
-DVW_SUBTLE="#9399b2"        # overlay1 (subdued text)
-DVW_GREEN="#a6e3a1"         # green (running)
-DVW_RED="#f38ba8"           # red (stopped, when we want emphasis)
-DVW_BLUE="#89b4fa"          # blue (vscode-ish)
-DVW_TEAL="#94e2d5"          # teal (cursor-ish)
-DVW_YELLOW="#f9e2af"        # yellow (ssh)
-DVW_PEACH="#fab387"         # peach (jetbrains)
+# Nord palette — used across banner / picker / chooser chrome.
+DVW_ACCENT="#88c0d0"        # frost cyan (primary accent)
+DVW_SUBTLE="#616e88"        # polar slate (subdued text)
+DVW_GREEN="#a3be8c"         # aurora green (running)
+DVW_RED="#bf616a"           # aurora red (stopped, when we want emphasis)
+DVW_GREY="#4c566a"          # polar1 (stopped indicator, dim labels)
+DVW_BLUE="#81a1c1"          # frost blue (vscode-ish)
+DVW_TEAL="#8fbcbb"          # frost teal (cursor-ish)
+DVW_YELLOW="#ebcb8b"        # aurora yellow / sand (ssh)
+DVW_PEACH="#d08770"         # aurora copper (jetbrains)
+DVW_BG_HL="#3b4252"         # polar2 (fzf highlighted-row bg)
 
 # Memoized list of running workspace ids. Set once via _dvw_load_running_ids
 # at first call; reused across the menu, picker, and cmd_status.
@@ -49,11 +51,11 @@ _dvw_load_running_ids() {
 # One line per workspace, MRU-sorted, column-aligned, ANSI-colored:
 #   <id>  ·  <short-repo>@<branch>  ·  <ide>  ·  ●running | ○stopped
 #
-# - id           bold mauve
-# - · separators dim grey
+# - id           bold frost-cyan accent (DVW_ACCENT)
+# - · separators dim
 # - ide          per-ide hue (cursor=teal, ssh=yellow, vscode=blue,
-#                 jetbrains=peach, none/other=dim)
-# - status       running=green, stopped=dim
+#                 jetbrains=peach, none/other=grey)
+# - status       running=green, stopped=grey
 #
 # Pipeline:
 #   1. jq → TSV (plain text, no color)
@@ -85,19 +87,19 @@ _dvw_decorated_workspaces() {
   r=$(printf '\033[0m')
   b=$(printf '\033[1m')
   d=$(printf '\033[2m')
-  local mauve teal yellow blue peach grey green
-  mauve=$(printf '\033[38;2;203;166;247m')
-  teal=$(printf '\033[38;2;148;226;213m')
-  yellow=$(printf '\033[38;2;249;226;175m')
-  blue=$(printf '\033[38;2;137;180;250m')
-  peach=$(printf '\033[38;2;250;179;135m')
-  grey=$(printf '\033[38;2;108;112;134m')
-  green=$(printf '\033[38;2;166;227;161m')
+  local accent teal yellow blue peach grey green
+  accent=$(printf '\033[38;2;136;192;208m')   # #88c0d0 frost cyan
+  teal=$(printf '\033[38;2;143;188;187m')     # #8fbcbb
+  yellow=$(printf '\033[38;2;235;203;139m')   # #ebcb8b
+  blue=$(printf '\033[38;2;129;161;193m')     # #81a1c1
+  peach=$(printf '\033[38;2;208;135;112m')    # #d08770
+  grey=$(printf '\033[38;2;76;86;106m')       # #4c566a polar1
+  green=$(printf '\033[38;2;163;190;140m')    # #a3be8c
 
   printf '%s\n' "$raw" \
     | column -t -s $'\t' -o '  ·  ' \
     | sed -E "
-        s|^([^ ]+)|${b}${mauve}\\1${r}|
+        s|^([^ ]+)|${b}${accent}\\1${r}|
         s|●running|${green}●running${r}|g
         s|○stopped|${grey}○stopped${r}|g
         s|(  )(·)(  )(cursor)([ ]+)|\\1${d}\\2${r}\\3${teal}\\4${r}\\5|g
@@ -131,7 +133,7 @@ ui_pick_workspace() {
       --padding=0,1 \
       --pointer="❯" \
       --info=inline-right \
-      --color="border:$DVW_ACCENT,label:$DVW_ACCENT,prompt:$DVW_ACCENT,pointer:$DVW_ACCENT,fg+:$DVW_ACCENT:bold,hl:$DVW_ACCENT,hl+:$DVW_ACCENT:bold,info:$DVW_SUBTLE,gutter:-1,bg+:#313244")
+      --color="border:$DVW_ACCENT,label:$DVW_ACCENT,prompt:$DVW_ACCENT,pointer:$DVW_ACCENT,fg+:$DVW_ACCENT:bold,hl:$DVW_ACCENT,hl+:$DVW_ACCENT:bold,info:$DVW_SUBTLE,gutter:-1,bg+:$DVW_BG_HL")
   else
     sel=$(printf '%s\n' "$list" | gum filter --placeholder "$prompt")
   fi
