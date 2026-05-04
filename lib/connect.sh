@@ -1,27 +1,81 @@
 #!/usr/bin/env bash
-# Connect to a workspace and attach the `work` tmux session.
+# Connect to a workspace via SSH (terminal + tmux session) or Cursor (GUI).
 
 cmd_connect() {
   local ws="$1"
+  shift || true
   if [[ -z "$ws" ]]; then
     echo "cmd_connect: workspace ID required" >&2
     return 1
   fi
 
-  if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "${ws}.devpod" true 2>/dev/null; then
-    local ide="none" ws_json
-    if ws_json=$(catalog_workspace_get "$ws" 2>/dev/null); then
-      ide=$(echo "$ws_json" | jq -r '.ide')
-      [[ "$ide" == "ssh" ]] && ide="none"
-    else
-      echo "(workspace not in catalog — defaulting to --ide none)"
-    fi
-    echo "starting workspace $ws (ide=$ide) ..."
-    devpod up "$ws" --ide "$ide"
+  # Optional flags to skip the chooser for non-interactive use:
+  #   dvw <id> --ssh     — go straight to ssh+tmux
+  #   dvw <id> --cursor  — go straight to Cursor (devpod up --ide cursor)
+  local forced_mode=""
+  case "${1:-}" in
+    --ssh)    forced_mode="ssh" ;;
+    --cursor) forced_mode="cursor" ;;
+    "")       : ;;
+    *) echo "unknown flag: $1 (expected --ssh or --cursor)" >&2; return 1 ;;
+  esac
+
+  # Catalog's ide field is the default highlighted option; user can override.
+  local default_ide="ssh" ws_json
+  if ws_json=$(catalog_workspace_get "$ws" 2>/dev/null); then
+    default_ide=$(echo "$ws_json" | jq -r '.ide // "ssh"')
   fi
 
-  catalog_workspace_touch "$ws" 2>/dev/null || true
+  local mode="$forced_mode"
+  if [[ -z "$mode" ]]; then
+    mode=$(_connect_choose_mode "$ws" "$default_ide")
+    [[ -z "$mode" ]] && return 1
+  fi
 
+  case "$mode" in
+    ssh)    _connect_ssh "$ws" ;;
+    cursor) _connect_cursor "$ws" ;;
+    *)      echo "unknown connect mode: $mode" >&2; return 1 ;;
+  esac
+}
+
+# Prompt SSH vs Cursor with the catalog's saved IDE pre-selected. Echoes
+# "ssh" or "cursor" on stdout; empty on cancel.
+_connect_choose_mode() {
+  local ws="$1" default_ide="$2"
+  if ! command -v gum >/dev/null; then
+    echo "ssh"
+    return 0
+  fi
+  local ssh_label="SSH (terminal + tmux)"
+  local cursor_label="Cursor (GUI)"
+  local selected="$ssh_label"
+  [[ "$default_ide" == "cursor" ]] && selected="$cursor_label"
+
+  local choice
+  choice=$(gum choose \
+    --header="connect to $ws via" \
+    --selected="$selected" \
+    --cursor "❯ " \
+    --cursor.foreground "$DVW_ACCENT" \
+    --selected.foreground "$DVW_ACCENT" \
+    "$ssh_label" "$cursor_label")
+
+  case "$choice" in
+    "$ssh_label")    echo "ssh" ;;
+    "$cursor_label") echo "cursor" ;;
+    *)               echo "" ;;
+  esac
+}
+
+# SSH path: probe-up if needed, then ssh -t into a tmux `work` session.
+_connect_ssh() {
+  local ws="$1"
+  if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "${ws}.devpod" true 2>/dev/null; then
+    echo "starting workspace $ws (ide=none) ..."
+    devpod up "$ws" --ide none
+  fi
+  catalog_workspace_touch "$ws" 2>/dev/null || true
   # Single ssh call: probe tmux inside the same login shell that will host
   # the session, so we don't pay for two TCP+auth+`bash -l` round-trips.
   exec ssh -t "${ws}.devpod" '
@@ -34,4 +88,13 @@ cmd_connect() {
     echo "  git clone https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh" >&2
     exec bash -l
   '
+}
+
+# Cursor path: hand off to devpod up --ide cursor. Brings the workspace up
+# if it's not running, then opens Cursor via the cursor-shim wrapper.
+_connect_cursor() {
+  local ws="$1"
+  catalog_workspace_touch "$ws" 2>/dev/null || true
+  echo "opening $ws in Cursor ..."
+  exec devpod up "$ws" --ide cursor
 }

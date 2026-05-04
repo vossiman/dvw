@@ -25,7 +25,9 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | Command | Effect |
 |--|--|
 | `dvw` | top-level menu (Connect/New/Status/Stop/Start/Remove/Doctor) |
-| `dvw <id>` | connect to workspace, attach `work` tmux session |
+| `dvw <id>` | connect to workspace; prompts SSH (terminal + tmux) or Cursor (GUI), pre-selecting the catalog's saved IDE |
+| `dvw <id> --ssh` | skip the prompt; ssh + attach `work` tmux session |
+| `dvw <id> --cursor` | skip the prompt; open in Cursor via `devpod up --ide cursor` |
 | `dvw -l` | list workspaces (MRU order) |
 | `dvw new` | wizard: create a new workspace, append to catalog |
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |

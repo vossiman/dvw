@@ -5,15 +5,37 @@
 DVW_ACCENT="#cba6f7"
 
 # Memoized list of running workspace ids. Set once via _dvw_load_running_ids
-# at menu entry; reused by the picker so we don't hit `devpod list` twice.
+# at first call; reused across the menu, picker, and cmd_status.
+#
+# `devpod list --output json` does NOT include workspace state (verified
+# 2026-05; only id/context/ide/lastUsed/etc.). Per-workspace state lives in
+# `devpod status <id> --output json` → `.state`. We parallelize across all
+# catalog workspaces so the menu/status path stays fast.
 DVW_RUNNING_IDS=""
 DVW_RUNNING_LOADED=""
 
 _dvw_load_running_ids() {
   [[ -n "$DVW_RUNNING_LOADED" ]] && return 0
-  DVW_RUNNING_IDS=$(devpod list --output json 2>/dev/null \
-    | jq -r '.[] | select(.status == "Running") | .id' 2>/dev/null \
-    || true)
+  local ids tmp id
+  ids=$(catalog_workspace_ids 2>/dev/null || true)
+  if [[ -z "$ids" ]]; then
+    DVW_RUNNING_IDS=""
+    DVW_RUNNING_LOADED=1
+    return 0
+  fi
+  tmp=$(mktemp -d)
+  while IFS= read -r id; do
+    [[ -z "$id" ]] && continue
+    {
+      local state
+      state=$(devpod status "$id" --output json --timeout 5s 2>/dev/null \
+        | jq -r '.state // ""' 2>/dev/null)
+      [[ "$state" == "Running" ]] && echo "$id" > "$tmp/$id"
+    } &
+  done <<<"$ids"
+  wait
+  DVW_RUNNING_IDS=$(cat "$tmp"/* 2>/dev/null | sort -u || true)
+  rm -rf "$tmp"
   DVW_RUNNING_LOADED=1
 }
 

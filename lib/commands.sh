@@ -62,17 +62,15 @@ cmd_start() {
 
 # One line per workspace: <id>  <repo>@<branch>  <ide>  <running?>  last:<last_used_at>  on:<created_on>
 cmd_status() {
-  local running_ids
-  running_ids=$(devpod list --output json 2>/dev/null \
-    | jq -r '.[] | select(.status == "Running") | .id' 2>/dev/null \
-    || true)
-  catalog_read | jq -r --argjson running "$(printf '%s\n' "$running_ids" | jq -R . | jq -s .)" '
+  _dvw_load_running_ids
+  catalog_read | jq -r --arg running "$DVW_RUNNING_IDS" '
+    ($running | split("\n") | map(select(. != ""))) as $r |
     .workspaces | sort_by(.last_used_at) | reverse | .[]
     | [
         .id,
         (.repo + "@" + .branch),
         .ide,
-        (if (.id as $id | $running | index($id)) then "running" else "stopped" end),
+        (if (.id as $id | $r | index($id)) then "running" else "stopped" end),
         ("last:" + .last_used_at),
         ("on:" + .created_on)
       ] | @tsv'
