@@ -4,23 +4,34 @@
 # Catppuccin Mocha mauve, used as accent for menu chrome.
 DVW_ACCENT="#cba6f7"
 
-_dvw_running_ids() {
-  devpod list --output json 2>/dev/null \
+# Memoized list of running workspace ids. Set once via _dvw_load_running_ids
+# at menu entry; reused by the picker so we don't hit `devpod list` twice.
+DVW_RUNNING_IDS=""
+DVW_RUNNING_LOADED=""
+
+_dvw_load_running_ids() {
+  [[ -n "$DVW_RUNNING_LOADED" ]] && return 0
+  DVW_RUNNING_IDS=$(devpod list --output json 2>/dev/null \
     | jq -r '.[] | select(.status == "Running") | .id' 2>/dev/null \
-    || true
+    || true)
+  DVW_RUNNING_LOADED=1
 }
 
 # One line per workspace, MRU-sorted:
-#   <id>  ·  <repo>@<branch>  ·  <ide>  ·  ●running | ○stopped
+#   <id>  ·  <short-repo>@<branch>  ·  <ide>  ·  ●running | ○stopped
+# short-repo strips git@github.com: / https://github.com/ prefix and .git suffix.
 _dvw_decorated_workspaces() {
-  local running
-  running=$(_dvw_running_ids)
-  catalog_read 2>/dev/null | jq -r --arg running "$running" '
+  _dvw_load_running_ids
+  catalog_read 2>/dev/null | jq -r --arg running "$DVW_RUNNING_IDS" '
     ($running | split("\n") | map(select(. != ""))) as $r |
+    def shortrepo:
+      sub("^git@github\\.com:"; "")
+      | sub("^https://github\\.com/"; "")
+      | sub("\\.git$"; "");
     .workspaces | sort_by(.last_used_at) | reverse | .[]
     | [
         .id,
-        (.repo + "@" + .branch),
+        ((.repo | shortrepo) + "@" + .branch),
         .ide,
         (if (.id as $id | $r | index($id)) then "●running" else "○stopped" end)
       ] | join("  ·  ")
@@ -42,7 +53,8 @@ ui_pick_workspace() {
       --prompt="$prompt" \
       --height=40% \
       --reverse \
-      --header="enter=select  esc=cancel")
+      --header="enter=select  esc=cancel" \
+      --color="fg+:$DVW_ACCENT,hl+:$DVW_ACCENT,prompt:$DVW_ACCENT,header:#a6adc8,info:#a6adc8")
   else
     sel=$(printf '%s\n' "$list" | gum filter --placeholder "$prompt")
   fi
@@ -56,9 +68,10 @@ ui_top_menu() {
     return 1
   }
 
+  _dvw_load_running_ids
   local total running
   total=$(catalog_read 2>/dev/null | jq -r '.workspaces | length' 2>/dev/null || echo 0)
-  running=$(_dvw_running_ids | grep -c . || true)
+  running=$(printf '%s\n' "$DVW_RUNNING_IDS" | grep -c . || true)
 
   gum style \
     --border rounded \

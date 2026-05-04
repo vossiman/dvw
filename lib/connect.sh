@@ -22,14 +22,16 @@ cmd_connect() {
 
   catalog_workspace_touch "$ws" 2>/dev/null || true
 
-  if ssh -o BatchMode=yes "${ws}.devpod" 'bash -lc "command -v tmux >/dev/null 2>&1"' 2>/dev/null; then
-    exec ssh -t "${ws}.devpod" \
-      'infocmp -1 "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color; bash -lc "tmux new -A -s work"'
-  fi
-
-  echo "tmux not found in workspace '$ws'. Falling back to plain bash (no resume)." >&2
-  echo "To bootstrap the full toolchain inside the workspace:" >&2
-  echo "  git clone https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh" >&2
-  exec ssh -t "${ws}.devpod" \
-    'infocmp -1 "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color; exec bash -l'
+  # Single ssh call: probe tmux inside the same login shell that will host
+  # the session, so we don't pay for two TCP+auth+`bash -l` round-trips.
+  exec ssh -t "${ws}.devpod" '
+    infocmp -1 "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color
+    if command -v tmux >/dev/null 2>&1; then
+      exec bash -lc "tmux new -A -s work"
+    fi
+    echo "tmux not found in this workspace. Falling back to plain bash (no resume)." >&2
+    echo "To bootstrap the full toolchain inside the workspace:" >&2
+    echo "  git clone https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh" >&2
+    exec bash -l
+  '
 }
