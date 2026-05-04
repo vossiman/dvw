@@ -11,15 +11,42 @@ is_wsl() {
 
 step() { echo; echo "▸ $*"; }
 
-step "checking apt dependencies"
+step "checking apt dependencies (jq, fuse3)"
 NEEDED=()
-for pkg in jq fuse3 rclone; do
+for pkg in jq fuse3; do
   dpkg -s "$pkg" >/dev/null 2>&1 || NEEDED+=("$pkg")
 done
 if (( ${#NEEDED[@]} )); then
   echo "installing: ${NEEDED[*]}"
   sudo apt update
   sudo apt install -y "${NEEDED[@]}"
+fi
+
+step "checking rclone (upstream installer; not apt)"
+# Ubuntu noble ships rclone 1.60.1 (late 2022). Upstream is 1.74+. Older
+# versions have FUSE/Dropbox stability bugs. Install (or replace apt
+# version with) the upstream binary unconditionally if too old/missing.
+NEED_RCLONE=1
+if command -v rclone >/dev/null; then
+  RCLONE_VER=$(rclone --version 2>/dev/null | head -1 | awk '{print $2}' | sed 's/^v//;s/-.*//')
+  RCLONE_MAJOR=${RCLONE_VER%%.*}
+  RCLONE_MINOR=$(echo "$RCLONE_VER" | cut -d. -f2)
+  if (( RCLONE_MAJOR > 1 )) || { (( RCLONE_MAJOR == 1 )) && (( ${RCLONE_MINOR:-0} >= 65 )); }; then
+    NEED_RCLONE=0
+  else
+    echo "found rclone $RCLONE_VER — too old; will replace with upstream"
+    # Apt's rclone owns /usr/bin/rclone; remove it before the upstream
+    # installer drops in (which also writes to /usr/bin/rclone). This avoids
+    # the trap where a later `apt remove rclone` would delete the upstream
+    # binary because dpkg still owns the path.
+    if dpkg -s rclone >/dev/null 2>&1; then
+      sudo apt remove -y rclone
+    fi
+  fi
+fi
+if (( NEED_RCLONE )); then
+  echo "installing rclone via https://rclone.org/install.sh"
+  curl -fsSL https://rclone.org/install.sh | sudo bash
 fi
 
 step "checking gum"
@@ -73,17 +100,6 @@ if ! rclone listremotes 2>/dev/null | grep -qx 'dropbox:'; then
   echo "  → n (new remote), name = dropbox, type = dropbox"
   echo "  → follow OAuth prompts, then re-run this installer"
   exit 1
-fi
-
-# Ubuntu noble ships rclone 1.60 (late-2022); upstream is 1.69+ with
-# meaningful FUSE/Dropbox fixes. Warn (don't block) if we're on apt's old one.
-RCLONE_VER=$(rclone --version 2>/dev/null | head -1 | awk '{print $2}' | sed 's/^v//;s/-.*//')
-RCLONE_MAJOR=${RCLONE_VER%%.*}
-RCLONE_MINOR=$(echo "$RCLONE_VER" | cut -d. -f2)
-if (( RCLONE_MAJOR < 1 )) || { (( RCLONE_MAJOR == 1 )) && (( ${RCLONE_MINOR:-0} < 65 )); }; then
-  echo "WARNING: rclone $RCLONE_VER is older than 1.65 — known FUSE/Dropbox stability issues."
-  echo "         Upstream installer (recommended): curl https://rclone.org/install.sh | sudo bash"
-  echo "         Continuing with the installed version."
 fi
 
 step "installing systemd user unit"
