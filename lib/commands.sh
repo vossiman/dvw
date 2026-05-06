@@ -239,15 +239,38 @@ cmd_doctor() {
 
   # devpod
   local devpod_providers=""
+  local -a needed_providers=() missing_providers=()
   if command -v devpod >/dev/null; then
     ui_status_ok "devpod: $(devpod version 2>/dev/null | head -1)"
     devpod_providers=$(devpod provider list --output json 2>/dev/null | jq -r 'keys[]?' || true)
-    if [[ -z "$devpod_providers" ]]; then
+
+    # devpod resolves providers by name, not by type — a workspace.json that
+    # says provider=vossisrv fails on a machine that only has a generic `ssh`
+    # provider, even though both would dial the same host. Diff the catalog's
+    # required names against what's installed and surface each gap.
+    if catalog_read >/dev/null 2>&1; then
+      mapfile -t needed_providers < <(catalog_read | jq -r '.workspaces[].provider // empty' | grep -v '^$' | sort -u)
+      local p
+      for p in "${needed_providers[@]}"; do
+        grep -qx "$p" <<<"$devpod_providers" || missing_providers+=("$p")
+      done
+    fi
+
+    if [[ -n "$devpod_providers" ]]; then
+      ui_status_ok "devpod providers: $(printf '%s\n' "$devpod_providers" | paste -sd, -)"
+    elif (( ${#needed_providers[@]} == 0 )); then
       ui_status_fail "devpod providers: none configured (run \`devpod provider add ssh --name vossisrv --option HOST=<user@host>\` then \`devpod provider use vossisrv\`)"
       fail=$((fail+1))
-    else
-      ui_status_ok "devpod providers: $(printf '%s\n' "$devpod_providers" | paste -sd, -)"
     fi
+    # If devpod_providers is empty AND needed_providers is non-empty, the loop
+    # below emits one fail line per missing provider — more actionable than a
+    # generic "none configured".
+
+    local p
+    for p in "${missing_providers[@]}"; do
+      ui_status_fail "provider \"$p\" referenced by catalog but not installed locally (run \`devpod provider add ssh --name $p --option HOST=$p\`)"
+      fail=$((fail+1))
+    done
   else
     ui_status_fail "devpod: not on PATH (install: https://devpod.sh)"
     fail=$((fail+1))
@@ -294,36 +317,29 @@ cmd_doctor() {
     done < <(catalog_workspace_ids)
   fi
 
-  # If devpod has no providers but the catalog references some, offer to add
-  # them as SSH providers (using a matching ~/.ssh/config Host alias).
-  if [[ -z "$devpod_providers" ]] && [[ -t 0 ]] && command -v gum >/dev/null \
-     && catalog_read >/dev/null 2>&1; then
-    local -a needed_providers
-    mapfile -t needed_providers < <(catalog_read | jq -r '.workspaces[].provider // empty' | grep -v '^$' | sort -u)
-    if (( ${#needed_providers[@]} > 0 )); then
-      local p added_any=0
-      for p in "${needed_providers[@]}"; do
-        if ! ssh -G "$p" >/dev/null 2>&1; then
-          echo
-          ui_status_warn "can't auto-add provider \"$p\": no matching \`Host $p\` in ~/.ssh/config"
-          continue
-        fi
+  # Offer to add any catalog-referenced provider that's missing locally. Fires
+  # on the gap (set difference), not on the empty-list case — so a user who
+  # has a generic `ssh` provider installed but whose catalog asks for a named
+  # `vossisrv` one still gets the prompt.
+  if (( ${#missing_providers[@]} > 0 )) && [[ -t 0 ]] && command -v gum >/dev/null; then
+    local p
+    for p in "${missing_providers[@]}"; do
+      if ! ssh -G "$p" >/dev/null 2>&1; then
         echo
-        if gum confirm "Add devpod SSH provider \"$p\" using SSH host alias \"$p\"?"; then
-          ui_action "adding provider" "$p (devpod provider add ssh --name $p --option HOST=$p)"
-          if devpod provider add ssh --name "$p" --option "HOST=$p"; then
-            ui_status_ok "added provider \"$p\""
-            added_any=1
-          else
-            ui_status_warn "failed to add provider \"$p\" (run \`devpod provider add ssh --name $p --option HOST=$p\` manually)"
-          fi
-        fi
-      done
-      if (( added_any )); then
-        devpod_providers=$(devpod provider list --output json 2>/dev/null | jq -r 'keys[]?' || true)
-        [[ -n "$devpod_providers" ]] && fail=$((fail-1))
+        ui_status_warn "can't auto-add provider \"$p\": no matching \`Host $p\` in ~/.ssh/config"
+        continue
       fi
-    fi
+      echo
+      if gum confirm "Add devpod SSH provider \"$p\" using SSH host alias \"$p\"?"; then
+        ui_action "adding provider" "$p (devpod provider add ssh --name $p --option HOST=$p)"
+        if devpod provider add ssh --name "$p" --option "HOST=$p"; then
+          ui_status_ok "added provider \"$p\""
+          fail=$((fail-1))
+        else
+          ui_status_warn "failed to add provider \"$p\" (run \`devpod provider add ssh --name $p --option HOST=$p\` manually)"
+        fi
+      fi
+    done
   fi
 
   echo
