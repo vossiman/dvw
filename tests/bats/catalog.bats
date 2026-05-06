@@ -257,14 +257,14 @@ teardown() {
 
 @test "catalog_devpod_context: falls back to default when devpod CLI absent" {
   source "$DVW_ROOT/lib/catalog.sh"
-  PATH=/nonexistent run catalog_devpod_context
+  PATH=/nonexistent:/usr/bin:/bin run catalog_devpod_context
   [ "$status" -eq 0 ]
   [ "$output" = "default" ]
 }
 
 @test "catalog_devpod_workspace_json_path: composes \$HOME/.devpod/contexts/<ctx>/workspaces/<id>/workspace.json" {
   source "$DVW_ROOT/lib/catalog.sh"
-  PATH=/nonexistent HOME="$TMPDIR" run catalog_devpod_workspace_json_path foo-id
+  PATH=/nonexistent:/usr/bin:/bin HOME="$TMPDIR" run catalog_devpod_workspace_json_path foo-id
   [ "$status" -eq 0 ]
   [ "$output" = "$TMPDIR/.devpod/contexts/default/workspaces/foo-id/workspace.json" ]
 }
@@ -273,13 +273,13 @@ teardown() {
   source "$DVW_ROOT/lib/catalog.sh"
   cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   export HOME="$TMPDIR"
-  PATH=/nonexistent
+  PATH=/nonexistent:/usr/bin:/bin
   ws_path="$HOME/.devpod/contexts/default/workspaces/myrepo-feature-x/workspace.json"
   mkdir -p "$(dirname "$ws_path")"
   cat > "$ws_path" <<'JSON'
 {"id":"myrepo-feature-x","workspace":{"uid":"default-my-abc12","provider":{"options":{"HOST":{"value":"vossisrv","userProvided":true}}}}}
 JSON
-  PATH=/nonexistent run catalog_workspace_set_devpod_state myrepo-feature-x
+  PATH=/nonexistent:/usr/bin:/bin run catalog_workspace_set_devpod_state myrepo-feature-x
   [ "$status" -eq 0 ]
   jq -e '.workspaces[] | select(.id=="myrepo-feature-x") | .uid == "default-my-abc12"' "$DVW_CATALOG"
   jq -e '.workspaces[] | select(.id=="myrepo-feature-x") | .devpod_state.workspace.uid == "default-my-abc12"' "$DVW_CATALOG"
@@ -290,7 +290,7 @@ JSON
   source "$DVW_ROOT/lib/catalog.sh"
   cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   export HOME="$TMPDIR"
-  PATH=/nonexistent run catalog_workspace_set_devpod_state myrepo-feature-x
+  PATH=/nonexistent:/usr/bin:/bin run catalog_workspace_set_devpod_state myrepo-feature-x
   [ "$status" -ne 0 ]
 }
 
@@ -298,13 +298,13 @@ JSON
   source "$DVW_ROOT/lib/catalog.sh"
   cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   export HOME="$TMPDIR"
-  PATH=/nonexistent
+  PATH=/nonexistent:/usr/bin:/bin
   ws_path="$HOME/.devpod/contexts/default/workspaces/myrepo-feature-x/workspace.json"
   mkdir -p "$(dirname "$ws_path")"
   cat > "$ws_path" <<'JSON'
 {"workspace":{"uid":"default-my-abc12","provider":{"options":{"HOST":{"value":"vossisrv"}}}},"id":"myrepo-feature-x"}
 JSON
-  PATH=/nonexistent catalog_workspace_set_devpod_state myrepo-feature-x
+  PATH=/nonexistent:/usr/bin:/bin catalog_workspace_set_devpod_state myrepo-feature-x
   run catalog_workspace_get_devpod_state myrepo-feature-x
   [ "$status" -eq 0 ]
   echo "$output" | jq -e '.workspace.uid == "default-my-abc12"'
@@ -327,7 +327,7 @@ JSON
   ws_path="$HOME/.devpod/contexts/default/workspaces/myrepo-feature-x/workspace.json"
   mkdir -p "$(dirname "$ws_path")"
   echo '{"workspace":{"uid":"default-xy-99999"}}' > "$ws_path"
-  PATH=/nonexistent catalog_workspace_set_devpod_state myrepo-feature-x
+  PATH=/nonexistent:/usr/bin:/bin catalog_workspace_set_devpod_state myrepo-feature-x
   run catalog_workspace_get_uid myrepo-feature-x
   [ "$status" -eq 0 ]
   [ "$output" = "default-xy-99999" ]
