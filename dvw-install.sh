@@ -110,6 +110,17 @@ mkdir -p "$HOME/Dropbox-remote"
 systemctl --user daemon-reload
 systemctl --user enable --now rclone-dropbox.service
 
+# On Ubuntu/Mint with "Encrypt Home" (ecryptfs), linger=yes makes the
+# user systemd manager start at boot — before pam_ecryptfs has decrypted
+# ~/.config — so this unit's default.target.wants symlink is invisible
+# and the mount never auto-starts. Disable linger so user@UID.service
+# starts at login (after ecryptfs unwrap). LP #1746527 / #1734290.
+if findmnt -no FSTYPE "$HOME" 2>/dev/null | grep -qx ecryptfs \
+   && [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" == "yes" ]]; then
+  echo "encrypted home + linger=yes is incompatible; disabling linger"
+  loginctl disable-linger "$USER"
+fi
+
 step "waiting for rclone mount to come up"
 for _ in $(seq 1 15); do
   if mountpoint -q "$HOME/Dropbox-remote"; then break; fi

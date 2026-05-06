@@ -147,6 +147,8 @@ systemctl --user restart rclone-dropbox
 
 dvw will refuse to run when the mount is down rather than silently using a stale local copy. If the catalog directory itself looks fine but you suspect bad cached state, `fusermount -u ~/Dropbox-remote && systemctl --user restart rclone-dropbox`.
 
+If the unit is `inactive (dead)` after every reboot (not `failed`, just never started) and a `systemctl --user daemon-reload` "fixes" it — that's the ecryptfs+linger ordering bug ([LP #1746527](https://bugs.launchpad.net/ubuntu/+source/systemd/+bug/1746527) / [#1734290](https://bugs.launchpad.net/ecryptfs/+bug/1734290)). With `/home/$USER` on ecryptfs and `Linger=yes`, the user systemd manager starts at boot before PAM decrypts home, so `~/.config/systemd/user/default.target.wants/` is invisible. The installer detects this and disables linger; if you re-enabled it manually, run `loginctl disable-linger "$USER"`.
+
 ## Cursor shim (cursor-shim.sh)
 
 Wrapper that lets DevPod launch Cursor without spawning multiple windows per `devpod up`.
