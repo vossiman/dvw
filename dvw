@@ -7,6 +7,8 @@ DVW_ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 . "$DVW_ROOT/lib/catalog.sh"
 # shellcheck source=lib/ssh-sync.sh
 . "$DVW_ROOT/lib/ssh-sync.sh"
+# shellcheck source=lib/wsl-bridge.sh
+. "$DVW_ROOT/lib/wsl-bridge.sh"
 # shellcheck source=lib/connect.sh
 . "$DVW_ROOT/lib/connect.sh"
 # shellcheck source=lib/commands.sh
@@ -28,6 +30,7 @@ main() {
 
   catalog_init_if_missing || exit 1
   ssh_sync_refresh
+  wsl_bridge_refresh
 
   case "${1:-}" in
     -l|--list)
