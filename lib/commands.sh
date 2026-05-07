@@ -68,6 +68,7 @@ cmd_start() {
   fi
   _dvw_ensure_local_devpod_state "$id" || return 1
   _dvw_reconcile_uid "$id" || return 1
+  _dvw_reap_stale_masters "$id"
   local ide="none"
   if catalog_workspace_get "$id" >/dev/null 2>&1; then
     ide=$(catalog_workspace_get "$id" | jq -r '.ide')
@@ -88,6 +89,7 @@ cmd_recreate() {
   fi
   _dvw_ensure_local_devpod_state "$id" || return 1
   _dvw_reconcile_uid "$id" || return 1
+  _dvw_reap_stale_masters "$id"
   local ide="none"
   if catalog_workspace_get "$id" >/dev/null 2>&1; then
     ide=$(catalog_workspace_get "$id" | jq -r '.ide')
@@ -154,6 +156,7 @@ cmd_blueprint() {
   local container_dst="$container_dir/.devcontainer/devcontainer.json"
 
   # Wake the workspace if it's not reachable. Same probe pattern as cmd_connect.
+  _dvw_reap_stale_masters "$id"
   if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "${id}.devpod" true 2>/dev/null; then
     _dvw_ensure_local_devpod_state "$id" || return 1
     _dvw_reconcile_uid "$id" || return 1

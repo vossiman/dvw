@@ -39,6 +39,7 @@ cmd_connect() {
   # on the happy path. If neither succeeds we bail before touching devpod.
   _dvw_ensure_local_devpod_state "$ws" || return 1
   _dvw_reconcile_uid "$ws" || return 1
+  _dvw_reap_stale_masters "$ws"
 
   local mode="$forced_mode"
   if [[ -z "$mode" ]]; then
@@ -251,6 +252,46 @@ _dvw_probe_remote_uid() {
         has_content: (\$hc == \"true\"),
         volumes: (\$vols | split(\"\n\") | map(select(. != \"\"))) }'
   "
+}
+
+# Tear down a stale SSH ControlMaster whose remote TCP connection is dead.
+# End-to-end probe through the multiplex socket with a tight outer timeout;
+# if it doesn't return, `ssh -O exit` and rm the socket so the next ssh has
+# to reauthenticate instead of blocking on a long kernel TCP timeout.
+#
+# Triggered by `dvw start`/`dvw recreate`/connect when the previous network
+# (e.g. WireGuard) has gone away while a multiplex master was still cached.
+# Cheap and idempotent — returns 0 if no socket exists or the master is
+# healthy.
+ssh_reap_stale_master() {
+  local host="$1" cp
+  # awk's `exit` after the first match makes ssh -G SIGPIPE on continued
+  # writes, which `set -o pipefail` propagates. Guard with `|| true` so
+  # the assignment doesn't tear the script down on a benign pipe close.
+  cp=$(ssh -G "$host" 2>/dev/null | awk '$1=="controlpath"{print $2; exit}' || true)
+  [[ -z "$cp" || "$cp" == "none" ]] && return 0
+  [[ -S "$cp" ]] || return 0
+  if timeout 3 ssh -o BatchMode=yes -o ConnectTimeout=2 "$host" true 2>/dev/null; then
+    return 0
+  fi
+  ui_status_warn "stale ssh master to $host — clearing (route likely changed)"
+  timeout 2 ssh -O exit "$host" >/dev/null 2>&1 || true
+  rm -f "$cp" 2>/dev/null || true
+  return 0
+}
+
+# Reap stale SSH masters for both `<id>.devpod` (used by dvw connect) and
+# the workspace's provider HOST (used by `devpod up`). Read by all paths
+# that may shell out to devpod or ssh.
+_dvw_reap_stale_masters() {
+  local id="$1" path host
+  ssh_reap_stale_master "${id}.devpod"
+  path=$(catalog_devpod_workspace_json_path "$id")
+  if [[ -f "$path" ]]; then
+    host=$(jq -r '.workspace.provider.options.HOST.value // empty' "$path" 2>/dev/null)
+    [[ -n "$host" ]] && ssh_reap_stale_master "$host"
+  fi
+  return 0
 }
 
 # Rewrite .workspace.uid in the local workspace.json atomically.

@@ -76,6 +76,27 @@ ui_error() {
     "$(_ansi "$DVW_RED")" "$1" "$(ui_reset)" >&2
 }
 
+# ui_progress LABEL CMD [ARGS...]
+#
+# Run CMD; if it doesn't return within ~0.8s, emit a dim "› LABEL…" hint
+# so the user isn't staring at a silent terminal during slow pre-flights
+# (rclone-mounted catalog/blueprint stat, ssh blueprint cp, etc).
+# Returns CMD's exit code unchanged. Cheap on the happy path: no output
+# at all, just one fork+sleep that gets killed before it prints.
+ui_progress() {
+  local label="$1"; shift
+  ( sleep 0.8 && printf '  %s› %s…%s\n' "$(_ansi "$DVW_SUBTLE")" "$label" "$(ui_reset)" >&2 ) &
+  local marker_pid=$!
+  local rc=0
+  "$@" || rc=$?
+  # Kill+reap the marker. Both can fail (already exited / SIGTERM'd) and
+  # under `set -e` an unguarded nonzero exit (incl. wait's 128+15=143)
+  # would tear down the caller — hence the `|| true`s.
+  kill "$marker_pid" 2>/dev/null || true
+  wait "$marker_pid" 2>/dev/null || true
+  return "$rc"
+}
+
 # Apply the picker/status row colorization. Reads stdin (already column-aligned),
 # writes ANSI-colored to stdout.
 _ui_colorize_workspace_row() {

@@ -28,9 +28,9 @@ main() {
     return $?
   fi
 
-  catalog_init_if_missing || exit 1
-  ssh_sync_refresh
-  wsl_bridge_refresh
+  ui_progress "checking catalog"        catalog_init_if_missing || exit 1
+  ui_progress "syncing ssh blueprint"   ssh_sync_refresh
+  ui_progress "syncing wsl bridge"      wsl_bridge_refresh
 
   case "${1:-}" in
     -l|--list)
