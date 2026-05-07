@@ -28,6 +28,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw <id>` | connect to workspace; prompts SSH (terminal + tmux) or Cursor (GUI), pre-selecting the catalog's saved IDE |
 | `dvw <id> --ssh` | skip the prompt; ssh + attach `work` tmux session |
 | `dvw <id> --cursor` | skip the prompt; open in Cursor via `devpod up --ide cursor` |
+| `dvw <id> --both` | skip the prompt; open in Cursor, then ssh + attach `work` tmux session |
 | `dvw -l` | list workspaces (MRU order) |
 | `dvw new` | wizard: create a new workspace, append to catalog |
 | `dvw blueprint [path]` | drop `blueprint/devcontainer.json` into `<path>/.devcontainer/` so `dvw new` can build a proper workspace from that repo |

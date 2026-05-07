@@ -18,12 +18,14 @@ cmd_connect() {
   # Optional flags to skip the chooser for non-interactive use:
   #   dvw <id> --ssh     — go straight to ssh+tmux
   #   dvw <id> --cursor  — go straight to Cursor (devpod up --ide cursor)
+  #   dvw <id> --both    — Cursor first, then exec into ssh+tmux
   local forced_mode=""
   case "${1:-}" in
     --ssh)    forced_mode="ssh" ;;
     --cursor) forced_mode="cursor" ;;
+    --both)   forced_mode="both" ;;
     "")       : ;;
-    *) ui_error "unknown flag: $1 (expected --ssh or --cursor)"; return 1 ;;
+    *) ui_error "unknown flag: $1 (expected --ssh, --cursor, or --both)"; return 1 ;;
   esac
 
   # Catalog's ide field is the default highlighted option; user can override.
@@ -47,12 +49,13 @@ cmd_connect() {
   case "$mode" in
     ssh)    _connect_ssh "$ws" ;;
     cursor) _connect_cursor "$ws" ;;
+    both)   _connect_cursor "$ws" && _connect_ssh "$ws" ;;
     *)      ui_error "unknown connect mode: $mode"; return 1 ;;
   esac
 }
 
-# Prompt SSH vs Cursor with the catalog's saved IDE pre-selected. Echoes
-# "ssh" or "cursor" on stdout; empty on cancel.
+# Prompt SSH vs Cursor vs Both with the catalog's saved IDE pre-selected.
+# Echoes "ssh", "cursor", or "both" on stdout; empty on cancel.
 _connect_choose_mode() {
   local ws="$1" default_ide="$2"
   if ! command -v gum >/dev/null; then
@@ -61,6 +64,7 @@ _connect_choose_mode() {
   fi
   local ssh_label="SSH (terminal + tmux)"
   local cursor_label="Cursor (GUI)"
+  local both_label="Both (Cursor + SSH/tmux)"
   local selected="$ssh_label"
   [[ "$default_ide" == "cursor" ]] && selected="$cursor_label"
 
@@ -71,11 +75,12 @@ _connect_choose_mode() {
     --cursor "❯ " \
     --cursor.foreground "$DVW_ACCENT" \
     --selected.foreground "$DVW_ACCENT" \
-    "$ssh_label" "$cursor_label")
+    "$ssh_label" "$cursor_label" "$both_label")
 
   case "$choice" in
     "$ssh_label")    echo "ssh" ;;
     "$cursor_label") echo "cursor" ;;
+    "$both_label")   echo "both" ;;
     *)               echo "" ;;
   esac
 }
