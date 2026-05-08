@@ -130,7 +130,8 @@ _connect_cursor() {
 
   case "$(_dvw_workspace_health "$ws")" in
     alive)
-      ui_status_ok "$ws is up — open it in Cursor (the *.devpod ssh bridge handles routing)"
+      ui_action "opening" "$ws in Cursor"
+      _dvw_cursor_open "$ws" || return 1
       catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
       ;;
     stale)
@@ -149,6 +150,41 @@ _connect_cursor() {
       catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
       ;;
   esac
+}
+
+# Launch Cursor pointed at <ws>.devpod:/workspaces/<ws>. The *.devpod ssh
+# bridge in win-ssh-proxy.sh handles connection routing, so we just need a
+# binary to invoke and a vscode-remote URI to open. Order of detection:
+#
+#   1. ~/.local/bin/cursor  - Linux AppImage shim (cursor-shim.sh)
+#   2. `cursor` on PATH     - distro / direct install
+#   3. `cursor.exe` on PATH - WSL interop with Windows PATH propagated
+#   4. /mnt/c/Users/$USER/AppData/Local/Programs/{cursor,Cursor}/{cursor,Cursor}.exe
+#                           - canonical Windows install reachable from WSL
+#
+# Detaches the process so dvw returns immediately. stdout/stderr go to
+# /dev/null because the GUI binary spams startup chatter.
+_dvw_cursor_open() {
+  local ws="$1"
+  local uri="vscode-remote://ssh-remote+${ws}.devpod/workspaces/${ws}"
+  local bin
+  for bin in \
+      "$HOME/.local/bin/cursor" \
+      cursor \
+      cursor.exe \
+      "/mnt/c/Users/${USER}/AppData/Local/Programs/cursor/cursor.exe" \
+      "/mnt/c/Users/${USER}/AppData/Local/Programs/Cursor/Cursor.exe"
+  do
+    if [[ -x "$bin" ]] || command -v "$bin" >/dev/null 2>&1; then
+      ( "$bin" --folder-uri "$uri" >/dev/null 2>&1 & disown ) 2>/dev/null
+      return 0
+    fi
+  done
+  ui_error "no cursor binary found"
+  ui_info "  tried: ~/.local/bin/cursor, cursor, cursor.exe,"
+  ui_info "         /mnt/c/Users/$USER/AppData/Local/Programs/cursor/cursor.exe"
+  ui_info "  open manually: cursor --folder-uri \"$uri\""
+  return 1
 }
 
 # Probe the workspace's SSH endpoint and the bind mount's liveness. Echoes:
