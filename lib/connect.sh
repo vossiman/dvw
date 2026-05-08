@@ -91,7 +91,7 @@ _connect_ssh() {
   local ws="$1"
   if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "${ws}.devpod" true 2>/dev/null; then
     ui_action "starting" "$ws (ide=none)"
-    devpod up "$ws" --ide none || { ui_error "devpod up failed for $ws"; return 1; }
+    _dvw_safe_devpod_up "$ws" --ide none || { ui_error "devpod up failed for $ws"; return 1; }
     catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
   fi
   catalog_workspace_touch "$ws" 2>/dev/null || true
@@ -142,7 +142,7 @@ _connect_cursor() {
       ;;
     cold|*)
       ui_action "starting" "$ws in Cursor"
-      if ! devpod up "$ws" --ide cursor; then
+      if ! _dvw_safe_devpod_up "$ws" --ide cursor; then
         ui_error "devpod up --ide cursor failed for $ws"
         return 1
       fi
@@ -172,6 +172,66 @@ _dvw_workspace_health() {
     1) echo stale ;;
     *) echo cold  ;;
   esac
+}
+
+# Returns 0 if a container labelled with this workspace's uid exists on
+# the workspace's provider host (regardless of whether it's running),
+# non-zero otherwise. Used to detect the "our local SSH probe said cold
+# but the container actually exists" case before blindly running
+# `devpod up` against it.
+#
+# Devpod doesn't tag containers with `devpod.workspaceUID` — the durable
+# identifier is the devcontainer feature label `dev.containers.id`, which
+# equals workspace.uid (verified 2026-05). The CLI-side workspace.json is
+# often near-empty after a recreate; `devpod list --output json` is the
+# authoritative local source for both uid and provider HOST.
+#
+# Costs one local devpod CLI call + one SSH round-trip to the provider
+# host (ConnectTimeout=5s).
+_dvw_provider_has_container() {
+  local id="$1" host uid info
+  info=$(devpod list --output json 2>/dev/null \
+    | jq -c --arg id "$id" '.[] | select(.id == $id)')
+  [[ -n "$info" ]] || return 1
+  uid=$(jq  -r '.uid // empty'                          <<<"$info" 2>/dev/null)
+  host=$(jq -r '.provider.options.HOST.value // empty'  <<<"$info" 2>/dev/null)
+  [[ -n "$host" && -n "$uid" ]] || return 1
+  ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" \
+    "docker ps -a --filter label=dev.containers.id=$uid -q 2>/dev/null | head -1 | grep -q ." \
+    >/dev/null 2>&1
+}
+
+# Wrapper for `devpod up <id> [args...]` with a safety check.
+#
+# The failure mode this guards against: our local SSH probe (`ssh
+# ${id}.devpod true`) returned non-zero, so a caller concluded the
+# workspace is stopped and is about to run `devpod up` to start it. But
+# that probe can fail for non-container reasons — transient network, sshd
+# restart, the agent host being briefly unresponsive — and `devpod up`
+# against a container that's actually running is precisely the call that
+# re-synthesizes content/ on the agent and leaves the container with a
+# stale bind mount. Lost work.
+#
+# So before each `devpod up`, ask the provider host directly: do you have
+# a container for this workspace? If yes, refuse without explicit
+# confirmation. cmd_recreate doesn't go through this — recreate is
+# destructive by design and the user typed it on purpose.
+_dvw_safe_devpod_up() {
+  local id="$1"
+  shift
+  if _dvw_provider_has_container "$id"; then
+    ui_status_warn "$id is unreachable via SSH but a container exists on its provider"
+    ui_info "  running \`devpod up\` against an already-running container can wipe"
+    ui_info "  content/ and leave the bind mount on a deleted inode (lost source)."
+    ui_info "  recover: fix the network to the agent, or \`dvw recreate $id\`."
+    if [[ -t 0 ]] && command -v gum >/dev/null; then
+      gum confirm "run \`devpod up $id $*\` anyway?" || { ui_info "aborted"; return 1; }
+    else
+      ui_error "refusing to run \`devpod up\` non-interactively without confirmation"
+      return 1
+    fi
+  fi
+  devpod up "$id" "$@"
 }
 
 # ----------------------------------------------------------------------------

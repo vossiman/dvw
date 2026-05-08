@@ -174,7 +174,7 @@ cmd_blueprint() {
     _dvw_ensure_local_devpod_state "$id" || return 1
     _dvw_reconcile_uid "$id" || return 1
     ui_info "workspace not reachable — starting (devpod up --ide none)..."
-    devpod up "$id" --ide none >/dev/null || { ui_error "failed to start $id"; return 1; }
+    _dvw_safe_devpod_up "$id" --ide none >/dev/null || { ui_error "failed to start $id"; return 1; }
     catalog_workspace_set_devpod_state "$id" 2>/dev/null || true
   fi
 
