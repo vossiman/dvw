@@ -153,37 +153,51 @@ _connect_cursor() {
 }
 
 # Launch Cursor pointed at <ws>.devpod:/workspaces/<ws>. The *.devpod ssh
-# bridge in win-ssh-proxy.sh handles connection routing, so we just need a
-# binary to invoke and a vscode-remote URI to open. Order of detection:
+# bridge in win-ssh-proxy.sh handles connection routing, so we just need
+# a working CLI binary and the right URI.
 #
+# Args mirror what devpod itself runs (pkg/ide/vscode/open.go,
+# `openViaCLI`):
+#   cursor --reuse-window --folder-uri=vscode-remote://ssh-remote+<ws>.devpod/<folder>
+#
+# Two non-obvious requirements:
+#   - The `=` between `--folder-uri` and the value is required (devpod's
+#     own comment: "Needs to be separated by `=` because of windows").
+#     Space-separated form silently no-ops on the Windows binary.
+#   - The CLI is the WSL-aware *shell wrapper* at
+#     resources/app/bin/cursor, NOT the Electron GUI Cursor.exe. The
+#     wrapper translates paths/env between WSL and Windows; calling
+#     Cursor.exe directly with --folder-uri doesn't run the CLI
+#     bootstrap that hands off the URI to a running window. VS Code
+#     follows the same pattern with `code` vs `Code.exe`.
+#
+# Detection order:
 #   1. ~/.local/bin/cursor  - Linux AppImage shim (cursor-shim.sh)
-#   2. `cursor` on PATH     - distro / direct install
-#   3. `cursor.exe` on PATH - WSL interop with Windows PATH propagated
-#   4. /mnt/c/Users/$USER/AppData/Local/Programs/{cursor,Cursor}/{cursor,Cursor}.exe
-#                           - canonical Windows install reachable from WSL
+#   2. `cursor` on PATH     - native install / user-managed shim
+#   3. WSL→Windows install of Cursor's bin/cursor wrapper:
+#        /mnt/c/Users/$USER/AppData/Local/Programs/{cursor,Cursor}/resources/app/bin/cursor
 #
-# Detaches the process so dvw returns immediately. stdout/stderr go to
-# /dev/null because the GUI binary spams startup chatter.
+# Detaches and silences the launched process so dvw returns immediately.
 _dvw_cursor_open() {
   local ws="$1"
-  local uri="vscode-remote://ssh-remote+${ws}.devpod/workspaces/${ws}"
+  local folder="workspaces/${ws}"
+  local uri_arg="--folder-uri=vscode-remote://ssh-remote+${ws}.devpod/${folder}"
   local bin
   for bin in \
       "$HOME/.local/bin/cursor" \
       cursor \
-      cursor.exe \
-      "/mnt/c/Users/${USER}/AppData/Local/Programs/cursor/cursor.exe" \
-      "/mnt/c/Users/${USER}/AppData/Local/Programs/Cursor/Cursor.exe"
+      "/mnt/c/Users/${USER}/AppData/Local/Programs/cursor/resources/app/bin/cursor" \
+      "/mnt/c/Users/${USER}/AppData/Local/Programs/Cursor/resources/app/bin/cursor"
   do
     if [[ -x "$bin" ]] || command -v "$bin" >/dev/null 2>&1; then
-      ( "$bin" --folder-uri "$uri" >/dev/null 2>&1 & disown ) 2>/dev/null
+      ( "$bin" --reuse-window "$uri_arg" >/dev/null 2>&1 & disown ) 2>/dev/null
       return 0
     fi
   done
-  ui_error "no cursor binary found"
-  ui_info "  tried: ~/.local/bin/cursor, cursor, cursor.exe,"
-  ui_info "         /mnt/c/Users/$USER/AppData/Local/Programs/cursor/cursor.exe"
-  ui_info "  open manually: cursor --folder-uri \"$uri\""
+  ui_error "no cursor CLI found"
+  ui_info "  tried: ~/.local/bin/cursor, \`cursor\` on PATH,"
+  ui_info "         /mnt/c/Users/$USER/AppData/Local/Programs/{cursor,Cursor}/resources/app/bin/cursor"
+  ui_info "  open manually: cursor --reuse-window \"$uri_arg\""
   return 1
 }
 
