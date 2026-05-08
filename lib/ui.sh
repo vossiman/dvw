@@ -102,7 +102,7 @@ ui_progress() {
 _ui_colorize_workspace_row() {
   local r b d
   r=$(printf '\033[0m'); b=$(printf '\033[1m'); d=$(printf '\033[2m')
-  local A T Y B2 P GR G
+  local A T Y B2 P GR G R2
   A=$(_ansi  "$DVW_ACCENT")
   T=$(_ansi  "$DVW_TEAL")
   Y=$(_ansi  "$DVW_YELLOW")
@@ -110,8 +110,10 @@ _ui_colorize_workspace_row() {
   P=$(_ansi  "$DVW_PEACH")
   GR=$(_ansi "$DVW_GREY")
   G=$(_ansi  "$DVW_GREEN")
+  R2=$(_ansi "$DVW_RED" bold)
   sed -E "
     s|^([^ ]+)|${b}${A}\\1${r}|
+    s|⚠ stale|${R2}⚠ stale${r}|g
     s|● running|${G}● running${r}|g
     s|○ stopped|${GR}○ stopped${r}|g
     s|(  )(·)(  )(cursor)([ ]+)|\\1${d}\\2${r}\\3${T}\\4${r}\\5|g
@@ -125,23 +127,37 @@ _ui_colorize_workspace_row() {
   "
 }
 
-# Memoized list of running workspace ids. Set once via _dvw_load_running_ids
-# at first call; reused across the menu, picker, and cmd_status.
+# Memoized state classification across every catalog workspace, populated
+# by a single parallel pass of `_dvw_workspace_health` (SSH into the
+# container, read /proc/self/cwd). One probe per workspace, in parallel,
+# done once per dvw invocation.
 #
-# `devpod list --output json` does NOT include workspace state (verified
-# 2026-05; only id/context/ide/lastUsed/etc.). Per-workspace state lives in
-# `devpod status <id> --output json` → `.state`. We parallelize across all
-# catalog workspaces so the menu/status path stays fast.
+# Two output sets:
+#   DVW_RUNNING_IDS - workspaces whose container responds to SSH (alive OR
+#                     stale; both mean "the container is up"). Used by the
+#                     picker, menu and status row to render the indicator.
+#   DVW_STALE_IDS   - subset of running where /workspaces/<id> resolves to
+#                     a deleted inode. Cursor's node fatals there; SSH+tmux
+#                     still works because bash tolerates a dead cwd.
+#
+# Why container-peek instead of `devpod status`: devpod status reports the
+# docker-level state (Running/Stopped) but doesn't see whether the workspace
+# bind mount still resolves. A workspace can be "Running" per devpod yet
+# completely broken for users — exactly the failure mode that motivated
+# this work. The SSH probe is one layer deeper: it verifies actual
+# usability, not just docker bookkeeping.
 DVW_RUNNING_IDS=""
+DVW_STALE_IDS=""
 DVW_RUNNING_LOADED=""
+DVW_STALE_LOADED=""
 
 _dvw_load_running_ids() {
   [[ -n "$DVW_RUNNING_LOADED" ]] && return 0
   local ids tmp id
   ids=$(catalog_workspace_ids 2>/dev/null || true)
   if [[ -z "$ids" ]]; then
-    DVW_RUNNING_IDS=""
     DVW_RUNNING_LOADED=1
+    DVW_STALE_LOADED=1
     return 0
   fi
   tmp=$(mktemp -d)
@@ -149,57 +165,34 @@ _dvw_load_running_ids() {
     [[ -z "$id" ]] && continue
     {
       local state
-      state=$(devpod status "$id" --output json --timeout 5s 2>/dev/null \
-        | jq -r '.state // ""' 2>/dev/null)
-      [[ "$state" == "Running" ]] && echo "$id" > "$tmp/$id"
+      state=$(_dvw_workspace_health "$id" 2>/dev/null)
+      case "$state" in
+        alive) echo "$id" > "$tmp/run.$id" ;;
+        stale) echo "$id" > "$tmp/run.$id"; echo "$id" > "$tmp/stale.$id" ;;
+      esac
     } &
   done <<<"$ids"
   wait
-  DVW_RUNNING_IDS=$(cat "$tmp"/* 2>/dev/null | sort -u || true)
+  DVW_RUNNING_IDS=$(cd "$tmp" && ls run.*   2>/dev/null | sed 's/^run\.//'   | sort -u || true)
+  DVW_STALE_IDS=$(  cd "$tmp" && ls stale.* 2>/dev/null | sed 's/^stale\.//' | sort -u || true)
   rm -rf "$tmp"
   DVW_RUNNING_LOADED=1
-}
-
-# Memoized list of running workspace ids whose /workspaces/<id> bind mount
-# is pointing at a deleted inode. Typically caused by `devpod up` having
-# re-synthesized agent-side content/ without recreating the container —
-# new processes cd'ing there get ENOENT on getcwd, which fatals Cursor's
-# node server. Reuses _dvw_workspace_health from connect.sh; only probes
-# workspaces already known to be running so cost is bounded.
-DVW_STALE_IDS=""
-DVW_STALE_LOADED=""
-
-_dvw_load_stale_ids() {
-  [[ -n "$DVW_STALE_LOADED" ]] && return 0
-  _dvw_load_running_ids
-  if [[ -z "$DVW_RUNNING_IDS" ]]; then
-    DVW_STALE_IDS=""
-    DVW_STALE_LOADED=1
-    return 0
-  fi
-  local tmp id
-  tmp=$(mktemp -d)
-  while IFS= read -r id; do
-    [[ -z "$id" ]] && continue
-    {
-      [[ "$(_dvw_workspace_health "$id" 2>/dev/null)" == stale ]] \
-        && echo "$id" > "$tmp/$id"
-    } &
-  done <<<"$DVW_RUNNING_IDS"
-  wait
-  DVW_STALE_IDS=$(cat "$tmp"/* 2>/dev/null | sort -u || true)
-  rm -rf "$tmp"
   DVW_STALE_LOADED=1
 }
 
+# Same pass populates DVW_STALE_IDS as a side-effect; this exists so callers
+# that care only about staleness still read naturally.
+_dvw_load_stale_ids() { _dvw_load_running_ids; }
+
 # One line per workspace, MRU-sorted, column-aligned, ANSI-colored:
-#   <id>  ·  <short-repo>@<branch>  ·  <ide>  ·  ●running | ○stopped
+#   <id>  ·  <short-repo>@<branch>  ·  <ide>  ·  ●running | ⚠stale | ○stopped
 #
 # - id           bold frost-cyan accent (DVW_ACCENT)
 # - · separators dim
 # - ide          per-ide hue (cursor=teal, ssh=yellow, vscode=blue,
 #                 jetbrains=peach, none/other=grey)
-# - status       running=green, stopped=grey
+# - status       running=green, stale=red (running but bind mount is dead —
+#                 Cursor will fatal on connect), stopped=grey
 #
 # Pipeline:
 #   1. jq → TSV (plain text, no color)
@@ -209,9 +202,12 @@ _dvw_load_stale_ids() {
 # fzf needs --ansi to render the embedded codes (passed in ui_pick_workspace).
 _dvw_decorated_workspaces() {
   _dvw_load_running_ids
+  _dvw_load_stale_ids
   local raw
-  raw=$(catalog_read 2>/dev/null | jq -r --arg running "$DVW_RUNNING_IDS" '
+  raw=$(catalog_read 2>/dev/null \
+    | jq -r --arg running "$DVW_RUNNING_IDS" --arg stale "$DVW_STALE_IDS" '
     ($running | split("\n") | map(select(. != ""))) as $r |
+    ($stale   | split("\n") | map(select(. != ""))) as $s |
     def shortrepo:
       sub("^git@github\\.com:"; "")
       | sub("^https://github\\.com/"; "")
@@ -221,7 +217,10 @@ _dvw_decorated_workspaces() {
         .id,
         ((.repo | shortrepo) + "@" + .branch),
         .ide,
-        (if (.id as $id | $r | index($id)) then "● running" else "○ stopped" end)
+        (.id as $id
+         | if   ($s | index($id)) then "⚠ stale"
+           elif ($r | index($id)) then "● running"
+           else                        "○ stopped" end)
       ] | @tsv
   ')
   [[ -z "$raw" ]] && return 0
