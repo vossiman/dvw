@@ -109,17 +109,69 @@ _connect_ssh() {
   '
 }
 
-# Cursor path: hand off to devpod up --ide cursor. Brings the workspace up
-# if it's not running, then opens Cursor via the cursor-shim wrapper.
+# Cursor path: probe before calling `devpod up`.
+#
+# `devpod up --ide cursor` on a workspace whose container is already running
+# can re-synthesize the agent-side workspace dir (rm -rf content/, sparse
+# re-clone of just .devcontainer/) without recreating the container itself.
+# The container's bind mount keeps pointing at the *old* content/ inode,
+# which is now an unlinked zombie kept alive only by the mount. Anything
+# that calls getcwd(2) inside that workspace path then fails with ENOENT —
+# Cursor's node server fatals on boot, while bash tolerates the dead cwd
+# (which is why --ssh kept working). It also nukes uncommitted source.
+#
+# So: only run `devpod up` when the workspace truly isn't reachable. The
+# WSL→Windows bridge in win-ssh-proxy.sh routes Cursor through devpod ssh
+# --stdio directly, so a healthy running workspace doesn't need devpod CLI
+# involvement to be openable in Cursor.
 _connect_cursor() {
   local ws="$1"
   catalog_workspace_touch "$ws" 2>/dev/null || true
-  ui_action "opening" "$ws in Cursor"
-  if ! devpod up "$ws" --ide cursor; then
-    ui_error "devpod up --ide cursor failed for $ws"
-    return 1
-  fi
-  catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
+
+  case "$(_dvw_workspace_health "$ws")" in
+    alive)
+      ui_status_ok "$ws is up — open it in Cursor (the *.devpod ssh bridge handles routing)"
+      catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
+      ;;
+    stale)
+      ui_error "$ws has a stale workspace bind mount (kernel reports cwd as deleted)"
+      ui_info "  this happens when devpod up re-synthesized agent-side content/"
+      ui_info "  while the container kept running on the old inode. Recover with:"
+      ui_info "    dvw recreate $ws"
+      return 1
+      ;;
+    cold|*)
+      ui_action "starting" "$ws in Cursor"
+      if ! devpod up "$ws" --ide cursor; then
+        ui_error "devpod up --ide cursor failed for $ws"
+        return 1
+      fi
+      catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
+      ;;
+  esac
+}
+
+# Probe the workspace's SSH endpoint and the bind mount's liveness. Echoes:
+#   alive — cd /workspaces/<id> succeeds and /proc/self/cwd is a live inode
+#   stale — cd succeeds but the kernel marks cwd "(deleted)"; the bind mount
+#           points at an unlinked inode and Cursor's node will fatal on it.
+#           Caller should refuse and direct the user to `dvw recreate`.
+#   cold  — SSH or `cd` failed; workspace likely stopped or never created.
+#           Caller should fall back to `devpod up`.
+_dvw_workspace_health() {
+  local ws="$1" rc
+  ssh -o ConnectTimeout=3 -o BatchMode=yes "${ws}.devpod" "
+    cd /workspaces/$ws 2>/dev/null || exit 2
+    cwd=\$(readlink /proc/self/cwd 2>/dev/null)
+    [[ \"\$cwd\" == *'(deleted)'* ]] && exit 1
+    exit 0
+  " 2>/dev/null
+  rc=$?
+  case "$rc" in
+    0) echo alive ;;
+    1) echo stale ;;
+    *) echo cold  ;;
+  esac
 }
 
 # ----------------------------------------------------------------------------
