@@ -130,6 +130,19 @@ cmd_status() {
     | column -t -s $'\t' -o '  ·  ' \
     | _ui_colorize_workspace_row \
     | sed 's/^/  /'
+
+  # Surface stale-bind-mount workspaces below the table. These look "running"
+  # in the row above but Cursor will fatal on connect; the SSH+tmux path keeps
+  # working because bash tolerates a dead cwd. Only probes workspaces already
+  # marked Running, so the SSH cost is bounded.
+  _dvw_load_stale_ids
+  if [[ -n "$DVW_STALE_IDS" ]]; then
+    echo
+    while IFS= read -r id; do
+      [[ -z "$id" ]] && continue
+      ui_status_warn "$id has a stale workspace bind mount — \`dvw recreate $id\` to fix"
+    done <<<"$DVW_STALE_IDS"
+  fi
 }
 
 # Drop the canonical devcontainer.json from devpod/blueprint/ into the in-
@@ -301,6 +314,7 @@ cmd_doctor() {
   # in connect.sh will materialize it on first connect. This block is purely
   # informational and never tries to "fix" anything.
   if command -v devpod >/dev/null && catalog_read >/dev/null 2>&1; then
+    _dvw_load_stale_ids   # populates DVW_STALE_IDS via parallel SSH probes
     local known_to_devpod
     known_to_devpod=$(devpod list --output json 2>/dev/null | jq -r '.[].id' || true)
     while IFS= read -r id; do
@@ -316,6 +330,13 @@ cmd_doctor() {
       else
         ui_status_warn "workspace \"$id\": legacy entry — no devpod_state snapshot in catalog (\`dvw rm $id\` then \`dvw new\` to migrate)"
         warn=$((warn+1))
+      fi
+      # Independent of registration: a running container with a stale bind
+      # mount looks healthy to devpod but breaks Cursor. Surface as a fail
+      # so the user runs `dvw recreate` before clicking connect.
+      if [[ -n "$DVW_STALE_IDS" ]] && grep -qx "$id" <<<"$DVW_STALE_IDS"; then
+        ui_status_fail "workspace \"$id\": stale bind mount (cwd is deleted) — \`dvw recreate $id\`"
+        fail=$((fail+1))
       fi
     done < <(catalog_workspace_ids)
   fi

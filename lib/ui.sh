@@ -160,6 +160,38 @@ _dvw_load_running_ids() {
   DVW_RUNNING_LOADED=1
 }
 
+# Memoized list of running workspace ids whose /workspaces/<id> bind mount
+# is pointing at a deleted inode. Typically caused by `devpod up` having
+# re-synthesized agent-side content/ without recreating the container —
+# new processes cd'ing there get ENOENT on getcwd, which fatals Cursor's
+# node server. Reuses _dvw_workspace_health from connect.sh; only probes
+# workspaces already known to be running so cost is bounded.
+DVW_STALE_IDS=""
+DVW_STALE_LOADED=""
+
+_dvw_load_stale_ids() {
+  [[ -n "$DVW_STALE_LOADED" ]] && return 0
+  _dvw_load_running_ids
+  if [[ -z "$DVW_RUNNING_IDS" ]]; then
+    DVW_STALE_IDS=""
+    DVW_STALE_LOADED=1
+    return 0
+  fi
+  local tmp id
+  tmp=$(mktemp -d)
+  while IFS= read -r id; do
+    [[ -z "$id" ]] && continue
+    {
+      [[ "$(_dvw_workspace_health "$id" 2>/dev/null)" == stale ]] \
+        && echo "$id" > "$tmp/$id"
+    } &
+  done <<<"$DVW_RUNNING_IDS"
+  wait
+  DVW_STALE_IDS=$(cat "$tmp"/* 2>/dev/null | sort -u || true)
+  rm -rf "$tmp"
+  DVW_STALE_LOADED=1
+}
+
 # One line per workspace, MRU-sorted, column-aligned, ANSI-colored:
 #   <id>  ·  <short-repo>@<branch>  ·  <ide>  ·  ●running | ○stopped
 #
