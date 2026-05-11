@@ -290,7 +290,32 @@ ui_top_menu() {
   total=$(catalog_read 2>/dev/null | jq -r '.workspaces | length' 2>/dev/null || echo 0)
   running=$(printf '%s\n' "$DVW_RUNNING_IDS" | grep -c . || true)
 
-  ui_banner "dvw — devpod workspaces" "$total total · $running running"
+  # Subtitle: include orphan count if any, so the user knows the audit entry
+  # below is meaningful before they open the menu.
+  local subtitle="$total total · $running running"
+  local n_orphans=0
+  if [[ -n "${DVW_PROBE_ORPHAN_UIDS:-}" ]]; then
+    n_orphans=$(grep -c . <<<"$DVW_PROBE_ORPHAN_UIDS" || true)
+    subtitle+=" · $n_orphans orphan"
+  fi
+  ui_banner "dvw — devpod workspaces" "$subtitle"
+
+  # Build the choice list. "Audit orphan containers" only shows when
+  # orphans exist — otherwise it's a no-op entry that just clutters.
+  local -a choices=(
+    "❯ Connect to workspace"
+    "+ Create new workspace"
+    "⊞ Install blueprint into a workspace"
+    "● Status"
+    "■ Stop a workspace"
+    "▶ Start a workspace"
+    "↻ Recreate a workspace"
+    "✕ Remove a workspace"
+    "⚕ Doctor"
+  )
+  if (( n_orphans > 0 )); then
+    choices+=("⚠ Audit orphan containers ($n_orphans)")
+  fi
 
   local action
   action=$(gum choose \
@@ -299,15 +324,7 @@ ui_top_menu() {
     --selected.foreground "$DVW_ACCENT" \
     --header.foreground "$DVW_SUBTLE" \
     --header "what would you like to do?" \
-    "❯ Connect to workspace" \
-    "+ Create new workspace" \
-    "⊞ Install blueprint into a workspace" \
-    "● Status" \
-    "■ Stop a workspace" \
-    "▶ Start a workspace" \
-    "↻ Recreate a workspace" \
-    "✕ Remove a workspace" \
-    "⚕ Doctor")
+    "${choices[@]}")
 
   case "$action" in
     *"Connect to workspace")
@@ -341,6 +358,9 @@ ui_top_menu() {
       ;;
     *"Doctor")
       cmd_doctor
+      ;;
+    *"Audit orphan containers"*)
+      cmd_orphans_audit
       ;;
     *)
       return 1

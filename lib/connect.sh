@@ -303,6 +303,10 @@ DVW_PROBE_LOADED=""
 # not claimed by any agent workspace directory. Surfaced as warnings in
 # `dvw doctor`. Read-only; we never act on them.
 DVW_PROBE_ORPHAN_UIDS=""
+# Per-orphan details, keyed by uid. Value is a tab-separated record:
+#   "<name>\t<state>\t<mountstatus>\t<mountsrc>\t<workspace_id_inside_mount>"
+# Populated by _dvw_probe_one_host's server-side script.
+declare -gA DVW_PROBE_ORPHAN_INFO=()
 
 _dvw_load_probe() {
   [[ -n "$DVW_PROBE_LOADED" ]] && return 0
@@ -414,13 +418,51 @@ if [ -d "$ctx_dir" ]; then
 fi
 
 # Orphans: labelled containers whose uid is not claimed by any workspace dir.
-# IFS=$'\t' so empty-label lines parse as uid="" (skipped below) rather than
-# slipping the state into the uid slot.
-while IFS=$'\t' read -r uid state cid; do
-  [ -z "$uid" ] && continue
-  if ! grep -qFx "$uid" "$claimed_tmp" 2>/dev/null; then
-    echo "__ORPHAN $uid"
+# For each one, emit a tab-separated detail line so the client can show enough
+# in `dvw doctor` to decide whether to investigate further.
+#
+# Output format (TAB-separated):
+#   __ORPHAN<TAB>uid<TAB>name<TAB>state<TAB>mountstatus<TAB>mountsrc<TAB>ws_dest_id
+#
+# mountstatus:
+#   alive    — bind mount source path exists; for running containers, PID 1
+#              cwd doesn't show the (deleted) inode marker
+#   deleted  — source path missing on host (or running container's PID 1 cwd
+#              shows (deleted) — the wipe-footgun fingerprint)
+#   nomount  — container has no /workspaces/* bind mount (rare; non-standard)
+while IFS=$'\t' read -r o_uid o_state o_cid; do
+  [ -z "$o_uid" ] && continue
+  if grep -qFx "$o_uid" "$claimed_tmp" 2>/dev/null; then
+    continue
   fi
+  o_name=$(docker inspect --format '{{.Name}}' "$o_cid" 2>/dev/null | sed 's:^/::')
+  # Find /workspaces/* bind mount. Emit as "dest|source", grep for /workspaces,
+  # then split — avoids depending on Sprig template funcs which aren't in all
+  # Docker versions.
+  mount_line=$(docker inspect --format '{{range .Mounts}}{{.Destination}}|{{.Source}}{{println}}{{end}}' "$o_cid" 2>/dev/null | grep '^/workspaces/' | head -1)
+  if [ -z "$mount_line" ]; then
+    o_mount_status="nomount"
+    o_mount_src=""
+    o_ws_dest_id=""
+  else
+    o_ws_dest_id=$(echo "$mount_line" | awk -F'|' '{print $1}' | sed 's:^/workspaces/::')
+    o_mount_src=$(echo "$mount_line" | awk -F'|' '{print $2}')
+    o_mount_status="alive"
+    if [ "$o_state" = "running" ]; then
+      o_pid=$(docker inspect --format '{{.State.Pid}}' "$o_cid" 2>/dev/null)
+      if [ -n "$o_pid" ] && [ "$o_pid" != "0" ]; then
+        o_cwd=$(readlink "/proc/$o_pid/cwd" 2>/dev/null)
+        case "$o_cwd" in
+          *'(deleted)'*) o_mount_status="deleted" ;;
+        esac
+      fi
+      [ "$o_mount_status" = "alive" ] && [ ! -d "$o_mount_src" ] && o_mount_status="deleted"
+    else
+      [ ! -d "$o_mount_src" ] && o_mount_status="deleted"
+    fi
+  fi
+  printf '__ORPHAN\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$o_uid" "$o_name" "$o_state" "$o_mount_status" "$o_mount_src" "$o_ws_dest_id"
 done < "$ps_tmp"
 
 rm -f "$ps_tmp" "$claimed_tmp"
@@ -439,14 +481,20 @@ REMOTE
   fi
   rm -f "$err_file"
 
-  # Parse the response. id→state lines set DVW_PROBE_STATE; __ORPHAN lines
-  # accumulate uids for doctor.
+  # Parse the response. id→state lines (space-separated) set DVW_PROBE_STATE;
+  # __ORPHAN lines (TAB-separated, multi-field) populate DVW_PROBE_ORPHAN_INFO.
   local orphans=()
   local line
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
-    if [[ "$line" == "__ORPHAN "* ]]; then
-      orphans+=("${line#__ORPHAN }")
+    if [[ "$line" == "__ORPHAN"$'\t'* ]]; then
+      local _marker o_uid o_name o_state o_mstatus o_msrc o_wsdest
+      IFS=$'\t' read -r _marker o_uid o_name o_state o_mstatus o_msrc o_wsdest <<<"$line"
+      [[ -z "$o_uid" ]] && continue
+      # Record format: host \t name \t state \t mountstatus \t mountsrc \t wsdest
+      # host is prepended client-side (the server doesn't know its own alias).
+      DVW_PROBE_ORPHAN_INFO["$o_uid"]="${host}"$'\t'"${o_name}"$'\t'"${o_state}"$'\t'"${o_mstatus}"$'\t'"${o_msrc}"$'\t'"${o_wsdest}"
+      orphans+=("$o_uid")
     else
       local rid rstate
       rid=$(awk '{print $1}' <<<"$line")

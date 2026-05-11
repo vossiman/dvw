@@ -329,19 +329,42 @@ cmd_doctor() {
   fi
 
   # Orphan containers: labelled devpod containers whose uid isn't claimed
-  # by any agent workspace dir. Detection only — no automatic cleanup.
-  # Manual remediation: `docker inspect <name>` to find its /workspaces/<id>
-  # bind mount, then either re-link or `docker rm` by hand.
+  # by any agent workspace dir. Tier 1 surface: per-orphan name/state/mount
+  # status so the user can decide at a glance whether to inspect further.
+  # An orphan may STILL contain uncommitted work or unpushed commits inside
+  # its bind-mounted /workspaces dir — never recommend automatic cleanup.
+  # The deeper git-state audit (Tier 2) is reachable from the menu when any
+  # orphan exists.
   if [[ -n "${DVW_PROBE_ORPHAN_UIDS:-}" ]]; then
     local n_orphans orphan_uid
     n_orphans=$(grep -c . <<<"$DVW_PROBE_ORPHAN_UIDS" || true)
-    ui_status_warn "$n_orphans orphan container(s) on provider (have dev.containers.id labels but no matching workspace dir)"
+    ui_status_warn "$n_orphans orphan container(s) on provider — may contain data, verify before removing"
     warn=$((warn+1))
     while IFS= read -r orphan_uid; do
       [[ -z "$orphan_uid" ]] && continue
-      ui_info "          uid=$orphan_uid"
+      local info="${DVW_PROBE_ORPHAN_INFO[$orphan_uid]:-}"
+      if [[ -n "$info" ]]; then
+        local o_host o_name o_state o_mstatus o_msrc o_wsdest
+        IFS=$'\t' read -r o_host o_name o_state o_mstatus o_msrc o_wsdest <<<"$info"
+        case "$o_mstatus" in
+          alive)
+            ui_info "          $orphan_uid · $o_name · $o_state · /workspaces/$o_wsdest mount alive (may contain data)"
+            ;;
+          deleted)
+            ui_info "          $orphan_uid · $o_name · $o_state · /workspaces/$o_wsdest mount stale (deleted inode — workspaces data unrecoverable)"
+            ;;
+          nomount)
+            ui_info "          $orphan_uid · $o_name · $o_state · no /workspaces mount"
+            ;;
+          *)
+            ui_info "          $orphan_uid · $o_name · $o_state · mount status unknown"
+            ;;
+        esac
+      else
+        ui_info "          $orphan_uid (no detail available)"
+      fi
     done <<<"$DVW_PROBE_ORPHAN_UIDS"
-    ui_info "         (dvw does not auto-clean — \`docker rm <name>\` on the provider to remove)"
+    ui_info "         (run \`dvw\` and pick \"Audit orphan containers\" for git status / unpushed / stashes inside each)"
   fi
 
   # rclone mount
@@ -494,14 +517,278 @@ cmd_doctor() {
       "$(_ansi "$DVW_RED" bold)" "$(ui_reset)" \
       "$(_ansi "$DVW_RED")" "$fail" "$(ui_reset)" \
       "$(_ansi "$DVW_YELLOW")" "$warn" "$(ui_reset)"
+    if [[ -n "${DVW_PROBE_ORPHAN_UIDS:-}" ]]; then
+      ui_info "  audit orphans for unsaved work via \`dvw\` menu → \"Audit orphan containers\""
+    fi
   elif (( warn > 0 )); then
     printf '%s⚠%s %s%d warning(s)%s\n' \
       "$(_ansi "$DVW_YELLOW" bold)" "$(ui_reset)" \
       "$(_ansi "$DVW_YELLOW")" "$warn" "$(ui_reset)"
+    if [[ -n "${DVW_PROBE_ORPHAN_UIDS:-}" ]]; then
+      ui_info "  audit orphans for unsaved work via \`dvw\` menu → \"Audit orphan containers\""
+    fi
   else
     printf '%s✓%s %sall checks passed%s\n' \
       "$(_ansi "$DVW_GREEN" bold)" "$(ui_reset)" \
       "$(_ansi "$DVW_SUBTLE")" "$(ui_reset)"
   fi
   return "$fail"
+}
+
+# Tier-2 orphan audit: for each orphan container, surface git state inside
+# its /workspaces bind mount so the user can decide whether to copy
+# anything out before removing. Triggered from the top menu (not from
+# `dvw doctor` directly) because it does docker exec per orphan and can
+# be slow if there are many.
+#
+# Container-safety: read-only. The remote script never invokes docker
+# rm/stop/restart, never writes to any bind mount, never touches the
+# catalog. It only runs `git status / log / stash list` (and `docker
+# exec` of those, for running orphans).
+cmd_orphans_audit() {
+  ui_banner "audit orphan containers" "git status / unpushed / stashes inside each"
+
+  _dvw_load_probe
+  if [[ -z "${DVW_PROBE_ORPHAN_UIDS:-}" ]]; then
+    ui_info "no orphan containers detected"
+    return 0
+  fi
+
+  # Group orphans by host so we can do one ssh per host.
+  declare -A host_orphans=()
+  local uid info host
+  while IFS= read -r uid; do
+    [[ -z "$uid" ]] && continue
+    info="${DVW_PROBE_ORPHAN_INFO[$uid]:-}"
+    [[ -z "$info" ]] && continue
+    host=$(awk -F'\t' '{print $1}' <<<"$info")
+    [[ -z "$host" ]] && continue
+    host_orphans["$host"]+="$uid"$'\n'
+  done <<<"$DVW_PROBE_ORPHAN_UIDS"
+
+  local h
+  for h in "${!host_orphans[@]}"; do
+    _dvw_audit_orphans_on_host "$h" "${host_orphans[$h]}"
+  done
+}
+
+# Run the audit for one host. Bundles all this host's orphans into a single
+# ssh round-trip, passes uid/name/state/mountstatus/mountsrc/wsdest as
+# positional args (groups of 6). The remote loops, emits a structured
+# block per orphan. Output is parsed and rendered client-side.
+_dvw_audit_orphans_on_host() {
+  local host="$1" uids="$2"
+  local args=() uid info
+  while IFS= read -r uid; do
+    [[ -z "$uid" ]] && continue
+    info="${DVW_PROBE_ORPHAN_INFO[$uid]:-}"
+    [[ -z "$info" ]] && continue
+    local _h o_name o_state o_mstatus o_msrc o_wsdest
+    IFS=$'\t' read -r _h o_name o_state o_mstatus o_msrc o_wsdest <<<"$info"
+    args+=("$uid" "$o_name" "$o_state" "$o_mstatus" "$o_msrc" "$o_wsdest")
+  done <<<"$uids"
+
+  if (( ${#args[@]} == 0 )); then
+    return 0
+  fi
+
+  ui_action "auditing" "$host (${#args[@]} args / $(( ${#args[@]} / 6 )) orphans)"
+
+  local quoted=""
+  local arg
+  for arg in "${args[@]}"; do
+    quoted+=" $(printf '%q' "$arg")"
+  done
+
+  local out rc=0
+  out=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$host" "bash -s --$quoted" 2>&1 <<'REMOTE' || rc=$?
+set +e
+# Args arrive in groups of 6: uid name state mstatus msrc wsdest
+while [ "$#" -ge 6 ]; do
+  uid="$1"; name="$2"; state="$3"; mstatus="$4"; msrc="$5"; wsdest="$6"
+  shift 6
+  printf '===ORPHAN_BEGIN===\t%s\t%s\t%s\t%s\t%s\t%s\n' "$uid" "$name" "$state" "$mstatus" "$msrc" "$wsdest"
+
+  case "$mstatus" in
+    nomount)
+      echo "verdict=no-workspaces-mount"
+      echo "===ORPHAN_END==="
+      continue
+      ;;
+    deleted)
+      echo "verdict=mount-deleted-unrecoverable"
+      echo "===ORPHAN_END==="
+      continue
+      ;;
+  esac
+
+  # mount alive — inspect git state.
+  if [ "$state" = "running" ]; then
+    out=$(timeout 10 docker exec "$name" sh -c "
+      cd /workspaces/$wsdest 2>/dev/null || { echo 'cd_failed'; exit 0; }
+      if [ ! -d .git ]; then echo 'no_git'; exit 0; fi
+      printf 'branch=%s\n' \"\$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo unknown)\"
+      printf 'modified=%s\n' \"\$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')\"
+      upstream=\$(git rev-parse --abbrev-ref '@{u}' 2>/dev/null)
+      if [ -n \"\$upstream\" ]; then
+        printf 'upstream=%s\n' \"\$upstream\"
+        printf 'unpushed=%s\n' \"\$(git rev-list --count '@{u}..' 2>/dev/null | tr -d ' ')\"
+      else
+        printf 'upstream=none\n'
+        printf 'unpushed=unknown\n'
+      fi
+      printf 'stashes=%s\n' \"\$(git stash list 2>/dev/null | wc -l | tr -d ' ')\"
+    " 2>&1)
+    erc=$?
+    if [ "$erc" -ne 0 ]; then
+      echo "verdict=inspect-failed"
+      echo "error=$(echo "$out" | head -1)"
+    else
+      echo "$out"
+    fi
+  else
+    # stopped / exited — read the host-side bind mount source directly.
+    if [ ! -d "$msrc" ]; then
+      echo "verdict=mountsrc-missing"
+      echo "===ORPHAN_END==="
+      continue
+    fi
+    if [ ! -d "$msrc/.git" ]; then
+      echo "no_git"
+    else
+      cd "$msrc" 2>/dev/null
+      printf 'branch=%s\n' "$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+      printf 'modified=%s\n' "$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+      upstream=$(git rev-parse --abbrev-ref '@{u}' 2>/dev/null)
+      if [ -n "$upstream" ]; then
+        printf 'upstream=%s\n' "$upstream"
+        printf 'unpushed=%s\n' "$(git rev-list --count '@{u}..' 2>/dev/null | tr -d ' ')"
+      else
+        printf 'upstream=none\n'
+        printf 'unpushed=unknown\n'
+      fi
+      printf 'stashes=%s\n' "$(git stash list 2>/dev/null | wc -l | tr -d ' ')"
+    fi
+  fi
+  echo "===ORPHAN_END==="
+done
+REMOTE
+)
+
+  if (( rc != 0 )); then
+    ui_status_fail "audit ssh to $host failed (rc=$rc)"
+    ui_info "$out"
+    return 1
+  fi
+
+  _dvw_render_audit_output "$host" "$out"
+}
+
+# Render the structured audit output. Walks ORPHAN_BEGIN/END blocks, parses
+# key=value lines, emits a colored summary per orphan with a verdict.
+_dvw_render_audit_output() {
+  local host="$1" out="$2"
+  echo
+  local in_block=0
+  local b_uid b_name b_state b_mstatus b_msrc b_wsdest
+  local verdict branch modified unpushed stashes upstream err other_flag
+  local line
+  while IFS= read -r line; do
+    if [[ "$line" == "===ORPHAN_BEGIN==="* ]]; then
+      in_block=1
+      local _marker
+      IFS=$'\t' read -r _marker b_uid b_name b_state b_mstatus b_msrc b_wsdest <<<"$line"
+      verdict=""; branch=""; modified=""; unpushed=""; stashes=""; upstream=""; err=""; other_flag=""
+      continue
+    fi
+    if [[ "$line" == "===ORPHAN_END===" ]]; then
+      in_block=0
+      _dvw_print_one_orphan_audit
+      continue
+    fi
+    if (( in_block )); then
+      case "$line" in
+        verdict=*)  verdict="${line#verdict=}" ;;
+        branch=*)   branch="${line#branch=}" ;;
+        modified=*) modified="${line#modified=}" ;;
+        unpushed=*) unpushed="${line#unpushed=}" ;;
+        upstream=*) upstream="${line#upstream=}" ;;
+        stashes=*)  stashes="${line#stashes=}" ;;
+        error=*)    err="${line#error=}" ;;
+        no_git)     other_flag="no_git" ;;
+        cd_failed)  other_flag="cd_failed" ;;
+      esac
+    fi
+  done <<<"$out"
+
+  echo
+  ui_info "to remove an orphan after verifying it has no data you need:"
+  ui_info "  ssh $host 'docker rm -f <container-name>'"
+  ui_info "(dvw does not perform this for you on purpose — destructive ops stay manual)"
+}
+
+# Print one orphan's audit summary using the variables set in the calling
+# scope (b_*, verdict, branch, modified, unpushed, stashes, upstream, err).
+# Verdict emoji: ✓ clean, ⚠ has-work, ✗ unrecoverable, ? unknown.
+_dvw_print_one_orphan_audit() {
+  local header="$b_uid · $b_name · $b_state · /workspaces/$b_wsdest"
+  printf '  %s%s%s\n' "$(_ansi "$DVW_ACCENT" bold)" "$header" "$(ui_reset)"
+  case "$verdict" in
+    no-workspaces-mount)
+      printf '    %s✓%s no /workspaces mount — nothing to lose\n' "$(_ansi "$DVW_GREEN" bold)" "$(ui_reset)"
+      return
+      ;;
+    mount-deleted-unrecoverable)
+      printf '    %s✗%s bind mount source on host is gone (deleted inode) — no recoverable data\n' "$(_ansi "$DVW_RED" bold)" "$(ui_reset)"
+      printf '    %ssource was: %s%s\n' "$(_ansi "$DVW_SUBTLE")" "$b_msrc" "$(ui_reset)"
+      return
+      ;;
+    mountsrc-missing)
+      printf '    %s✗%s bind mount source path missing on host: %s\n' "$(_ansi "$DVW_RED" bold)" "$(ui_reset)" "$b_msrc"
+      return
+      ;;
+    inspect-failed)
+      printf '    %s?%s could not inspect: %s\n' "$(_ansi "$DVW_YELLOW" bold)" "$(ui_reset)" "${err:-unknown}"
+      return
+      ;;
+  esac
+
+  if [[ "$other_flag" == "no_git" ]]; then
+    printf '    %s?%s /workspaces/%s has no .git — no git state to lose; check for unsaved files manually\n' \
+      "$(_ansi "$DVW_YELLOW" bold)" "$(ui_reset)" "$b_wsdest"
+    return
+  fi
+  if [[ "$other_flag" == "cd_failed" ]]; then
+    printf '    %s?%s cannot cd into /workspaces/%s inside container\n' \
+      "$(_ansi "$DVW_YELLOW" bold)" "$(ui_reset)" "$b_wsdest"
+    return
+  fi
+
+  # Numeric fields default to 0 / empty.
+  local m="${modified:-0}" u="${unpushed:-0}" s="${stashes:-0}"
+  local has_work=0
+  [[ "$m" != "0" ]] && has_work=1
+  [[ "$u" != "0" && "$u" != "unknown" ]] && has_work=1
+  [[ "$s" != "0" ]] && has_work=1
+
+  printf '    branch:      %s\n' "${branch:-?}"
+  printf '    modified:    %s file(s)\n' "$m"
+  if [[ "$upstream" == "none" ]]; then
+    printf '    upstream:    none (cannot tell if commits are pushed)\n'
+  else
+    printf '    upstream:    %s\n' "${upstream:-?}"
+    printf '    unpushed:    %s commit(s)\n' "$u"
+  fi
+  printf '    stashes:     %s\n' "$s"
+
+  if (( has_work )); then
+    printf '    %s⚠%s has uncommitted / unpushed / stashed work — copy out before removing\n' \
+      "$(_ansi "$DVW_YELLOW" bold)" "$(ui_reset)"
+  elif [[ "$upstream" == "none" ]]; then
+    printf '    %s?%s clean working tree but no upstream — unable to confirm commits are pushed\n' \
+      "$(_ansi "$DVW_YELLOW" bold)" "$(ui_reset)"
+  else
+    printf '    %s✓%s clean — no uncommitted/unpushed/stashed git state detected\n' \
+      "$(_ansi "$DVW_GREEN" bold)" "$(ui_reset)"
+  fi
 }
