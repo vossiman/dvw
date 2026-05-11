@@ -244,14 +244,21 @@ cmd_blueprint() {
   local container_dir="/workspaces/$id"
   local container_dst="$container_dir/.devcontainer/devcontainer.json"
 
-  # Wake the workspace if it's not reachable. Same probe pattern as cmd_connect.
+  # Wake the workspace if it's not reachable. Same cold-branch policy as
+  # cmd_connect: if the alias probe fails but a container exists on the
+  # provider, treat as alive (just skip the up call) — never `devpod up`
+  # against a confirmed-existing container.
   _dvw_reap_stale_masters "$id"
-  if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "${id}.devpod" true 2>/dev/null; then
+  if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "${id}.devpod" true 2>/dev/null; then
     _dvw_ensure_local_devpod_state "$id" || return 1
     _dvw_reconcile_uid "$id" || return 1
-    ui_info "workspace not reachable — starting (devpod up --ide none)..."
-    _dvw_safe_devpod_up "$id" --ide none >/dev/null || { ui_error "failed to start $id"; return 1; }
-    catalog_workspace_set_devpod_state "$id" 2>/dev/null || true
+    if _dvw_provider_has_container "$id"; then
+      ui_status_ok "$id: container is running (alias probe was slow); proceeding"
+    else
+      ui_info "workspace not reachable — starting (devpod up --ide none)..."
+      _dvw_safe_devpod_up "$id" --ide none >/dev/null || { ui_error "failed to start $id"; return 1; }
+      catalog_workspace_set_devpod_state "$id" 2>/dev/null || true
+    fi
   fi
 
   if ! ssh "${id}.devpod" "test -d $container_dir" 2>/dev/null; then

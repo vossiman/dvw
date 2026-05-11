@@ -87,12 +87,23 @@ _connect_choose_mode() {
 }
 
 # SSH path: probe-up if needed, then ssh -t into a tmux `work` session.
+#
+# Cold-branch policy (container-safety invariant): if the alias probe fails
+# but a container exists on the provider, treat it as alive and `exec ssh`
+# directly. NEVER run `devpod up` against a confirmed-existing container
+# from this code path — that's the wipe footgun. The actual `exec ssh -t`
+# below uses default (long) ssh timeouts and no BatchMode, so it retries
+# on its own where the 5s BatchMode probe gave up.
 _connect_ssh() {
   local ws="$1"
-  if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "${ws}.devpod" true 2>/dev/null; then
-    ui_action "starting" "$ws (ide=none)"
-    _dvw_safe_devpod_up "$ws" --ide none || { ui_error "devpod up failed for $ws"; return 1; }
-    catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
+  if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "${ws}.devpod" true 2>/dev/null; then
+    if _dvw_provider_has_container "$ws"; then
+      ui_status_ok "$ws: container is running (alias probe was slow); opening ssh directly"
+    else
+      ui_action "starting" "$ws (ide=none)"
+      _dvw_safe_devpod_up "$ws" --ide none || { ui_error "devpod up failed for $ws"; return 1; }
+      catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
+    fi
   fi
   catalog_workspace_touch "$ws" 2>/dev/null || true
   # Single ssh call: probe tmux inside the same login shell that will host
@@ -142,12 +153,24 @@ _connect_cursor() {
       return 1
       ;;
     cold|*)
-      ui_action "starting" "$ws in Cursor"
-      if ! _dvw_safe_devpod_up "$ws" --ide cursor; then
-        ui_error "devpod up --ide cursor failed for $ws"
-        return 1
+      # Cold-branch policy (container-safety invariant): if the alias probe
+      # failed but a container exists on the provider, treat as alive and
+      # let Cursor open via its own ssh-remote (which has its own retry/
+      # timeout). NEVER `devpod up` against a confirmed-existing container.
+      # Only fall through to the wrapper (which still has its own fresh
+      # safety check) when no container exists.
+      if _dvw_provider_has_container "$ws"; then
+        ui_status_ok "$ws: container is running (alias probe was slow); opening Cursor directly"
+        _dvw_cursor_open "$ws" || return 1
+        catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
+      else
+        ui_action "starting" "$ws in Cursor"
+        if ! _dvw_safe_devpod_up "$ws" --ide cursor; then
+          ui_error "devpod up --ide cursor failed for $ws"
+          return 1
+        fi
+        catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
       fi
-      catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
       ;;
   esac
 }
@@ -222,7 +245,7 @@ _dvw_workspace_health() {
   # `|| rc=$?` keeps set -e from aborting on ssh failure when called from
   # non-cmd-sub contexts. Without it, a direct `_dvw_workspace_health $id`
   # under set -e dies before we can return "cold".
-  ssh -o ConnectTimeout=3 -o BatchMode=yes "${ws}.devpod" "
+  ssh -o ConnectTimeout=5 -o BatchMode=yes "${ws}.devpod" "
     cd /workspaces/$ws 2>/dev/null || exit 2
     cwd=\$(readlink /proc/self/cwd 2>/dev/null)
     [[ \"\$cwd\" == *'(deleted)'* ]] && exit 1
