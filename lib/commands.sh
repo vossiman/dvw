@@ -86,7 +86,7 @@ cmd_start() {
     return 1
   fi
   _dvw_ensure_local_devpod_state "$id" || return 1
-  _dvw_reconcile_uid "$id" || return 1
+  _dvw_resolve_canonical_container "$id" || return 1
   _dvw_reap_stale_masters "$id"
 
   _dvw_load_probe
@@ -131,7 +131,7 @@ cmd_recreate() {
     return 1
   fi
   _dvw_ensure_local_devpod_state "$id" || return 1
-  _dvw_reconcile_uid "$id" || return 1
+  _dvw_resolve_canonical_container "$id" || return 1
   _dvw_reap_stale_masters "$id"
   local ide="none"
   if catalog_workspace_get "$id" >/dev/null 2>&1; then
@@ -251,7 +251,7 @@ cmd_blueprint() {
   _dvw_reap_stale_masters "$id"
   if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "${id}.devpod" true 2>/dev/null; then
     _dvw_ensure_local_devpod_state "$id" || return 1
-    _dvw_reconcile_uid "$id" || return 1
+    _dvw_resolve_canonical_container "$id" || return 1
     if _dvw_provider_has_container "$id"; then
       ui_status_ok "$id: container is running (alias probe was slow); proceeding"
     else

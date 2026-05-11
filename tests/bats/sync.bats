@@ -4,8 +4,9 @@
 #   _dvw_ensure_local_devpod_state — synthesize ~/.devpod/.../workspace.json
 #                                    from the catalog snapshot.
 #
-# The probe-then-reconcile path (_dvw_reconcile_uid + _dvw_probe_remote_uid)
-# requires a fake SSH host and is deferred — see the TODO block at the bottom.
+# The canonical-container resolver path (_dvw_resolve_canonical_container)
+# requires a fake SSH host that returns scripted docker+tmux output and is
+# deferred — see the TODO block at the bottom.
 
 setup() {
   TMPDIR=$(mktemp -d)
@@ -114,16 +115,16 @@ JSON
   jq -e . "$ws_path" >/dev/null
 }
 
-# TODO: probe-then-reconcile tests
+# TODO: canonical-container resolver tests
 #
-# _dvw_reconcile_uid + _dvw_probe_remote_uid require a stand-in SSH host that
-# returns scripted JSON. Approaches to implement later:
-#   1. Stub ssh in $PATH with a script that emits a fixed JSON payload based
-#      on the host arg, and verify the local workspace.json gets rewritten
-#      to the elected uid.
-#   2. Feed cases:
-#      - all three uids agree → no-op
-#      - local mismatched, remote+volume agree → local rewritten
-#      - catalog mismatched, local+remote+volume agree → catalog rewritten
-#      - no candidate has any live evidence → returns 1, error printed
-#      - SSH unreachable → returns 0 (best-effort), local untouched
+# _dvw_resolve_canonical_container requires a stand-in SSH host that emits
+# scripted `docker ps` + `docker exec tmux list-sessions` output. Cases to
+# feed once the ssh stub is in place:
+#   - 0 containers labeled → returns 0, local untouched (cold-start path)
+#   - 1 container, 0 tmux → returns 0, local gets that uid
+#   - 1 container, 1 tmux → returns 0, local gets that uid
+#   - 2+ containers, 1 with tmux → returns 0, local gets the tmux holder's uid
+#   - 2+ containers, ≥2 with tmux → returns 0, picks most-recently-active,
+#     emits WARN
+#   - 2+ containers, 0 with tmux → returns 1 (pathological), local untouched
+#   - SSH unreachable → returns 0 (best-effort), local untouched

@@ -35,10 +35,10 @@ cmd_connect() {
   fi
 
   # Materialize devpod local state from the catalog snapshot if missing,
-  # then reconcile any uid drift against the remote provider. Both are no-ops
-  # on the happy path. If neither succeeds we bail before touching devpod.
+  # then resolve which container is canonical by direct observation of the
+  # provider (tmux-bearing container wins). Both are no-ops on the happy path.
   _dvw_ensure_local_devpod_state "$ws" || return 1
-  _dvw_reconcile_uid "$ws" || return 1
+  _dvw_resolve_canonical_container "$ws" || return 1
   _dvw_reap_stale_masters "$ws"
 
   local mode="$forced_mode"
@@ -108,10 +108,15 @@ _connect_ssh() {
   catalog_workspace_touch "$ws" 2>/dev/null || true
   # Single ssh call: probe tmux inside the same login shell that will host
   # the session, so we don't pay for two TCP+auth+`bash -l` round-trips.
+  # tmux exclusivity: `-A -D` together mean "create if missing, otherwise
+  # attach with -d (detach any other client of this session)". Last attach
+  # wins; the session itself keeps running across viewer changes. Plain
+  # `docker exec` shells (Cursor remote-ssh, non-tmux ssh) are unaffected —
+  # exclusivity is scoped to the tmux path only.
   exec ssh -t "${ws}.devpod" '
     infocmp -1 "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color
     if command -v tmux >/dev/null 2>&1; then
-      exec bash -lc "tmux new -A -s work"
+      exec bash -lc "tmux new -A -D -s work"
     fi
     echo "tmux not found in this workspace. Falling back to plain bash (no resume)." >&2
     echo "To bootstrap the full toolchain inside the workspace:" >&2
@@ -627,78 +632,110 @@ _dvw_ensure_local_devpod_state() {
   ui_status_ok "registered \"$id\" locally from catalog snapshot"
 }
 
-# Align this machine's local workspace.json uid (and the catalog's .uid)
-# to the agent's authoritative uid for <id>.
+# Resolve which container is canonical for <id> by direct observation of the
+# provider host. Writes the resolved uid into the local workspace.json (#1)
+# and pushes to the Dropbox catalog (#3). The agent's workspace.json (#2)
+# is intentionally NOT consulted or written for uid purposes.
 #
-# Why the agent is authoritative: devpod's agent on the provider host
-# reads its OWN workspace.json (~/.devpod/agent/contexts/default/.../) when
-# deciding which container to `docker exec` into. If a client's local uid
-# disagrees with the agent's, the client's `devpod ssh --stdio` chain
-# ends up bridging to whichever container the agent picks (sometimes a
-# stale orphan that was the previous incarnation of this workspace).
-# Aligning client→agent on every dvw invocation prevents that drift.
+# Authority: a container is canonical iff it carries the workspace's
+# container label AND (when ≥2 candidates exist) has a live tmux session
+# named `work`. Rationale: the uid in workspace.json files is bookkeeping
+# that gets re-written by whichever devpod client connects last via
+# --workspace-info; the running tmux session inside the container is the
+# user's actual valuable state and the only signal that's stable across
+# stale-client-write races.
 #
-# Two structural bugs this also rolls in fixes for:
-# - The local workspace.json is the *client* format: `.uid` at top level.
-#   Older code in this function (and in _dvw_rewrite_local_uid) used
-#   `.workspace.uid`, which is the *agent* format — the path doesn't
-#   exist client-side, so writes silently created a phantom field and
-#   reads always returned empty. The function looked like it worked but
-#   never actually rewrote anything.
-# - The function used to short-circuit when the catalog had no recorded
-#   uid (most pre-snapshot entries). That's exactly the case where
-#   reconcile is most needed. Now it always probes the agent.
+# Replaces an earlier `_dvw_reconcile_uid` that trusted the agent file as
+# authoritative. That model failed when stale ssh tunnels carrying old
+# --workspace-info blobs silently overwrote the agent file, causing
+# routing to flap between sibling containers.
 #
-# No container is ever touched. Only client-side workspace.json + the
-# Dropbox catalog get rewritten.
-_dvw_reconcile_uid() {
-  local id="$1" path local_uid host
+# Return codes:
+#   0 — local file #1 reflects the canonical uid (no-op if already correct,
+#       or written atomically + catalog updated if it had to change). Also
+#       returned when no candidate containers exist yet — caller falls
+#       through to the existing cold-start (`_dvw_safe_devpod_up`) path.
+#   1 — pathological state (≥2 candidate containers, none with a `work`
+#       tmux session, cannot disambiguate). Caller should stop.
+#
+# No container is ever touched by this function.
+_dvw_resolve_canonical_container() {
+  local id="$1" path host current_uid slug probe chosen
   path=$(catalog_devpod_workspace_json_path "$id")
   [[ -f "$path" ]] || return 0
-  local_uid=$(jq -r '.uid // empty' "$path" 2>/dev/null)
+  current_uid=$(jq -r '.uid // empty' "$path" 2>/dev/null)
   host=$(jq -r '.provider.options.HOST.value // empty' "$path" 2>/dev/null)
   if [[ -z "$host" ]]; then
-    ui_status_warn "reconcile: no provider HOST in $id's workspace.json — skipping"
+    ui_status_warn "resolve: no provider HOST in $id's workspace.json — skipping"
     return 0
   fi
+  slug=$(echo "$id" | cut -c1-2)
 
-  # Ask the agent what uid it has for this workspace. The agent's file uses
-  # `.workspace.uid` (nested) — different layout from the client's.
-  local agent_uid
-  agent_uid=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" \
-    "jq -r '.workspace.uid // empty' \"\$HOME/.devpod/agent/contexts/default/workspaces/$id/workspace.json\" 2>/dev/null" \
-    2>/dev/null || true)
-  agent_uid=${agent_uid//$'\r'/}
-  [[ "$agent_uid" == "null" ]] && agent_uid=""
-
-  if [[ -z "$agent_uid" ]]; then
-    # Agent has no record. Could be: workspace never up'd on agent,
-    # agent workspace dir was deleted manually, or the host is reachable
-    # but the path differs. Surface but don't fail — the caller (connect)
-    # may proceed; if no container exists it'll fall through to a safe up.
-    ui_status_warn "reconcile: agent at $host has no workspace.json for $id"
+  # Single SSH round-trip. Docker's `--filter label=KEY=VALUE` only matches
+  # exact values, not prefixes — so we filter by the bare label key (any
+  # devpod container has `dev.containers.id`) and prefix-match the slug
+  # remotely via awk. For each surviving container, probe whether a tmux
+  # session named `work` exists; emit `<uid>\t<work_session_activity>`
+  # (or `<uid>\t-1` if no such session).
+  probe=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" "
+    docker ps --filter 'label=dev.containers.id' \
+              --format '{{.ID}} {{.Label \"dev.containers.id\"}}' 2>/dev/null \
+    | awk -v slug='default-${slug}-' '\$2 ~ \"^\" slug { print \$1, \$2 }' \
+    | while read -r cid uid; do
+        [[ -z \"\$cid\" || -z \"\$uid\" ]] && continue
+        act=\$(docker exec \"\$cid\" tmux list-sessions \
+                -F '#{session_name} #{session_activity}' 2>/dev/null \
+              | awk '\$1 == \"work\" { print \$2; exit }')
+        [[ -z \"\$act\" ]] && act=-1
+        printf '%s\\t%s\\n' \"\$uid\" \"\$act\"
+      done
+  " 2>/dev/null) || {
+    ui_status_warn "resolve: ssh to $host failed — proceeding with current local uid"
     return 0
-  fi
-
-  if [[ "$local_uid" == "$agent_uid" ]]; then
-    # Already aligned. Best-effort catalog refresh so other machines see
-    # the same uid (silent on failure — catalog write may fail if Dropbox
-    # mount is down, etc).
-    local cat_uid
-    cat_uid=$(catalog_workspace_get_uid "$id" 2>/dev/null)
-    if [[ "$cat_uid" != "$agent_uid" ]]; then
-      catalog_workspace_set_devpod_state "$id" >/dev/null 2>&1 || true
-    fi
-    return 0
-  fi
-
-  ui_status_warn "uid drift: $id local=$local_uid agent=$agent_uid → aligning local to agent"
-  _dvw_rewrite_local_uid "$id" "$agent_uid" || return 1
-  # Push the new uid to the catalog so other machines pick it up.
-  catalog_workspace_set_devpod_state "$id" >/dev/null 2>&1 || {
-    ui_status_warn "could not push uid=$agent_uid to catalog (will retry next time)"
   }
-  ui_status_ok "uid drift resolved: $id local now=$agent_uid (matches agent)"
+  # Drop blanks.
+  probe=$(printf '%s\n' "$probe" | awk 'NF')
+
+  local n_total n_with_tmux
+  n_total=$(printf '%s\n' "$probe" | awk 'NF' | wc -l)
+  n_with_tmux=$(printf '%s\n' "$probe" | awk -F'\t' '$2 != "-1" && $2 != "" { n++ } END { print n+0 }')
+
+  if (( n_total == 0 )); then
+    # Cold: caller's existing devpod-up path handles it.
+    return 0
+  fi
+
+  if (( n_total == 1 )); then
+    chosen=$(printf '%s\n' "$probe" | head -1 | cut -f1)
+  elif (( n_with_tmux >= 1 )); then
+    # Multi-candidate with at least one tmux holder. Pick most-recently-active.
+    chosen=$(printf '%s\n' "$probe" | awk -F'\t' '$2 != "-1"' \
+             | sort -t$'\t' -k2 -nr | head -1 | cut -f1)
+    if (( n_with_tmux >= 2 )); then
+      ui_status_warn "$id has $n_with_tmux containers with a live \`work\` tmux session — picking most-recently-active"
+      printf '%s\n' "$probe" | awk -F'\t' '$2 != "-1" { printf "    %s  last_activity=%s\n", $1, $2 }' >&2
+      ui_info "  recommend manual cleanup: dvw doctor"
+    fi
+  else
+    # ≥2 candidates, none has a `work` tmux session. Pathological — refuse
+    # to silently guess. (Going forward `e2a42d6` prevents this state.)
+    ui_status_warn "$id has $n_total containers but none have a \`work\` tmux session:"
+    printf '%s\n' "$probe" | awk -F'\t' '{ printf "    %s\n", $1 }' >&2
+    ui_info "  refusing to guess. Pick one and start tmux in it, or run \`dvw doctor\`."
+    return 1
+  fi
+
+  [[ -z "$chosen" ]] && return 0
+
+  if [[ "$chosen" != "$current_uid" ]]; then
+    ui_status_warn "$id: canonical uid=$chosen (was=${current_uid:-unset}) — aligning local & catalog"
+    _dvw_rewrite_local_uid "$id" "$chosen" || return 1
+    catalog_workspace_set_devpod_state "$id" >/dev/null 2>&1 || {
+      ui_status_warn "could not push uid=$chosen to catalog (will retry next time)"
+    }
+    ui_status_ok "$id: uid aligned to $chosen"
+  fi
+  return 0
 }
 
 # Single SSH round-trip to the provider host. Returns JSON with remote_uid,
