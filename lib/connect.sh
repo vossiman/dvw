@@ -368,11 +368,13 @@ _dvw_probe_one_host() {
 set +e
 ctx_dir="$HOME/.devpod/agent/contexts/default/workspaces"
 ps_tmp=$(mktemp)
-# TAB-separated so empty labels stay as empty first fields. With space
-# separation, a non-devpod container (no dev.containers.id label) collapses
-# to "<state> <cid>" and downstream parsers misread its state as the uid —
-# that's how `__ORPHAN running` x9 noise was getting into doctor output.
-docker ps -a --format '{{.Label "dev.containers.id"}}	{{.State}}	{{.ID}}' 2>/dev/null > "$ps_tmp"
+# Filter at the docker level to only see containers that carry the
+# `dev.containers.id` label. Containers without that label are not
+# devpod-managed and have no business in the orphan/state output.
+# This avoids the IFS-empty-field parsing trap (bash strips leading
+# IFS chars when IFS is whitespace-only, including TAB).
+docker ps -a --filter 'label=dev.containers.id' \
+  --format '{{.Label "dev.containers.id"}}	{{.State}}	{{.ID}}' 2>/dev/null > "$ps_tmp"
 
 # Track uids claimed by a workspace dir; remaining ps entries are orphans.
 claimed_tmp=$(mktemp)
