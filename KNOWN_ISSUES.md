@@ -69,6 +69,49 @@ This was previously `universal:2` (Ubuntu 20.04 focal). Most workarounds below o
 
   **Out of scope for the wrapper:** `cmd_new` has no prior container by definition. Manual `devpod up` invocations outside dvw can still hit this. Upstream root cause (why `devpod up` is destructive on a running container) was not investigated; the wrapper sidesteps the question rather than answering it.
 
+- 🟢 **MITIGATED — uid drift between client and agent workspace.json** — Confirmed 2026-05-11 after PC's `dvw <id> --ssh` repeatedly failed with `su: user codespace does not exist` inside the container. The agent's container was a recent build with the codespace user; the PC was being bridged to an *orphan* container from a previous incarnation of the workspace that was missing it. The PC's local uid had drifted from the agent's.
+
+  **The two workspace.json layouts.** DevPod stores per-workspace state in two different shapes that don't interoperate:
+  - **Client-side** (`~/.devpod/contexts/<ctx>/workspaces/<id>/workspace.json` on each machine): `{ "id": ..., "uid": <uid>, "provider": { "options": { "HOST": ... } }, ... }` — fields at top level.
+  - **Agent-side** (`~/.devpod/agent/contexts/<ctx>/workspaces/<id>/workspace.json` on the provider host): `{ "workspace": { "uid": <uid>, "provider": ... }, ... }` — fields nested under `.workspace`.
+
+  Confusing both layouts as one was the root of three latent bugs in dvw that compounded the user-visible failure:
+  - `_dvw_reconcile_uid` read `.workspace.uid` from the local (client-side) file → always got empty → short-circuit gate `[[ -z "$cat_uid" ]] && return 0` made the function a near-no-op for legacy entries with no catalog uid.
+  - `_dvw_rewrite_local_uid` wrote `.workspace.uid` to the client-side file → silently created a phantom nested field while the real top-level `.uid` stayed stale.
+  - `catalog_workspace_set_devpod_state` read `.workspace.uid` from the client-side file → catalog's convenience `.uid` field never got populated from any client snapshot.
+
+  Together: reconcile *looked* like it worked, fired rarely, and even when it fired it rewrote the wrong field. So PC's local uid (`default-da-89c70`, pointing at a previous-incarnation container) never got aligned to the agent's current uid (`default-da-59292`, pointing at the live container with the codespace user). `devpod ssh --stdio` from PC ended up bridging to the orphan, `su codespace` failed there.
+
+  **Fix (commit `4aab291`):** all three paths now use the correct layout for the file they're reading/writing. `_dvw_reconcile_uid` always runs (no more gating on empty `cat_uid`), uses the **agent as authoritative** (the agent's workspace.json is what DevPod's own agent uses to find containers, so client/catalog drift is always resolved by aligning to the agent), and atomically rewrites client + catalog. Voting between local/catalog/remote candidates was removed — over-engineered for the actual problem.
+
+  **Provider-side probe was also rewritten (commit `f9b8675`)** to do the id↔uid↔state join server-side rather than depending on the catalog snapshot for the uid. The server reads its own `~/.devpod/agent/contexts/default/workspaces/<id>/workspace.json` for the uid, joins with `docker ps -a` labels, and returns `<id> <state>` lines. Client never needs to know any uid for status — the agent has both halves and tells us the answer. This makes the probe robust to every client-side missing-data case (`uid: null`, missing snapshot, fresh machine, etc.).
+
+  **Cold-branch policy in connect paths (commit `e2a42d6`)** — `_connect_ssh`, `_connect_cursor`, `cmd_blueprint`: if the per-workspace alias SSH probe fails but `_dvw_provider_has_container` confirms a container exists, the cold branch now skips `devpod up` entirely and opens directly. Cursor handles its own ssh-remote retries; SSH mode uses `exec ssh` with default (long) timeouts. The `_dvw_safe_devpod_up` interactive Yes/No prompt — a wipe-risk escape hatch — is no longer reachable in normal operation. Alias-probe `ConnectTimeout` was also bumped from 3s to 5s to reduce false-cold reports on slow links.
+
+  **Self-healing behavior:** on every `dvw <id>` / `dvw start <id>` / `dvw recreate <id>` / `dvw blueprint`, reconcile runs first. Drift gets detected and rewritten before any SSH chain that depends on the uid. The catalog also gets updated, so other machines pick up the alignment on their next pull. Pre-existing catalog entries that never had `.devpod_state` populated converge to a healthy state the first time any machine connects to them.
+
+- 🟢 **MITIGATED — orphan containers from previous workspace incarnations** — Each `devpod up --recreate` (or manual `devpod up` after editing devcontainer config) creates a new container with a new uid, leaving the previous container intact under its old uid. Over time the provider accumulates "orphans" — devpod-labelled containers whose uid isn't claimed by any current `~/.devpod/agent/contexts/default/workspaces/<id>/workspace.json`.
+
+  Orphans aren't automatically harmful — they sit on the provider consuming disk — but they bit the user once when the PC's stale client uid pointed at an orphan that didn't have the codespace user (see preceding entry).
+
+  **Detection (Tier 1, in `dvw doctor`):** the provider-side probe emits per orphan: uid, container name, state, and `/workspaces/<id>` bind-mount status (`alive` / `deleted` / `nomount`). Surfaced in `dvw doctor` as one warning line per orphan. Bind-mount `deleted` means the host source path is gone (the stale-bind-mount fingerprint from item above) — data unrecoverable from that container. `alive` means the bind-mount source is still on disk and may contain uncommitted edits or unpushed commits.
+
+  **Audit (Tier 2, via the top menu):** when orphans exist, the `dvw` top menu surfaces an "⚠ Audit orphan containers (N)" entry. Choosing it triggers `cmd_orphans_audit` which does one ssh per provider host bundling all that host's orphans. Per orphan it reports:
+  - For running orphans: `docker exec` into the container and run `git status / git rev-list @{u}.. / git stash list` inside `/workspaces/<id>`.
+  - For exited orphans: same git read-only commands against the bind-mount source path on the provider host directly (no docker exec — the container is stopped).
+
+  Each orphan gets a per-line verdict:
+  - `✓ clean` — no uncommitted/unpushed/stashed git state detected
+  - `⚠ has work` — copy out before removing
+  - `✗ unrecoverable` — bind mount is stale or source path is missing on host
+  - `? could not inspect` — docker exec timed out, no `.git`, or no upstream
+
+  **Removal stays manual** — `dvw` never executes `docker rm` itself. The audit footer prints the template `ssh <host> 'docker rm -f <container-name>'`; the user types it after deciding the audit shows nothing worth keeping.
+
+  **Layout notes for future hackers:**
+  - The probe uses TAB-separated docker `--format` output **plus** `--filter "label=dev.containers.id"` to scope to devpod-labelled containers only. Earlier attempts to parse unlabelled-container output with bash `read` failed because `IFS=$'\t'` is treated as whitespace-only IFS — bash strips leading IFS chars, so an empty first field collapses and downstream fields shift into the wrong slots. Filtering at the docker level sidesteps the parsing trap entirely.
+  - Orphan info is keyed by uid in `DVW_PROBE_ORPHAN_INFO` (associative array in `connect.sh`). The host alias is prepended client-side (the server-side script doesn't know its own SSH alias).
+
 ## Cursor (host integration)
 
 - 🟢 **MITIGATED — AppImage triple-launch on `devpod up`** — DevPod fires `cursor` three times (`--list-extensions`, `--install-extension`, `--new-window`); raw AppImage opens a GUI window for each. `~/.local/bin/cursor` shim auto-extracts the AppImage and points at `squashfs-root/usr/share/cursor/bin/cursor`. Self-healing on Cursor updates (re-extracts when the AppImage mtime changes).

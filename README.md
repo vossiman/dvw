@@ -35,8 +35,9 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
 | `dvw stop <id>` | `devpod stop` |
 | `dvw start <id>` | `devpod up` with the workspace's saved IDE |
-| `dvw status` | one-line per workspace: id, repo@branch, ide, running?, last used |
-| `dvw doctor` | health check: rclone mount, catalog, ssh-sync, devpod, gum, orphans |
+| `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
+| `dvw doctor` | health check: provider probe, rclone mount, catalog, ssh-sync, devpod, gum, per-orphan summary |
+| `dvw <anything> --dry-run` | print would-be `devpod ...` / `docker ...` invocations without executing — works on any mutating subcommand |
 
 ## Install on Mint
 
@@ -99,6 +100,47 @@ The `sudo rm` step requires interactive auth; don't try to script past it.
 ```bash
 ssh -t <workspace>.devpod 'bash -lc "cd /tmp/aicoding && git pull origin main && bash install.sh"'
 ```
+
+## Multi-machine sync model
+
+A single user across multiple machines (e.g. laptop + WSL on a PC), one remote provider (`vossisrv`), one shared Dropbox catalog. Three pieces of state participate:
+
+- **Catalog (Dropbox-shared)** — `~/Dropbox-remote/dvw/catalog.json`. Authoritative for *which workspaces exist*: id, repo, branch, ide, provider name. Also caches a per-workspace `.devpod_state` snapshot opportunistically. **The catalog `.uid` is a convenience copy; the agent is authoritative for the actual id↔uid mapping** (see below).
+- **Client workspace.json (per-machine)** — `~/.devpod/contexts/default/workspaces/<id>/workspace.json`. DevPod CLI's local record on each client. Layout: `{ "id": ..., "uid": ..., "provider": { "options": { "HOST": ... } }, ... }` (fields at top level).
+- **Agent workspace.json (on the provider)** — `~/.devpod/agent/contexts/default/workspaces/<id>/workspace.json` on `vossisrv`. DevPod agent's record. Layout: `{ "workspace": { "uid": ..., "provider": ... }, ... }` (fields nested under `.workspace`). **This is authoritative** — the agent uses *its own* workspace.json to pick which docker container to exec into, so any client uid that disagrees with the agent's is wrong from DevPod's perspective.
+
+`dvw` reconciles client→agent on every connect path (`_dvw_reconcile_uid` in `lib/connect.sh`): ssh to the provider, read the agent's `.workspace.uid`, rewrite the local `.uid` if it differs, push the new uid to the catalog. Drift heals automatically. The status probe (`_dvw_load_probe`) also does the id↔uid join *server-side*, so a fresh machine with no local devpod state still gets correct `dvw status` output on the first run.
+
+For why this matters and what the failure mode looks like when it breaks, see the uid-drift entry in `KNOWN_ISSUES.md`.
+
+## Provider probe (`dvw status` / `dvw doctor` ground truth)
+
+`dvw status`, `dvw doctor`, and the picker compute workspace state from a **single ssh round-trip to the provider** rather than per-workspace alias probes. The remote script enumerates `~/.devpod/agent/contexts/default/workspaces/`, reads each workspace's uid from its workspace.json, joins with `docker ps -a --filter label=dev.containers.id` labels, and returns `<id> <state>` lines plus per-orphan detail.
+
+Five user-visible states:
+
+| State | Meaning |
+|--|--|
+| `● running` | Container running, `/proc/1/cwd` is a live inode |
+| `⚠ stale` | Container running, but bind mount points at a deleted inode (Cursor will fatal — `dvw recreate <id>` to fix) |
+| `○ stopped` | Container exists on provider, not running (`dvw start <id>` to start) |
+| `✗ absent` | Catalog says the workspace exists, but no container on the provider has a matching uid (someone deleted it manually, or uid drift the reconciler hasn't fixed yet) |
+| `? unreachable` | The probe couldn't ssh to the provider from this machine. **Distinct from `○ stopped`** — it means "I can't ask," not "container is down." The captured ssh error appears in the `dvw status` / `dvw doctor` footer. |
+
+`dvw doctor` opens with a `[OK] provider probe: alive=N stale=N stopped=N absent=N` summary or fails noisily if the probe couldn't reach the provider.
+
+## Orphan containers
+
+When DevPod recreates a workspace (`devpod up --recreate`, or `devpod up` after editing devcontainer config), the previous container is left running under its old uid. `dvw doctor` surfaces these as orphans:
+
+```
+[WARN]  2 orphan container(s) on provider — may contain data, verify before removing
+          default-da-89c70 · heuristic_spence · running · /workspaces/dataenv-git-devpod mount alive (may contain data)
+          default-fi-2bae9 · jolly_lovelace  · exited  · /workspaces/financepdfs-git-main mount stale (deleted inode — workspaces data unrecoverable)
+         (run `dvw` and pick "Audit orphan containers" for git status / unpushed / stashes inside each)
+```
+
+The `dvw` top menu shows **⚠ Audit orphan containers (N)** when N > 0. Choosing it runs a deeper audit per orphan: branch, modified file count, unpushed commit count, stash count, verdict. Removal is always manual — `dvw` prints the `ssh <host> 'docker rm -f <name>'` template; you type it after deciding.
 
 ## Catalog location and sync
 
