@@ -368,7 +368,11 @@ _dvw_probe_one_host() {
 set +e
 ctx_dir="$HOME/.devpod/agent/contexts/default/workspaces"
 ps_tmp=$(mktemp)
-docker ps -a --format '{{.Label "dev.containers.id"}} {{.State}} {{.ID}}' 2>/dev/null > "$ps_tmp"
+# TAB-separated so empty labels stay as empty first fields. With space
+# separation, a non-devpod container (no dev.containers.id label) collapses
+# to "<state> <cid>" and downstream parsers misread its state as the uid —
+# that's how `__ORPHAN running` x9 noise was getting into doctor output.
+docker ps -a --format '{{.Label "dev.containers.id"}}	{{.State}}	{{.ID}}' 2>/dev/null > "$ps_tmp"
 
 # Track uids claimed by a workspace dir; remaining ps entries are orphans.
 claimed_tmp=$(mktemp)
@@ -383,13 +387,14 @@ if [ -d "$ctx_dir" ]; then
       continue
     fi
     echo "$ws_uid" >> "$claimed_tmp"
-    match=$(awk -v u="$ws_uid" '$1==u {print; exit}' "$ps_tmp")
+    # awk -F'\t' so $1=label even when label is empty (gives "")
+    match=$(awk -F'\t' -v u="$ws_uid" '$1==u {print; exit}' "$ps_tmp")
     if [ -z "$match" ]; then
       echo "$ws_id absent"
       continue
     fi
-    state=$(awk '{print $2}' <<<"$match")
-    cid=$(awk '{print $3}' <<<"$match")
+    state=$(awk -F'\t' '{print $2}' <<<"$match")
+    cid=$(awk -F'\t' '{print $3}' <<<"$match")
     if [ "$state" = "running" ]; then
       pid=$(docker inspect --format '{{.State.Pid}}' "$cid" 2>/dev/null)
       cwd=""
@@ -407,7 +412,9 @@ if [ -d "$ctx_dir" ]; then
 fi
 
 # Orphans: labelled containers whose uid is not claimed by any workspace dir.
-while read -r uid state cid; do
+# IFS=$'\t' so empty-label lines parse as uid="" (skipped below) rather than
+# slipping the state into the uid slot.
+while IFS=$'\t' read -r uid state cid; do
   [ -z "$uid" ] && continue
   if ! grep -qFx "$uid" "$claimed_tmp" 2>/dev/null; then
     echo "__ORPHAN $uid"
