@@ -579,85 +579,78 @@ _dvw_ensure_local_devpod_state() {
   ui_status_ok "registered \"$id\" locally from catalog snapshot"
 }
 
-# Detect uid drift (local vs catalog vs remote provider) and rewrite the
-# losers to match the elected uid. Best-effort — if SSH to provider fails
-# we proceed without reconciling.
+# Align this machine's local workspace.json uid (and the catalog's .uid)
+# to the agent's authoritative uid for <id>.
+#
+# Why the agent is authoritative: devpod's agent on the provider host
+# reads its OWN workspace.json (~/.devpod/agent/contexts/default/.../) when
+# deciding which container to `docker exec` into. If a client's local uid
+# disagrees with the agent's, the client's `devpod ssh --stdio` chain
+# ends up bridging to whichever container the agent picks (sometimes a
+# stale orphan that was the previous incarnation of this workspace).
+# Aligning client→agent on every dvw invocation prevents that drift.
+#
+# Two structural bugs this also rolls in fixes for:
+# - The local workspace.json is the *client* format: `.uid` at top level.
+#   Older code in this function (and in _dvw_rewrite_local_uid) used
+#   `.workspace.uid`, which is the *agent* format — the path doesn't
+#   exist client-side, so writes silently created a phantom field and
+#   reads always returned empty. The function looked like it worked but
+#   never actually rewrote anything.
+# - The function used to short-circuit when the catalog had no recorded
+#   uid (most pre-snapshot entries). That's exactly the case where
+#   reconcile is most needed. Now it always probes the agent.
+#
+# No container is ever touched. Only client-side workspace.json + the
+# Dropbox catalog get rewritten.
 _dvw_reconcile_uid() {
-  local id="$1" path local_uid cat_uid
+  local id="$1" path local_uid host
   path=$(catalog_devpod_workspace_json_path "$id")
   [[ -f "$path" ]] || return 0
-  local_uid=$(jq -r '.workspace.uid // empty' "$path" 2>/dev/null)
-  cat_uid=$(catalog_workspace_get_uid "$id" 2>/dev/null)
-
-  # Happy path: catalog hasn't recorded a uid yet (legacy or pre-snapshot
-  # creation) → reverse-sync after the next successful connect will fill it.
-  # Or local and catalog already agree → nothing to do.
-  if [[ -z "$cat_uid" ]] || [[ "$local_uid" == "$cat_uid" ]]; then
-    return 0
-  fi
-
-  local host
-  host=$(jq -r '.workspace.provider.options.HOST.value // empty' "$path" 2>/dev/null)
+  local_uid=$(jq -r '.uid // empty' "$path" 2>/dev/null)
+  host=$(jq -r '.provider.options.HOST.value // empty' "$path" 2>/dev/null)
   if [[ -z "$host" ]]; then
-    ui_status_warn "uid drift: local=$local_uid catalog=$cat_uid (no provider HOST in workspace.json — skipping reconcile)"
+    ui_status_warn "reconcile: no provider HOST in $id's workspace.json — skipping"
     return 0
   fi
 
-  ui_action "probing" "$host for live uid (local=$local_uid catalog=$cat_uid)"
-  local probe
-  if ! probe=$(_dvw_probe_remote_uid "$host" "$id" 2>/dev/null); then
-    ui_status_warn "could not probe $host; skipping reconcile (will use local uid=$local_uid)"
+  # Ask the agent what uid it has for this workspace. The agent's file uses
+  # `.workspace.uid` (nested) — different layout from the client's.
+  local agent_uid
+  agent_uid=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" \
+    "jq -r '.workspace.uid // empty' \"\$HOME/.devpod/agent/contexts/default/workspaces/$id/workspace.json\" 2>/dev/null" \
+    2>/dev/null || true)
+  agent_uid=${agent_uid//$'\r'/}
+  [[ "$agent_uid" == "null" ]] && agent_uid=""
+
+  if [[ -z "$agent_uid" ]]; then
+    # Agent has no record. Could be: workspace never up'd on agent,
+    # agent workspace dir was deleted manually, or the host is reachable
+    # but the path differs. Surface but don't fail — the caller (connect)
+    # may proceed; if no container exists it'll fall through to a safe up.
+    ui_status_warn "reconcile: agent at $host has no workspace.json for $id"
     return 0
   fi
 
-  local remote_uid
-  remote_uid=$(echo "$probe" | jq -r '.remote_uid // empty')
-  local has_content
-  has_content=$(echo "$probe" | jq -r '.has_content // false')
-  local volumes
-  volumes=$(echo "$probe" | jq -r '.volumes[]? // empty')
-
-  # Score each candidate: +1 per signal of "live" state.
-  local winner="" winner_score=-1
-  local cand
-  for cand in "$remote_uid" "$local_uid" "$cat_uid"; do
-    [[ -z "$cand" ]] && continue
-    local score=0
-    [[ "$cand" == "$remote_uid" ]] && score=$((score+1))
-    grep -qx "dind-var-lib-docker-$cand" <<<"$volumes" && score=$((score+1))
-    [[ "$cand" == "$remote_uid" && "$has_content" == "true" ]] && score=$((score+1))
-    if (( score > winner_score )); then
-      winner="$cand"
-      winner_score=$score
+  if [[ "$local_uid" == "$agent_uid" ]]; then
+    # Already aligned. Best-effort catalog refresh so other machines see
+    # the same uid (silent on failure — catalog write may fail if Dropbox
+    # mount is down, etc).
+    local cat_uid
+    cat_uid=$(catalog_workspace_get_uid "$id" 2>/dev/null)
+    if [[ "$cat_uid" != "$agent_uid" ]]; then
+      catalog_workspace_set_devpod_state "$id" >/dev/null 2>&1 || true
     fi
-  done
-
-  if [[ -z "$winner" ]] || (( winner_score == 0 )); then
-    ui_error "neither uid resolves to live state on $host — workspace lost"
-    ui_info "(\`dvw rm $id\` then \`dvw new\` to recreate)"
-    return 1
-  fi
-
-  if [[ "$winner" == "$local_uid" ]] && [[ "$winner" == "$cat_uid" ]]; then
     return 0
   fi
 
-  local updated=()
-  if [[ "$local_uid" != "$winner" ]]; then
-    _dvw_rewrite_local_uid "$id" "$winner" || return 1
-    updated+=("local")
-  fi
-  if [[ "$cat_uid" != "$winner" ]]; then
-    catalog_workspace_set_devpod_state "$id" >/dev/null 2>&1 || {
-      ui_status_warn "could not push uid=$winner to catalog (will retry after next connect)"
-    }
-    updated+=("catalog")
-  fi
-  if [[ -n "$remote_uid" ]] && [[ "$remote_uid" != "$winner" ]]; then
-    ui_status_warn "remote workspace.json on $host still has uid=$remote_uid (not auto-rewritten — fix manually if needed)"
-  fi
-
-  ui_status_ok "uid drift resolved: local=$local_uid catalog=$cat_uid remote=$remote_uid → elected=$winner (updated: ${updated[*]:-none})"
+  ui_status_warn "uid drift: $id local=$local_uid agent=$agent_uid → aligning local to agent"
+  _dvw_rewrite_local_uid "$id" "$agent_uid" || return 1
+  # Push the new uid to the catalog so other machines pick it up.
+  catalog_workspace_set_devpod_state "$id" >/dev/null 2>&1 || {
+    ui_status_warn "could not push uid=$agent_uid to catalog (will retry next time)"
+  }
+  ui_status_ok "uid drift resolved: $id local now=$agent_uid (matches agent)"
 }
 
 # Single SSH round-trip to the provider host. Returns JSON with remote_uid,
@@ -712,18 +705,23 @@ _dvw_reap_stale_masters() {
   ssh_reap_stale_master "${id}.devpod"
   path=$(catalog_devpod_workspace_json_path "$id")
   if [[ -f "$path" ]]; then
-    host=$(jq -r '.workspace.provider.options.HOST.value // empty' "$path" 2>/dev/null)
+    # Client-side workspace.json has `.provider.options.HOST.value` at top
+    # level (not nested under `.workspace`, which is the agent layout).
+    host=$(jq -r '.provider.options.HOST.value // empty' "$path" 2>/dev/null)
     [[ -n "$host" ]] && ssh_reap_stale_master "$host"
   fi
   return 0
 }
 
-# Rewrite .workspace.uid in the local workspace.json atomically.
+# Rewrite the local workspace.json's `.uid` atomically. Client layout uses
+# `.uid` at top level, NOT `.workspace.uid` (that's the agent's layout).
+# Earlier versions of this function targeted `.workspace.uid` and silently
+# created a phantom field while leaving the real `.uid` unchanged.
 _dvw_rewrite_local_uid() {
   local id="$1" new_uid="$2" path tmp
   path=$(catalog_devpod_workspace_json_path "$id")
   tmp="$path.tmp"
-  if ! jq --arg uid "$new_uid" '.workspace.uid = $uid' "$path" > "$tmp"; then
+  if ! jq --arg uid "$new_uid" '.uid = $uid' "$path" > "$tmp"; then
     rm -f "$tmp"
     ui_error "failed to rewrite local workspace.json uid for \"$id\""
     return 1

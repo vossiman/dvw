@@ -143,10 +143,16 @@ catalog_devpod_workspace_json_path() {
 }
 
 # Snapshot devpod's local workspace.json for <id> into the catalog entry.
-# Sets two fields: .uid (convenience copy of .workspace.uid) and .devpod_state
-# (the verbatim devpod workspace.json contents as an object). Atomic via
-# catalog_write. Returns 1 if the local workspace.json doesn't exist or the
-# catalog entry isn't present.
+# Sets two fields: .uid (convenience copy of the local file's .uid) and
+# .devpod_state (the verbatim devpod workspace.json contents as an object).
+# Atomic via catalog_write. Returns 1 if the local workspace.json doesn't
+# exist or the catalog entry isn't present.
+#
+# Layout note: devpod's *client-side* workspace.json has `.uid` at top
+# level; the *agent-side* one (on the provider host) uses `.workspace.uid`.
+# This function reads the client-side file, so it queries `.uid`. Earlier
+# versions queried `.workspace.uid` here, which silently returned empty
+# and left catalog .uid unpopulated for every client snapshot.
 catalog_workspace_set_devpod_state() {
   local id="$1"
   local path snapshot uid
@@ -159,7 +165,7 @@ catalog_workspace_set_devpod_state() {
     echo "catalog_workspace_set_devpod_state: $path is not valid JSON" >&2
     return 1
   fi
-  uid=$(echo "$snapshot" | jq -r '.workspace.uid // empty')
+  uid=$(echo "$snapshot" | jq -r '.uid // empty')
   catalog_read \
     | jq --arg id "$id" --arg uid "$uid" --argjson state "$snapshot" '
         .workspaces |= map(
