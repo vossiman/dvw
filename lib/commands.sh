@@ -32,7 +32,7 @@ cmd_rm() {
       fi
     fi
     ui_action "removing" "$id"
-    devpod delete "$id" || {
+    _dvw_run_or_print devpod delete "$id" || {
       ui_error "devpod delete failed; catalog not modified"
       return 1
     }
@@ -44,6 +44,10 @@ cmd_rm() {
     fi
   fi
 
+  if [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
+    ui_info "[dry-run] would remove $id from catalog"
+    return 0
+  fi
   catalog_workspace_remove "$id" || {
     ui_status_warn "catalog write failed — run \`dvw doctor\`"
     return 1
@@ -57,9 +61,24 @@ cmd_stop() {
     return 1
   fi
   ui_action "stopping" "$id"
-  devpod stop "$id"
+  _dvw_run_or_print devpod stop "$id"
 }
 
+# Probe-aware start. The provider probe (set in _dvw_load_probe) tells us
+# precisely what state the workspace is in, so each case maps to the safe
+# action:
+#
+#   alive       — already running. No-op; print the connect hint.
+#   stale       — running but bind mount is dead. Refuse; point to recreate.
+#                 `devpod up` here is the wipe footgun.
+#   stopped     — container exists, not running. Safe to start via the
+#                 wrapper (which still asks the provider as belt-and-braces).
+#   absent      — no container at all. Same: safe `devpod up` via wrapper.
+#   unreachable — couldn't query the provider from this machine. Refuse —
+#                 starting blind risks the wipe path. Surface the ssh error
+#                 captured in DVW_PROBE_ERROR.
+#   unknown     — legacy entry without uid/HOST snapshot in catalog. Fall
+#                 through to the old behavior so legacy workspaces still work.
 cmd_start() {
   local id="${1:-}"
   if [[ -z "$id" ]]; then
@@ -69,13 +88,37 @@ cmd_start() {
   _dvw_ensure_local_devpod_state "$id" || return 1
   _dvw_reconcile_uid "$id" || return 1
   _dvw_reap_stale_masters "$id"
+
+  _dvw_load_probe
+  local state="${DVW_PROBE_STATE[$id]:-unknown}"
+  case "$state" in
+    alive)
+      ui_status_ok "$id is already running"
+      ui_info "  connect: dvw $id"
+      return 0
+      ;;
+    stale)
+      ui_error "$id has a stale workspace bind mount — refusing to start"
+      ui_info "  \`devpod up\` against a stale-running container is the wipe footgun."
+      ui_info "  recover: dvw recreate $id"
+      return 1
+      ;;
+    unreachable)
+      ui_error "$id is unreachable from this machine — refusing to start"
+      [[ -n "$DVW_PROBE_ERROR" ]] && ui_info "  ssh: $DVW_PROBE_ERROR"
+      ui_info "  fix the network/SSH path to the provider, then retry."
+      return 1
+      ;;
+    stopped|absent|unknown|*) : ;;
+  esac
+
   local ide="none"
   if catalog_workspace_get "$id" >/dev/null 2>&1; then
     ide=$(catalog_workspace_get "$id" | jq -r '.ide')
     [[ "$ide" == "ssh" ]] && ide="none"
   fi
-  ui_action "starting" "$id (ide=$ide)"
-  devpod up "$id" --ide "$ide" || return 1
+  ui_action "starting" "$id (ide=$ide, state=$state)"
+  _dvw_safe_devpod_up "$id" --ide "$ide" || return 1
   catalog_workspace_set_devpod_state "$id" 2>/dev/null || true
 }
 
@@ -96,18 +139,34 @@ cmd_recreate() {
     [[ "$ide" == "ssh" ]] && ide="none"
   fi
   ui_action "recreating" "$id (ide=$ide)"
-  devpod up "$id" --recreate --ide "$ide" || return 1
+  _dvw_run_or_print devpod up "$id" --recreate --ide "$ide" || return 1
   catalog_workspace_set_devpod_state "$id" 2>/dev/null || true
 }
 
 # Banner + column-aligned colored rows. Columns: id, repo@branch, ide,
-# ●running/○stopped, last:<ts>, on:<host>. Same colorization as the picker.
+# <state-glyph>, last:<ts>, on:<host>. Same 5-state colorization as the
+# picker: ● running / ⚠ stale / ○ stopped / ✗ absent / ? unreachable.
+#
+# Backed by the provider-first probe (one ssh to vossisrv, see
+# _dvw_load_probe in connect.sh). The footer surfaces ssh errors for the
+# unreachable case so "I can't ask the provider" is never silently rendered
+# as "container is down".
 cmd_status() {
   _dvw_load_running_ids
   ui_banner "dvw status"
   local raw
-  raw=$(catalog_read 2>/dev/null | jq -r --arg running "$DVW_RUNNING_IDS" '
-    ($running | split("\n") | map(select(. != ""))) as $r |
+  raw=$(catalog_read 2>/dev/null | jq -r \
+        --arg alive       "$DVW_ALIVE_IDS" \
+        --arg stale       "$DVW_STALE_IDS" \
+        --arg stopped     "$DVW_STOPPED_IDS" \
+        --arg absent      "$DVW_ABSENT_IDS" \
+        --arg unreachable "$DVW_UNREACHABLE_IDS" '
+    def lines: split("\n") | map(select(. != ""));
+    ($alive | lines)       as $a |
+    ($stale | lines)       as $s |
+    ($stopped | lines)     as $o |
+    ($absent | lines)      as $b |
+    ($unreachable | lines) as $u |
     def shortrepo:
       sub("^git@github\\.com:"; "")
       | sub("^https://github\\.com/"; "")
@@ -117,7 +176,13 @@ cmd_status() {
         .id,
         ((.repo | shortrepo) + "@" + .branch),
         .ide,
-        (if (.id as $id | $r | index($id)) then "● running" else "○ stopped" end),
+        (.id as $id
+         | if   ($s | index($id)) then "⚠ stale"
+           elif ($a | index($id)) then "● running"
+           elif ($o | index($id)) then "○ stopped"
+           elif ($b | index($id)) then "✗ absent"
+           elif ($u | index($id)) then "? unreachable"
+           else                        "? unknown" end),
         ("last:" + .last_used_at),
         ("on:" + .created_on)
       ] | @tsv
@@ -131,17 +196,28 @@ cmd_status() {
     | _ui_colorize_workspace_row \
     | sed 's/^/  /'
 
-  # Surface stale-bind-mount workspaces below the table. These look "running"
-  # in the row above but Cursor will fatal on connect; the SSH+tmux path keeps
-  # working because bash tolerates a dead cwd. Only probes workspaces already
-  # marked Running, so the SSH cost is bounded.
-  _dvw_load_stale_ids
+  # Footer: surface anything the row colorization can't fully explain.
+  if [[ -n "$DVW_UNREACHABLE_IDS" ]]; then
+    echo
+    ui_status_warn "provider unreachable from this machine"
+    [[ -n "$DVW_PROBE_ERROR" ]] && ui_info "  ssh: $DVW_PROBE_ERROR"
+    ui_info "  rows shown as \`? unreachable\` reflect the inability to ask the"
+    ui_info "  provider — NOT that the containers are down."
+  fi
   if [[ -n "$DVW_STALE_IDS" ]]; then
     echo
     while IFS= read -r id; do
       [[ -z "$id" ]] && continue
       ui_status_warn "$id has a stale workspace bind mount — \`dvw recreate $id\` to fix"
     done <<<"$DVW_STALE_IDS"
+  fi
+  if [[ -n "$DVW_ABSENT_IDS" ]]; then
+    echo
+    while IFS= read -r id; do
+      [[ -z "$id" ]] && continue
+      ui_status_warn "$id is in the catalog but no container exists on its provider"
+      ui_info "  start it: dvw start $id   |   remove the stale catalog entry: dvw rm $id"
+    done <<<"$DVW_ABSENT_IDS"
   fi
 }
 
@@ -221,6 +297,45 @@ cmd_doctor() {
   cat_dir=$(dirname "$cat_path")
 
   ui_banner "dvw doctor" "health check across all dvw surfaces"
+
+  # Provider probe — surfaced first because every cross-machine "container
+  # not running" symptom traces back through this. Forces a probe load and
+  # reports whether ssh to the provider host succeeded plus the resulting
+  # per-state buckets. Read-only on the provider; cannot mutate containers.
+  _dvw_load_probe
+  _dvw_load_running_ids
+  if [[ -n "$DVW_UNREACHABLE_IDS" ]] && [[ -z "$DVW_ALIVE_IDS$DVW_STALE_IDS$DVW_STOPPED_IDS$DVW_ABSENT_IDS" ]]; then
+    ui_status_fail "provider probe: unreachable from this machine"
+    [[ -n "$DVW_PROBE_ERROR" ]] && ui_info "          ssh: $DVW_PROBE_ERROR"
+    fail=$((fail+1))
+  elif [[ -n "$DVW_UNREACHABLE_IDS" ]]; then
+    ui_status_warn "provider probe: partial (some hosts unreachable)"
+    [[ -n "$DVW_PROBE_ERROR" ]] && ui_info "         ssh: $DVW_PROBE_ERROR"
+    warn=$((warn+1))
+  else
+    local n_alive n_stale n_stopped n_absent
+    n_alive=$(grep -c . <<<"$DVW_ALIVE_IDS" || true)
+    n_stale=$(grep -c . <<<"$DVW_STALE_IDS" || true)
+    n_stopped=$(grep -c . <<<"$DVW_STOPPED_IDS" || true)
+    n_absent=$(grep -c . <<<"$DVW_ABSENT_IDS" || true)
+    ui_status_ok "provider probe: alive=$n_alive stale=$n_stale stopped=$n_stopped absent=$n_absent"
+  fi
+
+  # Orphan containers: labelled devpod containers whose uid isn't claimed
+  # by any agent workspace dir. Detection only — no automatic cleanup.
+  # Manual remediation: `docker inspect <name>` to find its /workspaces/<id>
+  # bind mount, then either re-link or `docker rm` by hand.
+  if [[ -n "${DVW_PROBE_ORPHAN_UIDS:-}" ]]; then
+    local n_orphans orphan_uid
+    n_orphans=$(grep -c . <<<"$DVW_PROBE_ORPHAN_UIDS" || true)
+    ui_status_warn "$n_orphans orphan container(s) on provider (have dev.containers.id labels but no matching workspace dir)"
+    warn=$((warn+1))
+    while IFS= read -r orphan_uid; do
+      [[ -z "$orphan_uid" ]] && continue
+      ui_info "          uid=$orphan_uid"
+    done <<<"$DVW_PROBE_ORPHAN_UIDS"
+    ui_info "         (dvw does not auto-clean — \`docker rm <name>\` on the provider to remove)"
+  fi
 
   # rclone mount
   if mountpoint -q "$cat_dir" 2>/dev/null \

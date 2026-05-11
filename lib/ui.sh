@@ -116,6 +116,9 @@ _ui_colorize_workspace_row() {
     s|⚠ stale|${R2}⚠ stale${r}|g
     s|● running|${G}● running${r}|g
     s|○ stopped|${GR}○ stopped${r}|g
+    s|✗ absent|${R2}✗ absent${r}|g
+    s|\\? unreachable|${Y}? unreachable${r}|g
+    s|\\? unknown|${GR}? unknown${r}|g
     s|(  )(·)(  )(cursor)([ ]+)|\\1${d}\\2${r}\\3${T}\\4${r}\\5|g
     s|(  )(·)(  )(ssh)([ ]+)|\\1${d}\\2${r}\\3${Y}\\4${r}\\5|g
     s|(  )(·)(  )(vscode)([ ]+)|\\1${d}\\2${r}\\3${B2}\\4${r}\\5|g
@@ -127,61 +130,64 @@ _ui_colorize_workspace_row() {
   "
 }
 
-# Memoized state classification across every catalog workspace, populated
-# by a single parallel pass of `_dvw_workspace_health` (SSH into the
-# container, read /proc/self/cwd). One probe per workspace, in parallel,
-# done once per dvw invocation.
+# Per-state buckets, populated by walking DVW_PROBE_STATE (in connect.sh)
+# once per dvw invocation. Each holds a newline-separated list of workspace
+# ids in the named state:
 #
-# Two output sets:
-#   DVW_RUNNING_IDS - workspaces whose container responds to SSH (alive OR
-#                     stale; both mean "the container is up"). Used by the
-#                     picker, menu and status row to render the indicator.
-#   DVW_STALE_IDS   - subset of running where /workspaces/<id> resolves to
-#                     a deleted inode. Cursor's node fatals there; SSH+tmux
-#                     still works because bash tolerates a dead cwd.
+#   DVW_ALIVE_IDS       container running, bind mount is a live inode
+#   DVW_STALE_IDS       container running, /proc/1/cwd shows (deleted)
+#   DVW_STOPPED_IDS     container exists on provider, not running
+#   DVW_ABSENT_IDS      no container on provider (catalog says it exists)
+#   DVW_UNREACHABLE_IDS could not query the provider host from this machine
+#   DVW_UNKNOWN_IDS     catalog entry has no uid or no provider HOST yet
 #
-# Why container-peek instead of `devpod status`: devpod status reports the
-# docker-level state (Running/Stopped) but doesn't see whether the workspace
-# bind mount still resolves. A workspace can be "Running" per devpod yet
-# completely broken for users — exactly the failure mode that motivated
-# this work. The SSH probe is one layer deeper: it verifies actual
-# usability, not just docker bookkeeping.
-DVW_RUNNING_IDS=""
+#   DVW_RUNNING_IDS     DVW_ALIVE_IDS ∪ DVW_STALE_IDS — kept for callers that
+#                       only care "is the container up" (e.g. cmd_rm warning).
+#
+# Why provider-first (not per-workspace alias probes): one ssh to the
+# provider tells us the truth from a single, easily-diagnosed point. The N
+# parallel per-alias probes we used to do conflated "container is down"
+# with "this machine can't reach the alias" (key not loaded, Include in
+# wrong place, slow link). See _dvw_load_probe in connect.sh.
+DVW_ALIVE_IDS=""
 DVW_STALE_IDS=""
+DVW_STOPPED_IDS=""
+DVW_ABSENT_IDS=""
+DVW_UNREACHABLE_IDS=""
+DVW_UNKNOWN_IDS=""
+DVW_RUNNING_IDS=""
 DVW_RUNNING_LOADED=""
-DVW_STALE_LOADED=""
 
 _dvw_load_running_ids() {
   [[ -n "$DVW_RUNNING_LOADED" ]] && return 0
-  local ids tmp id
-  ids=$(catalog_workspace_ids 2>/dev/null || true)
-  if [[ -z "$ids" ]]; then
-    DVW_RUNNING_LOADED=1
-    DVW_STALE_LOADED=1
-    return 0
-  fi
-  tmp=$(mktemp -d)
-  while IFS= read -r id; do
-    [[ -z "$id" ]] && continue
-    {
-      local state
-      state=$(_dvw_workspace_health "$id" 2>/dev/null)
-      case "$state" in
-        alive) echo "$id" > "$tmp/run.$id" ;;
-        stale) echo "$id" > "$tmp/run.$id"; echo "$id" > "$tmp/stale.$id" ;;
-      esac
-    } &
-  done <<<"$ids"
-  wait
-  DVW_RUNNING_IDS=$(cd "$tmp" && ls run.*   2>/dev/null | sed 's/^run\.//'   | sort -u || true)
-  DVW_STALE_IDS=$(  cd "$tmp" && ls stale.* 2>/dev/null | sed 's/^stale\.//' | sort -u || true)
-  rm -rf "$tmp"
   DVW_RUNNING_LOADED=1
-  DVW_STALE_LOADED=1
+  _dvw_load_probe
+  local id state
+  local alive=() stale=() stopped=() absent=() unreachable=() unknown=()
+  for id in "${!DVW_PROBE_STATE[@]}"; do
+    state="${DVW_PROBE_STATE[$id]}"
+    case "$state" in
+      alive)       alive+=("$id") ;;
+      stale)       stale+=("$id") ;;
+      stopped)     stopped+=("$id") ;;
+      absent)      absent+=("$id") ;;
+      unreachable) unreachable+=("$id") ;;
+      unknown|*)   unknown+=("$id") ;;
+    esac
+  done
+  DVW_ALIVE_IDS=$(printf '%s\n' "${alive[@]}" | sort -u)
+  DVW_STALE_IDS=$(printf '%s\n' "${stale[@]}" | sort -u)
+  DVW_STOPPED_IDS=$(printf '%s\n' "${stopped[@]}" | sort -u)
+  DVW_ABSENT_IDS=$(printf '%s\n' "${absent[@]}" | sort -u)
+  DVW_UNREACHABLE_IDS=$(printf '%s\n' "${unreachable[@]}" | sort -u)
+  DVW_UNKNOWN_IDS=$(printf '%s\n' "${unknown[@]}" | sort -u)
+  # Running = alive ∪ stale. Empty-input guard so a no-workspace catalog
+  # doesn't produce a stray empty line.
+  DVW_RUNNING_IDS=$(printf '%s\n%s\n' "$DVW_ALIVE_IDS" "$DVW_STALE_IDS" \
+    | grep -v '^$' | sort -u || true)
 }
 
-# Same pass populates DVW_STALE_IDS as a side-effect; this exists so callers
-# that care only about staleness still read naturally.
+# Back-compat: callers that historically read DVW_STALE_IDS via this helper.
 _dvw_load_stale_ids() { _dvw_load_running_ids; }
 
 # One line per workspace, MRU-sorted, column-aligned, ANSI-colored:
@@ -202,12 +208,20 @@ _dvw_load_stale_ids() { _dvw_load_running_ids; }
 # fzf needs --ansi to render the embedded codes (passed in ui_pick_workspace).
 _dvw_decorated_workspaces() {
   _dvw_load_running_ids
-  _dvw_load_stale_ids
   local raw
   raw=$(catalog_read 2>/dev/null \
-    | jq -r --arg running "$DVW_RUNNING_IDS" --arg stale "$DVW_STALE_IDS" '
-    ($running | split("\n") | map(select(. != ""))) as $r |
-    ($stale   | split("\n") | map(select(. != ""))) as $s |
+    | jq -r \
+        --arg alive       "$DVW_ALIVE_IDS" \
+        --arg stale       "$DVW_STALE_IDS" \
+        --arg stopped     "$DVW_STOPPED_IDS" \
+        --arg absent      "$DVW_ABSENT_IDS" \
+        --arg unreachable "$DVW_UNREACHABLE_IDS" '
+    def lines: split("\n") | map(select(. != ""));
+    ($alive | lines)       as $a |
+    ($stale | lines)       as $s |
+    ($stopped | lines)     as $o |
+    ($absent | lines)      as $b |
+    ($unreachable | lines) as $u |
     def shortrepo:
       sub("^git@github\\.com:"; "")
       | sub("^https://github\\.com/"; "")
@@ -219,8 +233,11 @@ _dvw_decorated_workspaces() {
         .ide,
         (.id as $id
          | if   ($s | index($id)) then "⚠ stale"
-           elif ($r | index($id)) then "● running"
-           else                        "○ stopped" end)
+           elif ($a | index($id)) then "● running"
+           elif ($o | index($id)) then "○ stopped"
+           elif ($b | index($id)) then "✗ absent"
+           elif ($u | index($id)) then "? unreachable"
+           else                        "? unknown" end)
       ] | @tsv
   ')
   [[ -z "$raw" ]] && return 0

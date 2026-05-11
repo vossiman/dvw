@@ -19,6 +19,23 @@ DVW_ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 . "$DVW_ROOT/lib/ui.sh"
 
 main() {
+  # Pull out --dry-run (anywhere in argv) before subcommand dispatch.
+  # Mutating shellouts (devpod up/delete/stop, docker restart) flowing
+  # through _dvw_run_or_print print "would run: ..." instead of executing.
+  # Direct catalog mutations gate on DVW_DRY_RUN inline.
+  local arg filtered=()
+  for arg in "$@"; do
+    if [[ "$arg" == "--dry-run" ]]; then
+      export DVW_DRY_RUN=1
+    else
+      filtered+=("$arg")
+    fi
+  done
+  set -- "${filtered[@]}"
+  if [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
+    ui_info "[dry-run] no commands will be executed; would-be invocations are printed"
+  fi
+
   # `blueprint` is a pure file copy from this repo's blueprint/ directory
   # into a target repo. It doesn't touch the catalog or need the rclone
   # mount, so it should work even when those are unavailable. Short-circuit

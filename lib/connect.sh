@@ -208,15 +208,29 @@ _dvw_cursor_open() {
 #           Caller should refuse and direct the user to `dvw recreate`.
 #   cold  — SSH or `cd` failed; workspace likely stopped or never created.
 #           Caller should fall back to `devpod up`.
+#
+# Stderr from the ssh call is captured into DVW_LAST_WS_HEALTH_ERR so callers
+# can distinguish "container is down" from "this machine can't reach the
+# workspace alias" (auth failure, no route, host unknown, etc.). The cross-
+# workspace status path uses the provider-first probe (_dvw_load_probe); this
+# function remains as the connect-time double-check that also catches the
+# stale-bind-mount marker after the provider says alive.
+DVW_LAST_WS_HEALTH_ERR=""
 _dvw_workspace_health() {
-  local ws="$1" rc
+  local ws="$1" rc=0 err_file err
+  err_file=$(mktemp)
+  # `|| rc=$?` keeps set -e from aborting on ssh failure when called from
+  # non-cmd-sub contexts. Without it, a direct `_dvw_workspace_health $id`
+  # under set -e dies before we can return "cold".
   ssh -o ConnectTimeout=3 -o BatchMode=yes "${ws}.devpod" "
     cd /workspaces/$ws 2>/dev/null || exit 2
     cwd=\$(readlink /proc/self/cwd 2>/dev/null)
     [[ \"\$cwd\" == *'(deleted)'* ]] && exit 1
     exit 0
-  " 2>/dev/null
-  rc=$?
+  " 2>"$err_file" || rc=$?
+  err=$(<"$err_file")
+  rm -f "$err_file"
+  DVW_LAST_WS_HEALTH_ERR="$err"
   case "$rc" in
     0) echo alive ;;
     1) echo stale ;;
@@ -224,20 +238,215 @@ _dvw_workspace_health() {
   esac
 }
 
-# Returns 0 if a container labelled with this workspace's uid exists on
-# the workspace's provider host (regardless of whether it's running),
-# non-zero otherwise. Used to detect the "our local SSH probe said cold
-# but the container actually exists" case before blindly running
-# `devpod up` against it.
+# ---------------------------------------------------------------------------
+# Provider-first probe
 #
-# Devpod doesn't tag containers with `devpod.workspaceUID` — the durable
-# identifier is the devcontainer feature label `dev.containers.id`, which
-# equals workspace.uid (verified 2026-05). The CLI-side workspace.json is
-# often near-empty after a recreate; `devpod list --output json` is the
-# authoritative local source for both uid and provider HOST.
+# Single SSH round-trip per provider per dvw invocation. The remote script
+# enumerates the agent's own workspace directory list, reads each workspace's
+# uid from its workspace.json on disk, and joins with `docker ps -a` labels
+# server-side. The remote returns `<workspace-id> <state>` lines. The client
+# never needs to know any workspace's uid — the server has both halves of
+# the join and tells us the answer.
 #
-# Costs one local devpod CLI call + one SSH round-trip to the provider
-# host (ConnectTimeout=5s).
+# Why provider-side-join (not client-side-with-cached-uid): the client's
+# notion of uid (in the catalog snapshot or in this machine's local devpod
+# state) can be stale or absent — especially on the "first dvw run on this
+# machine" case. The agent's workspace.json on the provider IS the source
+# of truth for the id→uid mapping. Asking the server for the join makes the
+# probe robust to every client-side missing-data case.
+#
+# Catalog convention used here: the per-workspace `.provider` field is the
+# provider NAME, which by dvw convention also matches the SSH host alias
+# (`dvw doctor` enforces this via `devpod provider add … --option HOST=$p`).
+# So `ssh <provider-name>` reaches the right host without any further name
+# resolution.
+#
+# State for each catalog entry lands in DVW_PROBE_STATE[id]:
+#   alive       container running, /proc/1/cwd is a live inode
+#   stale       container running, /proc/1/cwd shows (deleted)
+#   stopped     container exists on provider, not running
+#   absent      no container on provider for this workspace
+#   unreachable could not query the provider host (ssh failed). Captured
+#               stderr in DVW_PROBE_ERROR. Distinct from "stopped".
+#   unknown     catalog entry has no provider name set at all. Should not
+#               happen for new workspaces; only legacy/corrupt entries.
+#
+# This is a READ-ONLY probe. The remote script does no docker mutations.
+# ---------------------------------------------------------------------------
+declare -gA DVW_PROBE_STATE=()
+DVW_PROBE_ERROR=""
+DVW_PROBE_LOADED=""
+# Orphan container detection: uids found in `docker ps -a` labels that are
+# not claimed by any agent workspace directory. Surfaced as warnings in
+# `dvw doctor`. Read-only; we never act on them.
+DVW_PROBE_ORPHAN_UIDS=""
+
+_dvw_load_probe() {
+  [[ -n "$DVW_PROBE_LOADED" ]] && return 0
+  DVW_PROBE_LOADED=1
+
+  local catalog
+  catalog=$(catalog_read 2>/dev/null) || return 0
+  [[ -z "$catalog" ]] && return 0
+
+  # Per-workspace (id, provider-name) from the catalog. Nothing else from
+  # the catalog is read — uid/HOST resolution happens server-side.
+  local rows
+  rows=$(jq -r '.workspaces[] | "\(.id)\t\(.provider // "")"' <<<"$catalog")
+  [[ -z "$rows" ]] && return 0
+
+  # Bucket workspaces by provider (== ssh host).
+  declare -A host_ids=()
+  local id provider
+  while IFS=$'\t' read -r id provider; do
+    [[ -z "$id" ]] && continue
+    if [[ -z "$provider" ]]; then
+      DVW_PROBE_STATE["$id"]="unknown"
+      continue
+    fi
+    host_ids["$provider"]+="$id"$'\n'
+  done <<<"$rows"
+
+  local host
+  for host in "${!host_ids[@]}"; do
+    _dvw_probe_one_host "$host" "${host_ids[$host]}"
+  done
+}
+
+# Probe a single provider host. Args:
+#   $1 = host alias (must resolve via ~/.ssh/config; by dvw convention this
+#        equals the catalog's provider NAME)
+#   $2 = newline-separated workspace ids on this host
+#
+# The remote script does the id→state join itself by reading every
+# ~/.devpod/agent/contexts/default/workspaces/*/workspace.json for the uid,
+# then matching against `docker ps -a` labels. It also emits orphan-marker
+# lines for any labeled container whose uid isn't claimed by a workspace dir.
+#
+# Output lines from remote:
+#   <id> alive|stale|stopped|absent
+#   __ORPHAN <uid>
+#
+# On ssh failure (timeout/auth/no-route/host-unknown): mark every id on
+# this host as `unreachable`, store stderr in DVW_PROBE_ERROR. Distinct
+# from "stopped" — reachability and aliveness are different questions.
+_dvw_probe_one_host() {
+  local host="$1" ids="$2"
+  local err_file out rc=0
+  err_file=$(mktemp)
+  # `|| rc=$?` keeps set -e from aborting on ssh failure; we need to record
+  # `unreachable` state for the host's workspaces, not abort the whole run.
+  #
+  # The remote script's safety: read-only on disk and on docker. No `docker
+  # run/stop/rm`, no `rm`/`mv`/`>`. Anything that could mutate is absent
+  # from the heredoc by design — that's invariant #3 (audit it on every
+  # edit).
+  out=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" 'bash -s' 2>"$err_file" <<'REMOTE'
+set +e
+ctx_dir="$HOME/.devpod/agent/contexts/default/workspaces"
+ps_tmp=$(mktemp)
+docker ps -a --format '{{.Label "dev.containers.id"}} {{.State}} {{.ID}}' 2>/dev/null > "$ps_tmp"
+
+# Track uids claimed by a workspace dir; remaining ps entries are orphans.
+claimed_tmp=$(mktemp)
+
+if [ -d "$ctx_dir" ]; then
+  for ws_dir in "$ctx_dir"/*/; do
+    [ -d "$ws_dir" ] || continue
+    ws_id=$(basename "$ws_dir")
+    ws_uid=$(jq -r '.workspace.uid // empty' "$ws_dir/workspace.json" 2>/dev/null)
+    if [ -z "$ws_uid" ]; then
+      echo "$ws_id absent"
+      continue
+    fi
+    echo "$ws_uid" >> "$claimed_tmp"
+    match=$(awk -v u="$ws_uid" '$1==u {print; exit}' "$ps_tmp")
+    if [ -z "$match" ]; then
+      echo "$ws_id absent"
+      continue
+    fi
+    state=$(awk '{print $2}' <<<"$match")
+    cid=$(awk '{print $3}' <<<"$match")
+    if [ "$state" = "running" ]; then
+      pid=$(docker inspect --format '{{.State.Pid}}' "$cid" 2>/dev/null)
+      cwd=""
+      if [ -n "$pid" ] && [ "$pid" != "0" ]; then
+        cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null)
+      fi
+      case "$cwd" in
+        *'(deleted)'*) echo "$ws_id stale"  ;;
+        *)             echo "$ws_id alive"  ;;
+      esac
+    else
+      echo "$ws_id stopped"
+    fi
+  done
+fi
+
+# Orphans: labelled containers whose uid is not claimed by any workspace dir.
+while read -r uid state cid; do
+  [ -z "$uid" ] && continue
+  if ! grep -qFx "$uid" "$claimed_tmp" 2>/dev/null; then
+    echo "__ORPHAN $uid"
+  fi
+done < "$ps_tmp"
+
+rm -f "$ps_tmp" "$claimed_tmp"
+REMOTE
+) || rc=$?
+
+  if (( rc != 0 )); then
+    DVW_PROBE_ERROR=$(<"$err_file")
+    rm -f "$err_file"
+    local id
+    while IFS= read -r id; do
+      [[ -z "$id" ]] && continue
+      DVW_PROBE_STATE["$id"]="unreachable"
+    done <<<"$ids"
+    return 0
+  fi
+  rm -f "$err_file"
+
+  # Parse the response. id→state lines set DVW_PROBE_STATE; __ORPHAN lines
+  # accumulate uids for doctor.
+  local orphans=()
+  local line
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "$line" == "__ORPHAN "* ]]; then
+      orphans+=("${line#__ORPHAN }")
+    else
+      local rid rstate
+      rid=$(awk '{print $1}' <<<"$line")
+      rstate=$(awk '{print $2}' <<<"$line")
+      [[ -n "$rid" && -n "$rstate" ]] && DVW_PROBE_STATE["$rid"]="$rstate"
+    fi
+  done <<<"$out"
+
+  # For ids the host didn't mention at all (no workspace dir AND no
+  # container), fall back to `absent`.
+  local id
+  while IFS= read -r id; do
+    [[ -z "$id" ]] && continue
+    [[ -z "${DVW_PROBE_STATE[$id]:-}" ]] && DVW_PROBE_STATE["$id"]="absent"
+  done <<<"$ids"
+
+  if (( ${#orphans[@]} > 0 )); then
+    DVW_PROBE_ORPHAN_UIDS=$(printf '%s\n' "${orphans[@]}")
+  fi
+}
+
+# Container-safety invariant: this is the ONLY place dvw decides whether
+# a container exists at the moment of a destructive call. It MUST be a
+# fresh SSH probe — never read from the cached _dvw_load_probe table.
+# Reason: there's an unbounded gap between when the bulk probe ran (top
+# of the invocation, used for status display) and when a code path is
+# about to call `devpod up`. Within that gap a container could have been
+# created (e.g. user `devpod up` from another shell). Running `devpod up`
+# against a now-existing container is the wipe footgun. So always ask
+# fresh, right before the decision.
+#
+# Costs one local `devpod list` + one short SSH to the provider. Cheap.
 _dvw_provider_has_container() {
   local id="$1" host uid info
   info=$(devpod list --output json 2>/dev/null \
@@ -281,7 +490,28 @@ _dvw_safe_devpod_up() {
       return 1
     fi
   fi
-  devpod up "$id" "$@"
+  _dvw_run_or_print devpod up "$id" "$@"
+}
+
+# Dry-run helper. When DVW_DRY_RUN=1, print the would-be command and return
+# 0 without executing. Otherwise exec the command and return its rc.
+#
+# Wraps every dvw-internal mutating shellout (devpod up/delete/stop, docker
+# restart). Plumbed in from the top-level --dry-run flag in `dvw`.
+_dvw_run_or_print() {
+  if [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
+    local arg quoted=()
+    for arg in "$@"; do
+      if [[ "$arg" == *[[:space:]\"\'\\]* ]]; then
+        quoted+=("$(printf '%q' "$arg")")
+      else
+        quoted+=("$arg")
+      fi
+    done
+    ui_info "[dry-run] would run: ${quoted[*]}"
+    return 0
+  fi
+  "$@"
 }
 
 # ----------------------------------------------------------------------------
