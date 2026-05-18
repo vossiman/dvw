@@ -218,14 +218,14 @@ _dvw_cursor_open() {
       "/mnt/c/Users/${USER}/AppData/Local/Programs/Cursor/resources/app/bin/cursor"
   do
     if [[ -x "$bin" ]] || command -v "$bin" >/dev/null 2>&1; then
-      ( "$bin" --reuse-window "$uri_arg" >/dev/null 2>&1 & disown ) 2>/dev/null
+      ( "$bin" --new-window "$uri_arg" >/dev/null 2>&1 & disown ) 2>/dev/null
       return 0
     fi
   done
   ui_error "no cursor CLI found"
   ui_info "  tried: ~/.local/bin/cursor, \`cursor\` on PATH,"
   ui_info "         /mnt/c/Users/$USER/AppData/Local/Programs/{cursor,Cursor}/resources/app/bin/cursor"
-  ui_info "  open manually: cursor --reuse-window \"$uri_arg\""
+  ui_info "  open manually: cursor --new-window \"$uri_arg\""
   return 1
 }
 
