@@ -25,6 +25,27 @@ devpod up <repo-url>@<branch> --ide cursor
 
 First spin-up runs `install.sh` from `aiCodingBaseSetup` — installs Claude Code CLI, opencode, Go, Playwright browsers, MCPs, plugins, skills, hooks, and bw-AICode. Subsequent spin-ups reattach in seconds.
 
+## Updating an existing container
+
+`aiCodingBaseSetup` (HEAD ≥ `3a12b41`) tracks every managed file in a manifest at `~/.aicodingsetup/manifest.json` and ships a `aicoding-update` CLI for picking up new blueprint changes without losing local edits.
+
+```bash
+aicoding-update --dry-run   # show what would change vs your container
+aicoding-update             # interactive: inline diff for drift, single y/N confirm
+aicoding-update --yes       # scripted; .bak's anything you drifted before overwriting
+```
+
+Behaviour summary:
+
+- **First time** a container hits the new blueprint, `install.sh` runs in **adopt mode** — captures each existing managed file's current hash into the manifest without overwriting. Old hand-edits survive.
+- **Subsequent re-runs of `install.sh`** on the same container are **prereq-only** — apt/build steps re-check (idempotent), file deploys are skipped. The script prints `Container already initialized at blueprint <commit>` and points you at `aicoding-update`.
+- **For blueprint file changes**, run `aicoding-update`. It refreshes `/tmp/aicoding` from origin, classifies each managed file (`up_to_date` / `will_update` / `drifted_but_aligned` / `drifted_and_updating` / `new_file` / `to_remove` / `restore` / `merge`), shows the summary with inline diffs for the drifted ones, and applies after one confirm. Any file you'd manually changed gets backed up to `<file>.bak.<timestamp>` before being overwritten.
+- **Escape hatch:** `bash /tmp/aicoding/install.sh --force-reinstall` deletes the manifest and re-deploys everything from scratch — use only when you want the container reset.
+
+User convention for personal `~/.bashrc.d/` additions: prefix them with anything *other than* `aicoding-` (e.g. `local-myaliases.sh`). The managed block in `~/.bashrc` sources every `.sh` in the directory, so your additions get picked up automatically but `aicoding-update` only touches files matching `aicoding-*`.
+
+Deep dive in `docs/superpowers/specs/2026-05-16-blueprint-sync-design.md` (this repo's spec) and the corresponding plan under `docs/superpowers/plans/`.
+
 ## What each line does
 
 - **`image`** — base devcontainer image. Universal:2 is the kitchen sink (~5 GB), works for any language. Swap for leaner if the project is single-language.
