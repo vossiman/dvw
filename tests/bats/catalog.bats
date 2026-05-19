@@ -28,8 +28,9 @@ teardown() {
   [ "$output" = "$HOME/Dropbox-remote/dvw/catalog.json" ]
 }
 
-@test "catalog_init_if_missing: creates fresh catalog when absent" {
+@test "catalog_init_if_missing: creates fresh catalog when absent and sibling visible" {
   source "$DVW_ROOT/lib/catalog.sh"
+  touch "$TMPDIR/ssh-blueprint.conf"
   [ ! -f "$DVW_CATALOG" ]
   run catalog_init_if_missing
   [ "$status" -eq 0 ]
@@ -40,7 +41,18 @@ teardown() {
   jq -e '.defaults.ide == "cursor"' "$DVW_CATALOG"
 }
 
-@test "catalog_init_if_missing: leaves existing catalog untouched" {
+@test "catalog_init_if_missing: refuses to init when sibling also invisible (rclone listing broken)" {
+  source "$DVW_ROOT/lib/catalog.sh"
+  [ ! -f "$DVW_CATALOG" ]
+  [ ! -f "$TMPDIR/ssh-blueprint.conf" ]
+  run catalog_init_if_missing
+  [ "$status" -ne 0 ]
+  [ ! -f "$DVW_CATALOG" ]
+  [[ "$output" == *"ssh-blueprint.conf"* ]]
+  [[ "$output" == *"refusing"* ]] || [[ "$output" == *"rclone"* ]]
+}
+
+@test "catalog_init_if_missing: leaves existing catalog untouched (sibling check skipped on short-circuit)" {
   source "$DVW_ROOT/lib/catalog.sh"
   cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   before_hash=$(sha256sum "$DVW_CATALOG")
@@ -91,6 +103,7 @@ teardown() {
 
 @test "catalog_write: writes JSON atomically (no .tmp left behind)" {
   source "$DVW_ROOT/lib/catalog.sh"
+  touch "$TMPDIR/ssh-blueprint.conf"
   catalog_init_if_missing
   echo '{"version":1,"defaults":{"ide":"cursor","provider":"vossisrv"},"workspaces":[{"id":"x","repo":"r","branch":"b","ide":"cursor","provider":"vossisrv","created_at":"2026-04-29T00:00:00Z","last_used_at":"2026-04-29T00:00:00Z","created_on":"test"}],"repos":[]}' \
     | catalog_write
@@ -101,6 +114,7 @@ teardown() {
 
 @test "catalog_write: refuses to write malformed JSON" {
   source "$DVW_ROOT/lib/catalog.sh"
+  touch "$TMPDIR/ssh-blueprint.conf"
   catalog_init_if_missing
   before=$(cat "$DVW_CATALOG")
   run bash -c 'source "$DVW_ROOT/lib/catalog.sh"; echo "{ bad json" | catalog_write'

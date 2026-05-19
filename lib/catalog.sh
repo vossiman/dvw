@@ -9,10 +9,10 @@ catalog_path() {
 }
 
 catalog_init_if_missing() {
-  local path
+  local path dir sibling
   path=$(catalog_path)
-  local dir
   dir=$(dirname "$path")
+  sibling="$dir/ssh-blueprint.conf"
   if [[ ! -d "$dir" ]]; then
     echo "catalog unreachable: $dir does not exist (rclone mount likely down)" >&2
     echo "try: systemctl --user status rclone-dropbox" >&2
@@ -20,6 +20,16 @@ catalog_init_if_missing() {
   fi
   if [[ -e "$path" ]]; then
     return 0
+  fi
+  # Distinguish genuinely-missing from rclone-can't-tell: require a known
+  # sibling to be visible before treating the catalog as absent. Without
+  # this, a transient list_folder failure on the rclone mount could cause
+  # us to silently overwrite the live catalog with the empty template.
+  if [[ ! -e "$sibling" ]]; then
+    echo "catalog appears missing, but $sibling is also invisible." >&2
+    echo "rclone listing is likely broken — refusing to write empty template." >&2
+    echo "check: journalctl --user -u rclone-dropbox -n 50" >&2
+    return 1
   fi
   cat > "$path" <<'JSON'
 {
