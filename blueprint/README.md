@@ -54,6 +54,10 @@ Deep dive in `docs/superpowers/specs/2026-05-16-blueprint-sync-design.md` (this 
   - `aicodingsetup` → `~/.aicodingsetup/` holds `.secrets.env` (API keys for firecrawl, brave, cloudflare).
   - `claude` → `~/.claude/` holds `.credentials.json`, `settings.json`, plugins, hooks, skills. Token refreshes write back to vossisrv, so logging in once persists across every container.
   - `opencode` → `~/.local/share/opencode/` holds `auth.json` (provider tokens for Anthropic / OpenAI / Google / etc.). `opencode auth login <provider>` once in any container persists across every other.
+> **Pinning.** This template runs `install.sh` from a submodule at `devpod/aicoding/`. Downstream projects adopting the template have two choices:
+> 1. **Submodule (recommended).** Add `aiCodingBaseSetup` as a submodule and keep the wiring as shown — the submodule ref is your pin.
+> 2. **Tagged clone.** Replace `git submodule update --init --recursive && bash devpod/aicoding/install.sh` with `git clone --quiet --branch <tag-or-sha> --depth=1 https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh`. Don't track `main` — that's the bug this template avoids.
+
 - **`postCreateCommand`** — clones `aiCodingBaseSetup` and runs its installer. The installer detects container mode automatically and auto-installs prerequisites (claude CLI, opencode, Go, Playwright browsers, jq, locales).
 - **`postStartCommand`** — runs on *every* container start (including reattach), not just first build. Curls `update.sh` from `aiCodingBaseSetup` and pipes it to bash; the script self-stashes to `~/.aicodingsetup/update.sh`, re-execs under `env -u` to strip universal:6's broken `BASH_FUNC_nvs%%`/`nvsudo`/`nvm` exports (see KNOWN_ISSUES.md), then runs `claude update` and `opencode upgrade` (both `|| true` so transient network failures never block startup). Living in the central repo means we update behavior without re-rolling every project's `devcontainer.json`.
 
