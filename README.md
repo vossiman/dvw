@@ -65,6 +65,56 @@ After `wsl --shutdown` and reopening WSL, re-run `./dvw-install.sh`. It will con
 
 If you do not yet have an rclone Dropbox remote configured, the installer will instruct you to run `rclone config` interactively (one-time per machine).
 
+## Installing as a submodule
+
+If you're embedding `dvw` inside another repo (e.g. you maintain a meta-repo
+like `devMachine`), use a submodule pointer rather than a fresh clone — the
+parent repo's submodule ref then pins the dvw version, and bumps are explicit
+single-commit changes.
+
+    git submodule add https://github.com/vossiman/dvw devpod/dvw
+    git add .gitmodules devpod/dvw
+    git commit -m "devpod/dvw: add dvw submodule"
+    ./devpod/dvw/dvw-install.sh
+
+The PATH symlink (`~/.local/bin/dvw → <clone>/dvw`) is created by
+`dvw-install.sh`, regardless of whether the clone is standalone or a
+submodule checkout. Re-running `dvw-install.sh` from a different location
+re-points the symlink — switching is safe.
+
+## Updating dvw
+
+Three update flows, depending on how you installed.
+
+### Standalone clone
+
+    cd <your-dvw-clone>
+    git pull
+    ./dvw-install.sh
+
+`dvw-install.sh` is idempotent — re-running re-checks apt deps, re-runs the
+rclone-binary version probe, and re-creates the `~/.local/bin/dvw` symlink.
+
+### Submodule consumer
+
+    git submodule update --remote devpod/dvw
+    git add devpod/dvw
+    git commit -m "devpod/dvw: bump to <sha>"
+
+(Then run `./devpod/dvw/dvw-install.sh` if any new host-level prereqs landed
+in the bumped version. The script's `--check-only` flag tells you whether
+you need to.)
+
+### PATH symlink hygiene
+
+`dvw-install.sh` re-symlinks `~/.local/bin/dvw → <clone>/dvw` on every run.
+If you maintain multiple checkouts (e.g. one standalone clone on a Mint
+laptop *and* a submodule checkout inside `devMachine`), the last-run
+`dvw-install.sh` wins the symlink. The `dvw` script itself is byte-identical
+in every checkout (filter-repo'd from one source), so which checkout
+the symlink points at is functionally irrelevant — pick whichever you
+plan to keep up-to-date.
+
 ## Daily workflow
 
 ### Connect to a workspace
