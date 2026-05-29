@@ -1,6 +1,6 @@
-# devpod — DevPod workspace orchestrator (`dvw`) and helpers
+# dvw — DevPod workspace orchestrator
 
-Host-side scripts and operational notes for running DevPod workspaces on `vossisrv`. The main entrypoint is `dvw`, a bash CLI that replaces the DevPod Desktop app's missing cross-machine workspace sync via a catalog file kept in sync through the existing rclone Dropbox mount.
+Host-side scripts and operational notes for running DevPod workspaces on `vossisrv`. The main entrypoint is `dvw`, a bash CLI that replaces the DevPod Desktop app's missing cross-machine workspace sync via a catalog file kept in sync through the existing rclone Dropbox mount. Container-side configuration (Claude/opencode/codex/cursor-agent + MCPs) lives in the sister repo [`vossiman/aiCodingBaseSetup`](https://github.com/vossiman/aiCodingBaseSetup); [`blueprint/`](blueprint/) here is the `.devcontainer/devcontainer.json` template that pairs with it.
 
 ## Why dvw exists
 
@@ -15,7 +15,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `systemd/rclone-dropbox.service` | rclone mount as a systemd user unit |
 | `dvw-install.sh` | idempotent bootstrap for Mint and WSL |
 | `tests/bats/` | bats test suite for catalog logic |
-| `blueprint/` | `devcontainer.json` template |
+| `blueprint/` | `.devcontainer/devcontainer.json` template; the scripts it invokes live in [`vossiman/aiCodingBaseSetup`](https://github.com/vossiman/aiCodingBaseSetup). |
 | `tmux/` | host-side tmux config |
 | `cursor-shim.sh`, `install-cursor-shim.sh` | Cursor AppImage triple-launch workaround |
 | `KNOWN_ISSUES.md` | catalog of current rough edges |
@@ -42,9 +42,9 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 ## Install on Mint
 
 ```bash
-git clone <this repo>
-cd devMachine
-./devpod/dvw-install.sh
+git clone https://github.com/vossiman/dvw
+cd dvw
+./dvw-install.sh
 dvw doctor
 ```
 
@@ -53,15 +53,15 @@ The installer is idempotent — re-run it any time. It will install missing apt 
 ## Install on WSL Ubuntu
 
 ```bash
-git clone <this repo>
-cd devMachine
-./devpod/dvw-install.sh
+git clone https://github.com/vossiman/dvw
+cd dvw
+./dvw-install.sh
 ```
 
 **First run on a fresh WSL** will detect that systemd is not enabled, write `/etc/wsl.conf`, and stop with this message:
 > systemd is now enabled, but WSL must be restarted. From Windows PowerShell: `wsl --shutdown`. Then re-open WSL and re-run.
 
-After `wsl --shutdown` and reopening WSL, re-run `./devpod/dvw-install.sh`. It will continue from where it left off (configure rclone, drop the systemd unit, install dvw).
+After `wsl --shutdown` and reopening WSL, re-run `./dvw-install.sh`. It will continue from where it left off (configure rclone, drop the systemd unit, install dvw).
 
 If you do not yet have an rclone Dropbox remote configured, the installer will instruct you to run `rclone config` interactively (one-time per machine).
 
@@ -98,7 +98,7 @@ The `sudo rm` step requires interactive auth; don't try to script past it.
 ### Pull the latest `install.sh` into a running workspace
 
 ```bash
-ssh -t <workspace>.devpod 'bash -lc "cd /tmp/aicoding && git pull origin main && bash install.sh"'
+ssh -t <workspace>.devpod 'bash -lc "cd /workspaces/<repo>/devpod/aicoding && git pull && bash install.sh"'
 ```
 
 ## Multi-machine sync model
