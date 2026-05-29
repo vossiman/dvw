@@ -5,6 +5,31 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 TARGET_BIN="$HOME/.local/bin/dvw"
 
+# --check-only: verify idempotency invariants without modifying the host.
+# Used by tests/bats/install.bats and as a self-diagnostic.
+CHECK_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --check-only) CHECK_ONLY=1 ;;
+  esac
+done
+
+if (( CHECK_ONLY )); then
+  echo "▸ dvw-install.sh --check-only: verifying invariants (no host writes)"
+  # 1. The script's resolved location is reachable.
+  [[ -x "$SCRIPT_DIR/dvw" ]] || { echo "ERROR: $SCRIPT_DIR/dvw not executable"; exit 1; }
+  # 2. The PATH symlink, if present, points at the right binary.
+  if [[ -L "$HOME/.local/bin/dvw" ]]; then
+    target=$(readlink -f "$HOME/.local/bin/dvw")
+    expected=$(readlink -f "$SCRIPT_DIR/dvw")
+    if [[ "$target" != "$expected" ]]; then
+      echo "WARN: ~/.local/bin/dvw points at $target, not $expected (this is OK if you have multiple checkouts)"
+    fi
+  fi
+  echo "▸ dvw-install.sh --check-only: invariants OK"
+  exit 0
+fi
+
 is_wsl() {
   grep -qi microsoft /proc/version 2>/dev/null
 }
