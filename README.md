@@ -272,7 +272,7 @@ Editing `.devcontainer/devcontainer.json` after a container exists doesn't updat
 ## Tests
 
 ```bash
-./devpod/tests/bats/run.sh
+./tests/bats/run.sh
 ```
 
 Catalog logic is covered by bats. Wizard and TUI behavior is verified manually.

@@ -100,9 +100,9 @@ _ssh_sync_ensure_include_at_top() {
   # existing copies of the line + its managed-by comment, then prepend.
   local tmp
   tmp=$(mktemp)
-  grep -vE '^# dvw — managed by devpod/lib/ssh-sync\.sh|^Include "dvw\.conf"$' "$DVW_SSH_CONFIG" > "$tmp" || true
+  grep -vE '^# dvw — managed by lib/ssh-sync\.sh|^Include "dvw\.conf"$' "$DVW_SSH_CONFIG" > "$tmp" || true
   {
-    echo "# dvw — managed by devpod/lib/ssh-sync.sh; edit ~/Dropbox-remote/dvw/ssh-blueprint.conf"
+    echo "# dvw — managed by lib/ssh-sync.sh; edit ~/Dropbox-remote/dvw/ssh-blueprint.conf"
     echo "$DVW_SSH_INCLUDE_LINE"
     echo ""
     cat "$tmp"

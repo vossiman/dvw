@@ -15,7 +15,7 @@ Counterpart to `aiCodingBaseSetup/configs/tmux/tmux.conf` (deployed automaticall
 ### On a host (Mint laptop / desktop)
 
 ```bash
-ln -sf ~/local_dev/devMachine/devpod/tmux/tmux-local.conf ~/.tmux.conf
+ln -sf ~/local_dev/dvw/tmux/tmux-local.conf ~/.tmux.conf
 tmux kill-server   # if a session is running, restart to pick up the change
 ```
 

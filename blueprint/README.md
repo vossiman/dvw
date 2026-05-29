@@ -9,7 +9,7 @@ Drop-in `.devcontainer/devcontainer.json` for any project that should come up as
 ```bash
 cd <your-project>
 mkdir -p .devcontainer
-cp /path/to/devMachine/devpod/blueprint/devcontainer.json .devcontainer/devcontainer.json
+cp /path/to/dvw/blueprint/devcontainer.json .devcontainer/devcontainer.json
 git add .devcontainer/devcontainer.json
 git commit -m "Add devcontainer config for DevPod"
 git push

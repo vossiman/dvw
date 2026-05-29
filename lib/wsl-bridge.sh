@@ -83,9 +83,9 @@ _wsl_bridge_ensure_include_at_top() {
 
   local tmp
   tmp=$(mktemp)
-  grep -vE '^# dvw — managed by devpod/lib/wsl-bridge\.sh|^Include "dvw\.conf"$' "$cfg" > "$tmp" || true
+  grep -vE '^# dvw — managed by lib/wsl-bridge\.sh|^Include "dvw\.conf"$' "$cfg" > "$tmp" || true
   {
-    echo "# dvw — managed by devpod/lib/wsl-bridge.sh; routes *.devpod through WSL"
+    echo "# dvw — managed by lib/wsl-bridge.sh; routes *.devpod through WSL"
     echo "$DVW_WSL_BRIDGE_INCLUDE_LINE"
     echo ""
     cat "$tmp"

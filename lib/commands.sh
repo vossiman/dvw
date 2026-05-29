@@ -221,7 +221,7 @@ cmd_status() {
   fi
 }
 
-# Drop the canonical devcontainer.json from devpod/blueprint/ into the in-
+# Drop the canonical devcontainer.json from blueprint/ into the in-
 # container checkout of a running DevPod workspace. The file lands in the
 # workspace's repo working tree (/workspaces/<repo-basename>/.devcontainer/),
 # from where the user can commit + push it. The live container is NOT
