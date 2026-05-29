@@ -2,7 +2,7 @@
 
 Drop-in `.devcontainer/devcontainer.json` for any project that should come up as a fully-configured AI coding workspace under DevPod (Mint or Win11 client → vossisrv backend).
 
-> **Source of truth:** the canonical generic template lives upstream at [`vossiman/aiCodingBaseSetup/devcontainer.json`](https://github.com/vossiman/aiCodingBaseSetup/blob/main/devcontainer.json). The copy here adds the vossisrv-specific `mounts` (aicodingsetup / claude / opencode bind paths) on top. When the upstream template changes, sync those changes into this copy and re-attach the mounts.
+> **Source of truth:** the canonical generic template lives upstream at [`vossiman/aiCodingBaseSetup/devcontainer.json`](https://github.com/vossiman/aiCodingBaseSetup/blob/main/devcontainer.json). The copy here adds the vossisrv-specific `mounts` (aicodingsetup / claude / opencode / codex / cursor bind paths) on top. When the upstream template changes, sync those changes into this copy and re-attach the mounts.
 
 ## How to use
 
@@ -50,10 +50,12 @@ Deep dive in `docs/superpowers/specs/2026-05-16-blueprint-sync-design.md` (this 
 
 - **`image`** — base devcontainer image. Universal:2 is the kitchen sink (~5 GB), works for any language. Swap for leaner if the project is single-language.
 - **`remoteUser`** — must match the image's hardcoded user (see table below).
-- **`mounts`** — bind three directories from vossisrv into the container so secrets, Claude credentials, and opencode provider auth persist across workspaces:
-  - `aicodingsetup` → `~/.aicodingsetup/` holds `.secrets.env` (API keys for firecrawl, brave, cloudflare).
+- **`mounts`** — bind **five** directories from vossisrv into the container so secrets and per-CLI auth + config persist across workspaces:
+  - `aicodingsetup` → `~/.aicodingsetup/` holds `.secrets.env` (API keys for firecrawl, brave, cloudflare) and `manifest.json` (deploy state, survives rebuilds).
   - `claude` → `~/.claude/` holds `.credentials.json`, `settings.json`, plugins, hooks, skills. Token refreshes write back to vossisrv, so logging in once persists across every container.
   - `opencode` → `~/.local/share/opencode/` holds `auth.json` (provider tokens for Anthropic / OpenAI / Google / etc.). `opencode auth login <provider>` once in any container persists across every other.
+  - `codex` → `~/.codex/` holds codex's `auth.json` (ChatGPT sign-in token or API key state) and `config.toml` (codex's MCP declarations, redeployed every rebuild by reconcile).
+  - `cursor` → `~/.cursor/` holds cursor-agent credentials and `mcp.json`. The parent dir is bind-mounted because cursor-agent's exact credential filename isn't publicly documented — bind-mounting the dir covers any internal layout.
 > **Pinning.** This template runs `install.sh` from a submodule at `devpod/aicoding/`. Downstream projects adopting the template have two choices:
 > 1. **Submodule (recommended).** Add `aiCodingBaseSetup` as a submodule and keep the wiring as shown — the submodule ref is your pin.
 > 2. **Tagged clone.** Replace `git submodule update --init --recursive && bash devpod/aicoding/install.sh` with `git clone --quiet --branch <tag-or-sha> --depth=1 https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh`. Don't track `main` — that's the bug this template avoids.
@@ -100,18 +102,29 @@ The object form runs entries in parallel — only use it when the project step d
 ## Prerequisites on vossisrv (one-time)
 
 ```bash
-mkdir -p /home/vossi/devpod/aicodingsetup /home/vossi/devpod/claude /home/vossi/devpod/opencode
-chmod 700 /home/vossi/devpod /home/vossi/devpod/aicodingsetup /home/vossi/devpod/claude /home/vossi/devpod/opencode
-# Seed initial credentials (from a host where claude/opencode are already authed)
+mkdir -p /home/vossi/devpod/aicodingsetup /home/vossi/devpod/claude /home/vossi/devpod/opencode \
+         /home/vossi/devpod/codex /home/vossi/devpod/cursor
+chmod 700 /home/vossi/devpod \
+          /home/vossi/devpod/aicodingsetup /home/vossi/devpod/claude /home/vossi/devpod/opencode \
+          /home/vossi/devpod/codex /home/vossi/devpod/cursor
+# Seed initial credentials (from a host where the CLIs are already authed) — all optional.
+# Without seeded creds, the first time you run each CLI in a container it prompts for login,
+# and the auth file lands in the bind-mounted dir on first write.
 scp ~/.claude/.credentials.json                vossi@vossisrv:/home/vossi/devpod/claude/.credentials.json
 scp ~/.aicodingsetup/.secrets.env              vossi@vossisrv:/home/vossi/devpod/aicodingsetup/.secrets.env
 scp ~/.local/share/opencode/auth.json          vossi@vossisrv:/home/vossi/devpod/opencode/auth.json
-ssh vossi@vossisrv 'chmod 600 /home/vossi/devpod/claude/.credentials.json /home/vossi/devpod/aicodingsetup/.secrets.env /home/vossi/devpod/opencode/auth.json'
+scp ~/.codex/auth.json                         vossi@vossisrv:/home/vossi/devpod/codex/auth.json
+# Cursor-agent's credential filename isn't publicly documented; rsync the whole ~/.cursor/ dir
+# if you want to seed from an already-authed host:
+rsync -av ~/.cursor/                           vossi@vossisrv:/home/vossi/devpod/cursor/
+ssh vossi@vossisrv 'chmod 600 /home/vossi/devpod/claude/.credentials.json /home/vossi/devpod/aicodingsetup/.secrets.env /home/vossi/devpod/opencode/auth.json /home/vossi/devpod/codex/auth.json'
 ```
 
-After the first container refreshes the OAuth tokens or runs an `opencode auth login`, vossisrv's copies stay current automatically.
+After the first container refreshes any OAuth token, or runs `opencode auth login`, `codex` (sign-in), or `agent login`, vossisrv's copies stay current automatically — write-through via the bind mount.
 
 ## MCP behavior to know about
+
+All four CLIs (Claude Code, opencode, codex, cursor-agent) read the same 4 MCP definitions, deployed by `install.sh` to each agent's native config location. Authoring a new MCP means adding it to `configs/mcps.json` in [`vossiman/aiCodingBaseSetup`](https://github.com/vossiman/aiCodingBaseSetup) AND threading it through each CLI's config template (`configs/codex/config.toml`, `configs/cursor/mcp.json`, `configs/opencode/opencode.json`, plus the `install_claude_mcps` block in `install.sh`).
 
 Three categories you'll hit when running `/mcp` in a workspace:
 
@@ -126,6 +139,8 @@ Docker-based project MCPs (`docker run …`) only work if the image is present i
 ## Why authentication "just works" in this setup
 
 Claude Code reads OAuth tokens from `~/.claude/.credentials.json` *and* checks `~/.claude.json` (file at home root, NOT inside `.claude/`) for `hasCompletedOnboarding: true`. Without that flag, the CLI treats every session as a fresh install and prompts for login regardless of valid tokens. `aiCodingBaseSetup`'s `install.sh` writes that flag automatically; the bind-mounted `.credentials.json` carries the tokens. Together they make container auth seamless.
+
+The same persist-once-share-everywhere property holds for the other three CLIs once their bind mounts are wired: `opencode auth login`, `codex` (first-run ChatGPT sign-in), and `agent login` (cursor-agent) each write their tokens into their respective bind-mounted home directories, so a single login in any container is reusable from every future container. If codex or cursor-agent ever exposes a `hasCompletedOnboarding`-style trap analogous to Claude's, the fix lands in `install.sh` as a parallel `ensure_*_onboarding_state` function — verified empirically at the final-merge gate.
 
 ## Future productization (don't do now)
 
