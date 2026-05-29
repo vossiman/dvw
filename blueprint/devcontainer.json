@@ -11,6 +11,6 @@
     "source=/home/vossi/devpod/claude,target=/home/codespace/.claude,type=bind",
     "source=/home/vossi/devpod/opencode,target=/home/codespace/.local/share/opencode,type=bind"
   ],
-  "postCreateCommand": "git clone --quiet https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh",
-  "postStartCommand": "curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/update.sh | bash"
+  "postCreateCommand": "git submodule update --init --recursive && bash devpod/aicoding/install.sh",
+  "postStartCommand": "bash devpod/aicoding/update.sh"
 }
