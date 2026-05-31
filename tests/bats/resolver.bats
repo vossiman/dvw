@@ -58,3 +58,52 @@ _load_resolver() {
   # exactly one line on stdout — no diagnostic pollution
   [ "$(printf '%s' "$chosen" | wc -l)" -eq 0 ]
 }
+
+@test "uid_claimed_by_other: true when another workspace records the uid" {
+  _load_resolver
+  cat > "$DVW_CATALOG" <<'JSON'
+{ "version":1, "defaults":{}, "repos":[],
+  "workspaces":[
+    {"id":"alpha","uid":"default-de-aaaaa","devpod_state":{"uid":"default-de-aaaaa"}},
+    {"id":"beta","uid":"default-de-bbbbb","devpod_state":{"uid":"default-de-bbbbb"}}
+  ] }
+JSON
+  run _dvw_uid_claimed_by_other "alpha" "default-de-bbbbb"
+  [ "$status" -eq 0 ]
+}
+
+@test "uid_claimed_by_other: false when only the same workspace records it" {
+  _load_resolver
+  cat > "$DVW_CATALOG" <<'JSON'
+{ "version":1, "defaults":{}, "repos":[],
+  "workspaces":[
+    {"id":"alpha","uid":"default-de-aaaaa","devpod_state":{"uid":"default-de-aaaaa"}}
+  ] }
+JSON
+  run _dvw_uid_claimed_by_other "alpha" "default-de-aaaaa"
+  [ "$status" -ne 0 ]
+}
+
+@test "uid_claimed_by_other: false when uid is unclaimed" {
+  _load_resolver
+  cat > "$DVW_CATALOG" <<'JSON'
+{ "version":1, "defaults":{}, "repos":[],
+  "workspaces":[
+    {"id":"alpha","uid":"default-de-aaaaa","devpod_state":{"uid":"default-de-aaaaa"}}
+  ] }
+JSON
+  run _dvw_uid_claimed_by_other "alpha" "default-de-zzzzz"
+  [ "$status" -ne 0 ]
+}
+
+@test "uid_claimed_by_other: false for empty uid" {
+  _load_resolver
+  cat > "$DVW_CATALOG" <<'JSON'
+{ "version":1, "defaults":{}, "repos":[],
+  "workspaces":[
+    {"id":"alpha","uid":"default-de-aaaaa","devpod_state":{"uid":"default-de-aaaaa"}}
+  ] }
+JSON
+  run _dvw_uid_claimed_by_other "alpha" ""
+  [ "$status" -ne 0 ]
+}

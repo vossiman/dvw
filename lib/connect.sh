@@ -632,6 +632,19 @@ _dvw_ensure_local_devpod_state() {
   ui_status_ok "registered \"$id\" locally from catalog snapshot"
 }
 
+# True (status 0) iff some catalog workspace whose id != $1 records uid $2
+# (as .uid or .devpod_state.uid). Used to refuse aligning a workspace to a uid
+# that already belongs to a different workspace. Empty uid → false (status 1).
+_dvw_uid_claimed_by_other() {
+  local id="$1" uid="$2"
+  [[ -z "$uid" ]] && return 1
+  catalog_read 2>/dev/null \
+    | jq -e --arg id "$id" --arg uid "$uid" '
+        any(.workspaces[];
+            .id != $id and ((.uid == $uid) or (.devpod_state.uid == $uid)))
+      ' >/dev/null 2>&1
+}
+
 # Pure winner-selection over a probe blob. Input #2 is newline-separated
 # `<uid>\t<work_session_activity>` lines (activity -1 means no `work` tmux).
 # Echoes the chosen uid on stdout. Status: 0 = decided (or cold/empty → no
