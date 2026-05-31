@@ -640,30 +640,28 @@ _dvw_ensure_local_devpod_state() {
 _dvw_pick_canonical_uid() {
   local id="$1" probe="$2" chosen n_total n_with_tmux
   probe=$(printf '%s\n' "$probe" | awk 'NF')
-  n_total=$(printf '%s\n' "$probe" | awk 'NF' | wc -l)
+  [[ -z "$probe" ]] && return 0          # cold / empty probe → no candidate
+  n_total=$(printf '%s\n' "$probe" | wc -l)
   n_with_tmux=$(printf '%s\n' "$probe" | awk -F'\t' '$2 != "-1" && $2 != "" { n++ } END { print n+0 }')
 
-  if (( n_total == 0 )); then
-    return 0
-  fi
   if (( n_total == 1 )); then
-    chosen=$(printf '%s\n' "$probe" | head -1 | cut -f1)
+    chosen=$(printf '%s\n' "$probe" | cut -f1)
   elif (( n_with_tmux >= 1 )); then
     chosen=$(printf '%s\n' "$probe" | awk -F'\t' '$2 != "-1"' \
              | sort -t$'\t' -k2 -nr | head -1 | cut -f1)
     if (( n_with_tmux >= 2 )); then
-      ui_status_warn "$id has $n_with_tmux containers with a live \`work\` tmux session — picking most-recently-active"
-      while IFS=$'\t' read -r uid act; do
-        [[ "$act" != "-1" ]] && ui_info "    $uid  last_activity=$act"
-      done <<< "$probe"
-      ui_info "  recommend manual cleanup: dvw doctor"
+      {
+        ui_status_warn "$id has $n_with_tmux containers with a live \`work\` tmux session — picking most-recently-active"
+        printf '%s\n' "$probe" | awk -F'\t' '$2 != "-1" { printf "    %s  last_activity=%s\n", $1, $2 }'
+        ui_info "  recommend manual cleanup: dvw doctor"
+      } >&2
     fi
   else
-    ui_status_warn "$id has $n_total containers but none have a \`work\` tmux session:"
-    while IFS=$'\t' read -r uid _act; do
-      ui_info "    $uid"
-    done <<< "$probe"
-    ui_info "  refusing to guess. Pick one and start tmux in it, or run \`dvw doctor\`."
+    {
+      ui_status_warn "$id has $n_total containers but none have a \`work\` tmux session:"
+      printf '%s\n' "$probe" | awk -F'\t' '{ printf "    %s\n", $1 }'
+      ui_info "  refusing to guess. Pick one and start tmux in it, or run \`dvw doctor\`."
+    } >&2
     return 1
   fi
   printf '%s\n' "$chosen"

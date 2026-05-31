@@ -36,7 +36,7 @@ _load_resolver() {
 @test "pick_canonical_uid: among siblings, most-recently-active tmux holder wins" {
   _load_resolver
   probe=$(printf 'default-de-old\t100\ndefault-de-new\t900\n')
-  run _dvw_pick_canonical_uid "test-id" "$probe"
+  run --separate-stderr _dvw_pick_canonical_uid "test-id" "$probe"
   [ "$status" -eq 0 ]
   [ "$output" = "default-de-new" ]
 }
@@ -46,4 +46,15 @@ _load_resolver() {
   probe=$(printf 'default-de-a\t-1\ndefault-de-b\t-1\n')
   run _dvw_pick_canonical_uid "test-id" "$probe"
   [ "$status" -eq 1 ]
+}
+
+@test "pick_canonical_uid: stdout is uid-only on warning path with real ui_* (regression)" {
+  source "$DVW_ROOT/lib/ui.sh"
+  source "$DVW_ROOT/lib/catalog.sh"
+  source "$DVW_ROOT/lib/connect.sh"
+  probe=$(printf 'default-de-old\t100\ndefault-de-new\t900\n')
+  chosen=$(_dvw_pick_canonical_uid "test-id" "$probe" 2>/dev/null)
+  [ "$chosen" = "default-de-new" ]
+  # exactly one line on stdout — no diagnostic pollution
+  [ "$(printf '%s' "$chosen" | wc -l)" -eq 0 ]
 }
