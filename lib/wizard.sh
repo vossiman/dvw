@@ -11,6 +11,25 @@ _repo_leaf() {
   echo "$1" | sed -E 's#.*[/:]([^/:]+?)(\.git)?$#\1#'
 }
 
+# DevPod's hard cap on workspace IDs (it errors out with "workspace name
+# cannot be longer than N characters" at `devpod up` time). Branches like
+# `design/dvw-extract-and-multi-agent` produce defaults that blow past this
+# unless we clip up front.
+DEVPOD_NAME_MAX=48
+
+# Truncate to fit DevPod's name length cap; trim any trailing dash left by
+# the cut so the result is still a clean valid identifier. Idempotent on
+# names already short enough.
+_truncate_for_devpod() {
+  local name="$1"
+  local max="${2:-$DEVPOD_NAME_MAX}"
+  if (( ${#name} > max )); then
+    name="${name:0:max}"
+    name="${name%-}"
+  fi
+  echo "$name"
+}
+
 cmd_new() {
   command -v gum >/dev/null || { ui_error "gum not installed; run dvw doctor"; return 1; }
   command -v devpod >/dev/null || { ui_error "devpod not installed; run dvw doctor"; return 1; }
@@ -41,13 +60,23 @@ cmd_new() {
             --header.foreground "$DVW_SUBTLE")
   [[ -z "$branch" ]] && { ui_info "aborted: no branch"; return 1; }
 
-  # 3. Workspace name
+  # 3. Workspace name (DevPod caps these at DEVPOD_NAME_MAX chars).
   local default_name name
   default_name=$(_sanitize_ws_name "$(_repo_leaf "$repo")-$branch")
-  name=$(gum input --value "$default_name" --header "workspace name" \
+  default_name=$(_truncate_for_devpod "$default_name")
+  name=$(gum input --value "$default_name" \
+          --header "workspace name (max $DEVPOD_NAME_MAX chars)" \
+          --char-limit "$DEVPOD_NAME_MAX" \
           --header.foreground "$DVW_SUBTLE")
   name=$(_sanitize_ws_name "$name")
   [[ -z "$name" ]] && { ui_info "aborted: no name"; return 1; }
+  if (( ${#name} > DEVPOD_NAME_MAX )); then
+    # Defensive: --char-limit should prevent this, but older gum versions
+    # don't enforce it, and _sanitize_ws_name (tr+sed substitutions) can in
+    # theory expand length. Reject before invoking devpod up.
+    ui_error "workspace name too long (${#name} chars, max $DEVPOD_NAME_MAX): $name"
+    return 1
+  fi
   if catalog_workspace_get "$name" >/dev/null 2>&1; then
     ui_error "workspace ID already exists in catalog: $name"
     return 1
