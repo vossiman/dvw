@@ -632,13 +632,62 @@ _dvw_ensure_local_devpod_state() {
   ui_status_ok "registered \"$id\" locally from catalog snapshot"
 }
 
+# True (status 0) iff some catalog workspace whose id != $1 records uid $2
+# (as .uid or .devpod_state.uid). Used to refuse aligning a workspace to a uid
+# that already belongs to a different workspace. Empty uid → false (status 1).
+_dvw_uid_claimed_by_other() {
+  local id="$1" uid="$2"
+  [[ -z "$uid" ]] && return 1
+  catalog_read 2>/dev/null \
+    | jq -e --arg id "$id" --arg uid "$uid" '
+        any(.workspaces[];
+            .id != $id and ((.uid == $uid) or (.devpod_state.uid == $uid)))
+      ' >/dev/null 2>&1
+}
+
+# Pure winner-selection over a probe blob. Input #2 is newline-separated
+# `<uid>\t<work_session_activity>` lines (activity -1 means no `work` tmux).
+# Echoes the chosen uid on stdout. Status: 0 = decided (or cold/empty → no
+# output), 1 = pathological (>=2 candidates, none with a `work` tmux session).
+# No I/O beyond optional ui_* warnings; safe to unit-test.
+_dvw_pick_canonical_uid() {
+  local id="$1" probe="$2" chosen n_total n_with_tmux
+  probe=$(printf '%s\n' "$probe" | awk 'NF')
+  [[ -z "$probe" ]] && return 0          # cold / empty probe → no candidate
+  n_total=$(printf '%s\n' "$probe" | wc -l)
+  n_with_tmux=$(printf '%s\n' "$probe" | awk -F'\t' '$2 != "-1" && $2 != "" { n++ } END { print n+0 }')
+
+  if (( n_total == 1 )); then
+    chosen=$(printf '%s\n' "$probe" | cut -f1)
+  elif (( n_with_tmux >= 1 )); then
+    chosen=$(printf '%s\n' "$probe" | awk -F'\t' '$2 != "-1"' \
+             | sort -t$'\t' -k2 -nr | head -1 | cut -f1)
+    if (( n_with_tmux >= 2 )); then
+      {
+        ui_status_warn "$id has $n_with_tmux containers with a live \`work\` tmux session — picking most-recently-active"
+        printf '%s\n' "$probe" | awk -F'\t' '$2 != "-1" { printf "    %s  last_activity=%s\n", $1, $2 }'
+        ui_info "  recommend manual cleanup: dvw doctor"
+      } >&2
+    fi
+  else
+    {
+      ui_status_warn "$id has $n_total containers but none have a \`work\` tmux session:"
+      printf '%s\n' "$probe" | awk -F'\t' '{ printf "    %s\n", $1 }'
+      ui_info "  refusing to guess. Pick one and start tmux in it, or run \`dvw doctor\`."
+    } >&2
+    return 1
+  fi
+  printf '%s\n' "$chosen"
+  return 0
+}
+
 # Resolve which container is canonical for <id> by direct observation of the
 # provider host. Writes the resolved uid into the local workspace.json (#1)
 # and pushes to the Dropbox catalog (#3). The agent's workspace.json (#2)
 # is intentionally NOT consulted or written for uid purposes.
 #
-# Authority: a container is canonical iff it carries the workspace's
-# container label AND (when ≥2 candidates exist) has a live tmux session
+# Authority: a container is canonical iff its bind-mount destination is
+# /workspaces/<id> AND (when ≥2 candidates exist) it has a live tmux session
 # named `work`. Rationale: the uid in workspace.json files is bookkeeping
 # that gets re-written by whichever devpod client connects last via
 # --workspace-info; the running tmux session inside the container is the
@@ -660,7 +709,7 @@ _dvw_ensure_local_devpod_state() {
 #
 # No container is ever touched by this function.
 _dvw_resolve_canonical_container() {
-  local id="$1" path host current_uid slug probe chosen
+  local id="$1" path host current_uid probe chosen
   path=$(catalog_devpod_workspace_json_path "$id")
   [[ -f "$path" ]] || return 0
   current_uid=$(jq -r '.uid // empty' "$path" 2>/dev/null)
@@ -669,65 +718,40 @@ _dvw_resolve_canonical_container() {
     ui_status_warn "resolve: no provider HOST in $id's workspace.json — skipping"
     return 0
   fi
-  slug=$(echo "$id" | cut -c1-2)
-
-  # Single SSH round-trip. Docker's `--filter label=KEY=VALUE` only matches
-  # exact values, not prefixes — so we filter by the bare label key (any
-  # devpod container has `dev.containers.id`) and prefix-match the slug
-  # remotely via awk. For each surviving container, probe whether a tmux
-  # session named `work` exists; emit `<uid>\t<work_session_activity>`
-  # (or `<uid>\t-1` if no such session).
+  # Single SSH round-trip. Scope candidates to *this* workspace by the bind-mount
+  # destination /workspaces/<id> (baked at create, immutable, contains the exact
+  # id) rather than a 2-char name-slug prefix, which collided across workspaces
+  # sharing a prefix (devmachine-git vs devmachine-new-dvw). For each matching
+  # container, probe whether a tmux session named `work` exists; emit
+  # `<uid>\t<work_session_activity>` (or `<uid>\t-1` if no such session).
   probe=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" "
-    docker ps --filter 'label=dev.containers.id' \
-              --format '{{.ID}} {{.Label \"dev.containers.id\"}}' 2>/dev/null \
-    | awk -v slug='default-${slug}-' '\$2 ~ \"^\" slug { print \$1, \$2 }' \
-    | while read -r cid uid; do
-        [[ -z \"\$cid\" || -z \"\$uid\" ]] && continue
-        act=\$(docker exec \"\$cid\" tmux list-sessions \
-                -F '#{session_name} #{session_activity}' 2>/dev/null \
-              | awk '\$1 == \"work\" { print \$2; exit }')
-        [[ -z \"\$act\" ]] && act=-1
-        printf '%s\\t%s\\n' \"\$uid\" \"\$act\"
-      done
+    target='/workspaces/${id}'
+    for cid in \$(docker ps --filter 'label=dev.containers.id' --format '{{.ID}}' 2>/dev/null); do
+      hit=\$(docker inspect -f '{{range .Mounts}}{{.Destination}}{{\"\\n\"}}{{end}}' \"\$cid\" 2>/dev/null \
+            | awk -v t=\"\$target\" '\$0 == t { print; exit }')
+      [[ -z \"\$hit\" ]] && continue
+      uid=\$(docker inspect -f '{{index .Config.Labels \"dev.containers.id\"}}' \"\$cid\" 2>/dev/null)
+      [[ -z \"\$uid\" ]] && continue
+      act=\$(docker exec \"\$cid\" tmux list-sessions \
+              -F '#{session_name} #{session_activity}' 2>/dev/null \
+            | awk '\$1 == \"work\" { print \$2; exit }')
+      [[ -z \"\$act\" ]] && act=-1
+      printf '%s\\t%s\\n' \"\$uid\" \"\$act\"
+    done
   " 2>/dev/null) || {
     ui_status_warn "resolve: ssh to $host failed — proceeding with current local uid"
     return 0
   }
-  # Drop blanks.
-  probe=$(printf '%s\n' "$probe" | awk 'NF')
 
-  local n_total n_with_tmux
-  n_total=$(printf '%s\n' "$probe" | awk 'NF' | wc -l)
-  n_with_tmux=$(printf '%s\n' "$probe" | awk -F'\t' '$2 != "-1" && $2 != "" { n++ } END { print n+0 }')
-
-  if (( n_total == 0 )); then
-    # Cold: caller's existing devpod-up path handles it.
-    return 0
-  fi
-
-  if (( n_total == 1 )); then
-    chosen=$(printf '%s\n' "$probe" | head -1 | cut -f1)
-  elif (( n_with_tmux >= 1 )); then
-    # Multi-candidate with at least one tmux holder. Pick most-recently-active.
-    chosen=$(printf '%s\n' "$probe" | awk -F'\t' '$2 != "-1"' \
-             | sort -t$'\t' -k2 -nr | head -1 | cut -f1)
-    if (( n_with_tmux >= 2 )); then
-      ui_status_warn "$id has $n_with_tmux containers with a live \`work\` tmux session — picking most-recently-active"
-      printf '%s\n' "$probe" | awk -F'\t' '$2 != "-1" { printf "    %s  last_activity=%s\n", $1, $2 }' >&2
-      ui_info "  recommend manual cleanup: dvw doctor"
-    fi
-  else
-    # ≥2 candidates, none has a `work` tmux session. Pathological — refuse
-    # to silently guess. (Going forward `e2a42d6` prevents this state.)
-    ui_status_warn "$id has $n_total containers but none have a \`work\` tmux session:"
-    printf '%s\n' "$probe" | awk -F'\t' '{ printf "    %s\n", $1 }' >&2
-    ui_info "  refusing to guess. Pick one and start tmux in it, or run \`dvw doctor\`."
-    return 1
-  fi
-
+  chosen=$(_dvw_pick_canonical_uid "$id" "$probe") || return 1
   [[ -z "$chosen" ]] && return 0
 
   if [[ "$chosen" != "$current_uid" ]]; then
+    if _dvw_uid_claimed_by_other "$id" "$chosen"; then
+      ui_status_warn "$id: refusing to align to uid=$chosen — it is already claimed by another workspace in the catalog"
+      ui_info "  run \`dvw doctor\` to inspect; this prevents cross-workspace identity theft"
+      return 1
+    fi
     ui_status_warn "$id: canonical uid=$chosen (was=${current_uid:-unset}) — aligning local & catalog"
     _dvw_rewrite_local_uid "$id" "$chosen" || return 1
     catalog_workspace_set_devpod_state "$id" >/dev/null 2>&1 || {
