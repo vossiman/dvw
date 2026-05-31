@@ -38,6 +38,7 @@ cmd_connect() {
   # then resolve which container is canonical by direct observation of the
   # provider (tmux-bearing container wins). Both are no-ops on the happy path.
   _dvw_ensure_local_devpod_state "$ws" || return 1
+  _dvw_ensure_ssh_alias "$ws" || return 1
   _dvw_resolve_canonical_container "$ws" || return 1
   _dvw_reap_stale_masters "$ws"
 
@@ -97,7 +98,10 @@ _connect_choose_mode() {
 _connect_ssh() {
   local ws="$1"
   if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "${ws}.devpod" true 2>/dev/null; then
-    if _dvw_provider_has_container "$ws"; then
+    if ! _dvw_alias_defined "$ws"; then
+      ui_status_warn "$ws: ssh alias not registered on this machine — registering now"
+      _dvw_ensure_ssh_alias "$ws" || { ui_error "could not register ssh alias for $ws"; return 1; }
+    elif _dvw_provider_has_container "$ws"; then
       ui_status_ok "$ws: container is running (alias probe was slow); opening ssh directly"
     else
       ui_action "starting" "$ws (ide=none)"
@@ -164,7 +168,12 @@ _connect_cursor() {
       # timeout). NEVER `devpod up` against a confirmed-existing container.
       # Only fall through to the wrapper (which still has its own fresh
       # safety check) when no container exists.
-      if _dvw_provider_has_container "$ws"; then
+      if ! _dvw_alias_defined "$ws"; then
+        ui_status_warn "$ws: ssh alias not registered on this machine — registering now"
+        _dvw_ensure_ssh_alias "$ws" || { ui_error "could not register ssh alias for $ws"; return 1; }
+        _dvw_cursor_open "$ws" || return 1
+        catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
+      elif _dvw_provider_has_container "$ws"; then
         ui_status_ok "$ws: container is running (alias probe was slow); opening Cursor directly"
         _dvw_cursor_open "$ws" || return 1
         catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
@@ -606,6 +615,173 @@ _dvw_run_or_print() {
 # (~/.devpod/contexts/<ctx>/workspaces/<id>/workspace.json). The catalog stores
 # a verbatim snapshot of workspace.json plus a top-level `uid` field.
 # ----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
+# Per-workspace SSH alias writer
+#
+# The catalog and the ssh blueprint both sync, but neither carries the
+# per-workspace `Host <id>.devpod` stanza that resolves the alias — DevPod
+# writes that only on the machine that ran `devpod up`/`devpod ssh`. On a
+# second machine the alias is absent, so `ssh <id>.devpod` fails DNS even
+# though the container is healthy on its provider. These helpers let dvw
+# author the stanza itself (idempotently, never via `devpod up`), so any
+# machine can open any catalog workspace.
+#
+# Field set mirrors DevPod's own stanza exactly, so a later real `devpod up`
+# reasserts identical content in place rather than duplicating it.
+# ----------------------------------------------------------------------------
+
+# Resolve the devpod binary path. Prefers `command -v devpod` (PATH), falls
+# back to the conventional ~/.local/bin/devpod that DevPod's own stanzas use.
+# Echoes the path; status 0 if found, 1 if neither exists.
+_dvw_devpod_bin() {
+  local bin
+  if bin=$(command -v devpod 2>/dev/null) && [[ -n "$bin" ]]; then
+    echo "$bin"
+    return 0
+  fi
+  if [[ -x "$HOME/.local/bin/devpod" ]]; then
+    echo "$HOME/.local/bin/devpod"
+    return 0
+  fi
+  return 1
+}
+
+# True (status 0) iff ~/.ssh/config already contains a DevPod-marked block for
+# <id> (matched exactly on the start marker, so `myws` != `myws-extra`).
+_dvw_ssh_alias_present() {
+  local id="$1" cfg="${DVW_SSH_CONFIG:-$HOME/.ssh/config}"
+  [[ -f "$cfg" ]] || return 1
+  grep -qxF "# DevPod Start ${id}.devpod" "$cfg"
+}
+
+# Render a DevPod-shaped SSH alias block for <id> on stdout. Pure string
+# builder — no I/O, no globals. Field set and order mirror DevPod's own
+# stanzas exactly. Args: id user context devpod_bin.
+_dvw_render_ssh_alias_block() {
+  local id="$1" user="$2" ctx="$3" bin="$4"
+  cat <<EOF
+# DevPod Start ${id}.devpod
+Host ${id}.devpod
+  ForwardAgent yes
+  LogLevel error
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  HostKeyAlgorithms rsa-sha2-256,rsa-sha2-512,ssh-rsa
+  ProxyCommand "${bin}" ssh --stdio --context ${ctx} --user ${user} ${id}
+  User ${user}
+# DevPod End ${id}.devpod
+EOF
+}
+
+# Resolve the SSH user for <id> via a three-tier fallback:
+#   1. The User line of an existing local DevPod block (covers re-runs).
+#   2. The provider container's devcontainer.metadata remoteUser label, read
+#      over the workspace's provider HOST (one short SSH).
+#   3. The `codespace` convention default.
+# Always echoes a non-empty user and returns 0.
+#
+# The catalog deliberately has NO user field anywhere (verified): the user is
+# a property of the built container, so the label is the source of truth.
+_dvw_resolve_ssh_user() {
+  local id="$1" cfg="${DVW_SSH_CONFIG:-$HOME/.ssh/config}"
+
+  # Tier 1: existing local block.
+  if [[ -f "$cfg" ]]; then
+    local existing
+    existing=$(awk -v s="# DevPod Start ${id}.devpod" -v e="# DevPod End ${id}.devpod" '
+      $0 == s {inblk=1; next}
+      $0 == e {inblk=0}
+      inblk && $1 == "User" {print $2; exit}
+    ' "$cfg")
+    if [[ -n "$existing" ]]; then
+      echo "$existing"
+      return 0
+    fi
+  fi
+
+  # Tier 2: provider container remoteUser label.
+  local path host uid user
+  path=$(catalog_devpod_workspace_json_path "$id")
+  if [[ -f "$path" ]]; then
+    host=$(jq -r '.provider.options.HOST.value // empty' "$path" 2>/dev/null)
+    uid=$(jq -r '.uid // empty' "$path" 2>/dev/null)
+    if [[ -n "$host" && -n "$uid" ]]; then
+      user=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" "
+        cid=\$(docker ps -a --filter label=dev.containers.id=$uid --format '{{.ID}}' 2>/dev/null | head -1)
+        [ -z \"\$cid\" ] && exit 0
+        docker inspect --format '{{index .Config.Labels \"devcontainer.metadata\"}}' \"\$cid\" 2>/dev/null
+      " 2>/dev/null \
+        | jq -r '(if type=="array" then .[] else . end) | .remoteUser? // empty' 2>/dev/null \
+        | grep -v '^$' | tail -1)
+      if [[ -n "$user" ]]; then
+        echo "$user"
+        return 0
+      fi
+    fi
+  fi
+
+  # Tier 3: convention default.
+  echo "codespace"
+  return 0
+}
+
+# Ensure ~/.ssh/config has a per-workspace DevPod alias block for <id>.
+# No-op if a block is already present (idempotent). Otherwise resolves the
+# user (3-tier), context (from materialized workspace.json), and devpod
+# binary, renders a DevPod-shaped block, and appends it atomically with a
+# separating blank line and mode 600. Returns 1 only if the devpod binary
+# can't be located (can't form a working ProxyCommand without it).
+_dvw_ensure_ssh_alias() {
+  local id="$1" cfg="${DVW_SSH_CONFIG:-$HOME/.ssh/config}"
+
+  if _dvw_ssh_alias_present "$id"; then
+    return 0
+  fi
+
+  local bin
+  if ! bin=$(_dvw_devpod_bin); then
+    ui_error "cannot register ssh alias for \"$id\": devpod binary not found (PATH or ~/.local/bin/devpod)"
+    return 1
+  fi
+
+  local user ctx path
+  user=$(_dvw_resolve_ssh_user "$id")
+  path=$(catalog_devpod_workspace_json_path "$id")
+  ctx=$(jq -r '.context // "default"' "$path" 2>/dev/null)
+  [[ -z "$ctx" || "$ctx" == "null" ]] && ctx="default"
+
+  local block
+  block=$(_dvw_render_ssh_alias_block "$id" "$user" "$ctx" "$bin")
+
+  mkdir -p "$(dirname "$cfg")"
+  chmod 700 "$(dirname "$cfg")" 2>/dev/null || true
+
+  # Atomic, mode-preserving append with a guaranteed separating blank line.
+  # Rebuild the whole file via a tmp to avoid partial writes; normalize the
+  # existing content to end in exactly one newline before appending so the
+  # marker never gets jammed onto a no-trailing-newline last line.
+  local tmp="$cfg.dvw.tmp"
+  {
+    if [[ -f "$cfg" ]]; then
+      sed -e :a -e '/^[[:space:]]*$/{$d;N;ba}' "$cfg"
+      printf '\n'
+    fi
+    printf '%s\n' "$block"
+  } > "$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$cfg"
+
+  ui_status_ok "registered ssh alias \"${id}.devpod\" (user=${user})"
+}
+
+# True (status 0) iff `<id>.devpod` resolves to a ProxyCommand locally (i.e.
+# the per-workspace alias is actually defined in ssh config, not merely the
+# generic Host *.devpod block). Used to tell "alias absent" from "alias slow".
+_dvw_alias_defined() {
+  local ws="$1"
+  ssh -G "${ws}.devpod" 2>/dev/null | grep -qi '^proxycommand '
+}
 
 # Materialize ~/.devpod/.../workspaces/<id>/workspace.json on this machine
 # from the catalog snapshot, if it doesn't already exist locally. No-op if
