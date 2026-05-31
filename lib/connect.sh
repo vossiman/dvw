@@ -632,6 +632,44 @@ _dvw_ensure_local_devpod_state() {
   ui_status_ok "registered \"$id\" locally from catalog snapshot"
 }
 
+# Pure winner-selection over a probe blob. Input #2 is newline-separated
+# `<uid>\t<work_session_activity>` lines (activity -1 means no `work` tmux).
+# Echoes the chosen uid on stdout. Status: 0 = decided (or cold/empty → no
+# output), 1 = pathological (>=2 candidates, none with a `work` tmux session).
+# No I/O beyond optional ui_* warnings; safe to unit-test.
+_dvw_pick_canonical_uid() {
+  local id="$1" probe="$2" chosen n_total n_with_tmux
+  probe=$(printf '%s\n' "$probe" | awk 'NF')
+  n_total=$(printf '%s\n' "$probe" | awk 'NF' | wc -l)
+  n_with_tmux=$(printf '%s\n' "$probe" | awk -F'\t' '$2 != "-1" && $2 != "" { n++ } END { print n+0 }')
+
+  if (( n_total == 0 )); then
+    return 0
+  fi
+  if (( n_total == 1 )); then
+    chosen=$(printf '%s\n' "$probe" | head -1 | cut -f1)
+  elif (( n_with_tmux >= 1 )); then
+    chosen=$(printf '%s\n' "$probe" | awk -F'\t' '$2 != "-1"' \
+             | sort -t$'\t' -k2 -nr | head -1 | cut -f1)
+    if (( n_with_tmux >= 2 )); then
+      ui_status_warn "$id has $n_with_tmux containers with a live \`work\` tmux session — picking most-recently-active"
+      while IFS=$'\t' read -r uid act; do
+        [[ "$act" != "-1" ]] && ui_info "    $uid  last_activity=$act"
+      done <<< "$probe"
+      ui_info "  recommend manual cleanup: dvw doctor"
+    fi
+  else
+    ui_status_warn "$id has $n_total containers but none have a \`work\` tmux session:"
+    while IFS=$'\t' read -r uid _act; do
+      ui_info "    $uid"
+    done <<< "$probe"
+    ui_info "  refusing to guess. Pick one and start tmux in it, or run \`dvw doctor\`."
+    return 1
+  fi
+  printf '%s\n' "$chosen"
+  return 0
+}
+
 # Resolve which container is canonical for <id> by direct observation of the
 # provider host. Writes the resolved uid into the local workspace.json (#1)
 # and pushes to the Dropbox catalog (#3). The agent's workspace.json (#2)

@@ -1,0 +1,49 @@
+#!/usr/bin/env bats
+
+setup() {
+  TMPDIR=$(mktemp -d)
+  export DVW_CATALOG="$TMPDIR/catalog.json"
+}
+
+teardown() { rm -rf "$TMPDIR"; }
+
+# Load connect.sh with its deps. connect.sh uses ui_* and catalog_* functions;
+# stub the ui layer and source the real catalog lib before sourcing connect.sh.
+_load_resolver() {
+  ui_status_warn() { :; }
+  ui_status_ok()   { :; }
+  ui_info()        { :; }
+  ui_error()       { echo "$*" >&2; }
+  export -f ui_status_warn ui_status_ok ui_info ui_error
+  source "$DVW_ROOT/lib/catalog.sh"
+  source "$DVW_ROOT/lib/connect.sh"
+}
+
+@test "pick_canonical_uid: single candidate is chosen" {
+  _load_resolver
+  run _dvw_pick_canonical_uid "test-id" "$(printf 'default-de-aaaaa\t-1\n')"
+  [ "$status" -eq 0 ]
+  [ "$output" = "default-de-aaaaa" ]
+}
+
+@test "pick_canonical_uid: empty probe yields no output, status 0 (cold)" {
+  _load_resolver
+  run _dvw_pick_canonical_uid "test-id" ""
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "pick_canonical_uid: among siblings, most-recently-active tmux holder wins" {
+  _load_resolver
+  probe=$(printf 'default-de-old\t100\ndefault-de-new\t900\n')
+  run _dvw_pick_canonical_uid "test-id" "$probe"
+  [ "$status" -eq 0 ]
+  [ "$output" = "default-de-new" ]
+}
+
+@test "pick_canonical_uid: >=2 candidates none with tmux is pathological (status 1)" {
+  _load_resolver
+  probe=$(printf 'default-de-a\t-1\ndefault-de-b\t-1\n')
+  run _dvw_pick_canonical_uid "test-id" "$probe"
+  [ "$status" -eq 1 ]
+}
