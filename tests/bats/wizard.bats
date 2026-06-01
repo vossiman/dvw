@@ -73,3 +73,36 @@ setup() {
   [ "$status" -eq 0 ]
   [ "$output" = "foo-bar-baz-git" ]
 }
+
+# _parse_remote_branches: the only non-gum, non-network part of the branch
+# step (added 2026-06-01 so the wizard offers a picker of branches that
+# actually exist on the remote, instead of pre-filling a stale catalog
+# default that `devpod up` later rejects with "exit status 128").
+
+@test "_parse_remote_branches: strips sha + refs/heads/ and sorts" {
+  run _parse_remote_branches <<'EOF'
+9d42395eef275d794db7a37c3f40305ff3485831	refs/heads/main
+3b6b659fc101077afc11c2d4e6b31d69508c0e2b	refs/heads/design/foo
+abc123def456abc123def456abc123def456abcd	refs/heads/feature/bar
+EOF
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "design/foo" ]
+  [ "${lines[1]}" = "feature/bar" ]
+  [ "${lines[2]}" = "main" ]
+}
+
+@test "_parse_remote_branches: empty input yields no output" {
+  run _parse_remote_branches <<<""
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "_parse_remote_branches: keeps slashes in branch names intact" {
+  # refs/heads/ must only be stripped once, at the start — a branch named
+  # like 'release/refs/heads-thing' should not be mangled.
+  run _parse_remote_branches <<'EOF'
+0000000000000000000000000000000000000000	refs/heads/release/v1.2.3
+EOF
+  [ "$status" -eq 0 ]
+  [ "$output" = "release/v1.2.3" ]
+}
