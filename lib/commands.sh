@@ -86,6 +86,7 @@ cmd_start() {
     return 1
   fi
   _dvw_ensure_local_devpod_state "$id" || return 1
+  _dvw_ensure_ssh_alias "$id" || return 1
   _dvw_resolve_canonical_container "$id" || return 1
   _dvw_reap_stale_masters "$id"
 
@@ -397,6 +398,22 @@ cmd_doctor() {
 
   # ssh blueprint sync (delegates to ssh-sync.sh, which uses ui_status_*)
   ssh_sync_doctor
+
+  # per-workspace ssh alias coverage: every catalog workspace should resolve a
+  # local `<id>.devpod` ProxyCommand. Misses mean this machine can't open them
+  # until `dvw <id>` (which now self-registers) or `dvw start <id>` runs.
+  local _alias_missing=()
+  local _wid
+  while IFS= read -r _wid; do
+    [[ -z "$_wid" ]] && continue
+    _dvw_alias_defined "$_wid" || _alias_missing+=("$_wid")
+  done < <(catalog_read 2>/dev/null | jq -r '.workspaces[]?.id' 2>/dev/null)
+  if (( ${#_alias_missing[@]} == 0 )); then
+    ui_status_ok "ssh aliases: all catalog workspaces resolve locally"
+  else
+    ui_status_warn "ssh aliases: missing for ${_alias_missing[*]} — run \`dvw <id>\` to register (auto on connect)"
+    warn=$((warn+1))
+  fi
 
   # devpod
   local devpod_providers=""

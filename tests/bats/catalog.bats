@@ -290,14 +290,17 @@ teardown() {
   PATH=/nonexistent:/usr/bin:/bin
   ws_path="$HOME/.devpod/contexts/default/workspaces/myrepo-feature-x/workspace.json"
   mkdir -p "$(dirname "$ws_path")"
+  # Client-side workspace.json layout: top-level .uid and .provider (the agent
+  # side uses .workspace.uid). catalog_workspace_set_devpod_state reads the
+  # client file, so .uid lives at the top level here.
   cat > "$ws_path" <<'JSON'
-{"id":"myrepo-feature-x","workspace":{"uid":"default-my-abc12","provider":{"options":{"HOST":{"value":"vossisrv","userProvided":true}}}}}
+{"id":"myrepo-feature-x","uid":"default-my-abc12","provider":{"options":{"HOST":{"value":"vossisrv","userProvided":true}}}}
 JSON
   PATH=/nonexistent:/usr/bin:/bin run catalog_workspace_set_devpod_state myrepo-feature-x
   [ "$status" -eq 0 ]
   jq -e '.workspaces[] | select(.id=="myrepo-feature-x") | .uid == "default-my-abc12"' "$DVW_CATALOG"
-  jq -e '.workspaces[] | select(.id=="myrepo-feature-x") | .devpod_state.workspace.uid == "default-my-abc12"' "$DVW_CATALOG"
-  jq -e '.workspaces[] | select(.id=="myrepo-feature-x") | .devpod_state.workspace.provider.options.HOST.value == "vossisrv"' "$DVW_CATALOG"
+  jq -e '.workspaces[] | select(.id=="myrepo-feature-x") | .devpod_state.uid == "default-my-abc12"' "$DVW_CATALOG"
+  jq -e '.workspaces[] | select(.id=="myrepo-feature-x") | .devpod_state.provider.options.HOST.value == "vossisrv"' "$DVW_CATALOG"
 }
 
 @test "catalog_workspace_set_devpod_state: errors when local workspace.json missing" {
@@ -340,7 +343,8 @@ JSON
   export HOME="$TMPDIR"
   ws_path="$HOME/.devpod/contexts/default/workspaces/myrepo-feature-x/workspace.json"
   mkdir -p "$(dirname "$ws_path")"
-  echo '{"workspace":{"uid":"default-xy-99999"}}' > "$ws_path"
+  # Client-side layout: top-level .uid (see catalog_workspace_set_devpod_state).
+  echo '{"uid":"default-xy-99999"}' > "$ws_path"
   PATH=/nonexistent:/usr/bin:/bin catalog_workspace_set_devpod_state myrepo-feature-x
   run catalog_workspace_get_uid myrepo-feature-x
   [ "$status" -eq 0 ]
