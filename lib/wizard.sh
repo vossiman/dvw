@@ -11,6 +11,13 @@ _repo_leaf() {
   echo "$1" | sed -E 's#.*[/:]([^/:]+?)(\.git)?$#\1#'
 }
 
+# Parse `git ls-remote --heads` output (on stdin) into a sorted list of branch
+# names, stripping the leading "<sha>\trefs/heads/" from each line. Pure (no
+# network) so the branch flow's only testable part can be unit-tested.
+_parse_remote_branches() {
+  sed -E 's#^[0-9a-f]+[[:space:]]+refs/heads/##' | LC_ALL=C sort
+}
+
 # DevPod's hard cap on workspace IDs (it errors out with "workspace name
 # cannot be longer than N characters" at `devpod up` time). Branches like
 # `design/dvw-extract-and-multi-agent` produce defaults that blow past this
@@ -52,12 +59,20 @@ cmd_new() {
   fi
   [[ -z "$repo" ]] && { ui_info "aborted: no repo"; return 1; }
 
-  # 2. Branch
-  local default_branch branch
-  default_branch=$(catalog_repo_last_branch "$repo")
-  default_branch="${default_branch:-main}"
-  branch=$(gum input --value "$default_branch" --header "branch" \
-            --header.foreground "$DVW_SUBTLE")
+  # 2. Branch — pick from the repo's live remote branches. Listing only what
+  # actually exists rules out stale catalog defaults and typo'd/deleted
+  # branches, which `devpod up` would otherwise reject mid-clone with an
+  # opaque "exit status 128".
+  local raw_branches branches branch
+  raw_branches=$(GIT_TERMINAL_PROMPT=0 gum spin --spinner dot \
+                   --title "fetching branches for $repo..." --show-output \
+                   -- git ls-remote --heads "$repo" 2>/dev/null)
+  branches=$(printf '%s\n' "$raw_branches" | _parse_remote_branches)
+  if [[ -z "$branches" ]]; then
+    ui_error "couldn't list branches for $repo — check the URL, your network, or SSH auth"
+    return 1
+  fi
+  branch=$(printf '%s\n' "$branches" | gum filter --placeholder "pick a branch")
   [[ -z "$branch" ]] && { ui_info "aborted: no branch"; return 1; }
 
   # 3. Workspace name (DevPod caps these at DEVPOD_NAME_MAX chars).
