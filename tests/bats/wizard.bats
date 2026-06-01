@@ -106,3 +106,29 @@ EOF
   [ "$status" -eq 0 ]
   [ "$output" = "release/v1.2.3" ]
 }
+
+# _parse_devpod_ids: extracts workspace IDs from `devpod list --output json`.
+# Added 2026-06-01 after the wizard let a name that already existed in DevPod
+# (but not the catalog) through its duplicate check — `devpod up --id <name>`
+# then silently reused that workspace's pinned branch and ignored the branch
+# the user picked, cloning a stale branch that failed with "exit status 128".
+
+@test "_parse_devpod_ids: extracts ids from devpod list json" {
+  run _parse_devpod_ids <<'EOF'
+[{"id":"devmachine","source":{"gitBranch":"design/x"}},{"id":"financepdfs-git-main"}]
+EOF
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "devmachine" ]
+  [ "${lines[1]}" = "financepdfs-git-main" ]
+}
+
+@test "_parse_devpod_ids: empty array yields no output" {
+  run _parse_devpod_ids <<<'[]'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "_parse_devpod_ids: empty input yields no output" {
+  run _parse_devpod_ids <<<''
+  [ -z "$output" ]
+}
