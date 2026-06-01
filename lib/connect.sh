@@ -783,6 +783,33 @@ _dvw_alias_defined() {
   ssh -G "${ws}.devpod" 2>/dev/null | grep -qi '^proxycommand '
 }
 
+# Remove the per-workspace DevPod alias block for <id> from ~/.ssh/config.
+# The inverse of _dvw_ensure_ssh_alias: cmd_rm now calls this so deleting a
+# workspace doesn't leave a dangling `Host <id>.devpod` stanza behind that
+# would accumulate as workspaces come and go. Matches the block on its exact
+# DevPod start/end markers (so `myws` never strips `myws-extra`), rewrites the
+# file atomically via a tmp + mv, and re-asserts mode 600. Idempotent: a no-op
+# success when the block (or the config file) is absent.
+_dvw_remove_ssh_alias() {
+  local id="$1" cfg="${DVW_SSH_CONFIG:-$HOME/.ssh/config}"
+  [[ -f "$cfg" ]] || return 0
+  _dvw_ssh_alias_present "$id" || return 0
+
+  local tmp="$cfg.dvw.tmp"
+  # Drop every line from the start marker through the end marker, inclusive.
+  # `insec==0 {print}` ordering keeps the start line out (insec already set)
+  # and the end line out (set back to 0 only after the print test).
+  awk -v s="# DevPod Start ${id}.devpod" -v e="# DevPod End ${id}.devpod" '
+    $0 == s { insec=1 }
+    insec == 0 { print }
+    $0 == e { insec=0 }
+  ' "$cfg" > "$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$cfg"
+
+  ui_status_ok "removed ssh alias \"${id}.devpod\""
+}
+
 # Materialize ~/.devpod/.../workspaces/<id>/workspace.json on this machine
 # from the catalog snapshot, if it doesn't already exist locally. No-op if
 # the local file is already present. Returns 1 if neither exists.
