@@ -338,3 +338,72 @@ EOF
   run _dvw_alias_defined myws
   [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# _dvw_remove_ssh_alias  (symmetric inverse of _dvw_ensure_ssh_alias)
+# ---------------------------------------------------------------------------
+
+@test "_dvw_remove_ssh_alias: removes the DevPod block for <id>" {
+  cat > "$DVW_SSH_CONFIG" <<'EOF'
+# DevPod Start myws.devpod
+Host myws.devpod
+  ProxyCommand "/bin/devpod" ssh --stdio --context default --user codespace myws
+  User codespace
+# DevPod End myws.devpod
+EOF
+  run _dvw_remove_ssh_alias myws
+  [ "$status" -eq 0 ]
+  [ "$(grep -cF 'myws.devpod' "$DVW_SSH_CONFIG")" -eq 0 ]
+}
+
+@test "_dvw_remove_ssh_alias: no-op (success) when no block present" {
+  printf 'Host vossisrv\n  User vossi\n' > "$DVW_SSH_CONFIG"
+  run _dvw_remove_ssh_alias myws
+  [ "$status" -eq 0 ]
+  grep -q "Host vossisrv" "$DVW_SSH_CONFIG"
+}
+
+@test "_dvw_remove_ssh_alias: no-op (success) when config file missing" {
+  rm -f "$DVW_SSH_CONFIG"
+  run _dvw_remove_ssh_alias myws
+  [ "$status" -eq 0 ]
+}
+
+@test "_dvw_remove_ssh_alias: leaves a different id sharing a prefix intact" {
+  cat > "$DVW_SSH_CONFIG" <<'EOF'
+# DevPod Start myws.devpod
+Host myws.devpod
+  User codespace
+# DevPod End myws.devpod
+# DevPod Start myws-extra.devpod
+Host myws-extra.devpod
+  User codespace
+# DevPod End myws-extra.devpod
+EOF
+  run _dvw_remove_ssh_alias myws
+  [ "$status" -eq 0 ]
+  [ "$(grep -cxF '# DevPod Start myws.devpod' "$DVW_SSH_CONFIG")" -eq 0 ]
+  [ "$(grep -cxF '# DevPod Start myws-extra.devpod' "$DVW_SSH_CONFIG")" -eq 1 ]
+}
+
+@test "_dvw_remove_ssh_alias: preserves surrounding content and stays mode 600" {
+  cat > "$DVW_SSH_CONFIG" <<'EOF'
+Host vossisrv
+  User vossi
+# DevPod Start myws.devpod
+Host myws.devpod
+  User codespace
+# DevPod End myws.devpod
+# DevPod Start other.devpod
+Host other.devpod
+  User codespace
+# DevPod End other.devpod
+EOF
+  chmod 600 "$DVW_SSH_CONFIG"
+  run _dvw_remove_ssh_alias myws
+  [ "$status" -eq 0 ]
+  grep -q "Host vossisrv" "$DVW_SSH_CONFIG"
+  [ "$(grep -cxF '# DevPod Start other.devpod' "$DVW_SSH_CONFIG")" -eq 1 ]
+  [ "$(grep -cF 'Host myws.devpod' "$DVW_SSH_CONFIG")" -eq 0 ]
+  [ "$(stat -c %a "$DVW_SSH_CONFIG")" = "600" ]
+}

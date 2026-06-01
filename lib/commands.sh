@@ -52,6 +52,11 @@ cmd_rm() {
     ui_status_warn "catalog write failed — run \`dvw doctor\`"
     return 1
   }
+  # Strip the per-workspace ssh alias this machine may have registered, so
+  # removing a workspace doesn't leave a dangling `Host <id>.devpod` stanza.
+  # No-op when no local stanza exists (e.g. catalog-only removal on a machine
+  # that never opened it).
+  _dvw_remove_ssh_alias "$id"
 }
 
 cmd_stop() {
