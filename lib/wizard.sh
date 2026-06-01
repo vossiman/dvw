@@ -18,6 +18,12 @@ _parse_remote_branches() {
   sed -E 's#^[0-9a-f]+[[:space:]]+refs/heads/##' | LC_ALL=C sort
 }
 
+# Print one workspace ID per line from `devpod list --output json` output read
+# on stdin. Pure (no devpod call) so the wizard's collision check is testable.
+_parse_devpod_ids() {
+  jq -r '.[].id' 2>/dev/null
+}
+
 # DevPod's hard cap on workspace IDs (it errors out with "workspace name
 # cannot be longer than N characters" at `devpod up` time). Branches like
 # `design/dvw-extract-and-multi-agent` produce defaults that blow past this
@@ -96,6 +102,23 @@ cmd_new() {
     ui_error "workspace ID already exists in catalog: $name"
     return 1
   fi
+  # A name that already exists in DevPod's own store — even when absent from the
+  # catalog — is a trap: `devpod up <repo>@<branch> --id <name>` against an
+  # existing workspace SILENTLY reuses that workspace's pinned source/branch and
+  # ignores the @branch we pass. The user's branch pick gets thrown away and the
+  # clone runs against whatever (possibly stale, now-deleted) branch the
+  # workspace was first created with — failing with an opaque "exit status 128".
+  # Refuse up front rather than hand devpod a colliding name.
+  if command -v devpod >/dev/null 2>&1; then
+    local existing_ids
+    existing_ids=$(devpod list --output json 2>/dev/null | _parse_devpod_ids)
+    if printf '%s\n' "$existing_ids" | grep -qxF -- "$name"; then
+      ui_error "workspace already exists in DevPod: $name"
+      ui_info "(\`devpod up --id $name\` would reuse its original branch and ignore your pick \"$branch\")"
+      ui_info "remove it first (dvw rm $name, or devpod delete $name), or choose a different name"
+      return 1
+    fi
+  fi
 
   # 4. IDE
   local default_ide ide
@@ -126,6 +149,17 @@ cmd_new() {
   ui_action "creating" "$name (ide=$devpod_ide)"
   if ! devpod up "${repo}@${branch}" --id "$name" --ide "$devpod_ide"; then
     ui_error "devpod up failed; catalog not modified"
+    # devpod registers the workspace entry (pinned to this @branch) BEFORE it
+    # clones, so a failed clone leaves an orphan behind. Left in place, that
+    # orphan poisons the next attempt: `devpod up --id <name>` would reuse its
+    # pinned branch and ignore the branch picked next time. We verified the name
+    # was free at the top of this run, so the entry is ours — remove it so the
+    # next `dvw new` starts clean.
+    if devpod list --output json 2>/dev/null | _parse_devpod_ids | grep -qxF -- "$name"; then
+      ui_info "cleaning up partially-created workspace: $name"
+      devpod delete "$name" --force --ignore-not-found >/dev/null 2>&1 \
+        || ui_status_warn "could not remove partial workspace $name (remove with: devpod delete $name)"
+    fi
     return 1
   fi
 
