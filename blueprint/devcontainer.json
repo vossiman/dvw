@@ -13,6 +13,6 @@
     "source=/home/vossi/devpod/codex,target=/home/codespace/.codex,type=bind",
     "source=/home/vossi/devpod/cursor,target=/home/codespace/.cursor,type=bind"
   ],
-  "postCreateCommand": "git submodule update --init --recursive && bash devpod/aicoding/install.sh",
-  "postStartCommand": "bash devpod/aicoding/update.sh"
+  "postCreateCommand": "git clone --quiet https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh",
+  "postStartCommand": "curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/update.sh | bash"
 }
