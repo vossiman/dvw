@@ -167,6 +167,14 @@ case ":$PATH:" in
   *) echo "WARNING: $HOME/.local/bin is not on PATH; add it to your shell rc" ;;
 esac
 
+# shellcheck source=lib/version.sh
+. "$SCRIPT_DIR/lib/version.sh"
+step "recording dvw version marker"
+if dvw_write_version_marker "$SCRIPT_DIR"; then
+  _dvw_ver=$(dvw_installed_version)
+  [ -n "$_dvw_ver" ] && echo "recorded dvw version $_dvw_ver"
+fi
+
 step "first-run catalog init"
 mkdir -p "$HOME/Dropbox-remote/dvw"
 "$TARGET_BIN" -l >/dev/null

@@ -56,6 +56,8 @@ main() {
       shift; cmd_new "$@" ;;
     rm)
       shift; cmd_rm "$@" ;;
+    update)
+      shift; cmd_update "$@" ;;
     stop)
       shift; cmd_stop "$@" ;;
     start)

@@ -69,6 +69,18 @@ cmd_stop() {
   _dvw_run_or_print devpod stop "$id"
 }
 
+# dvw update — manual, user-invoked in-place update. Pull latest main, re-run
+# the installer, refresh the version marker. NEVER called automatically.
+cmd_update() {
+  . "$DVW_ROOT/lib/version.sh"
+  ui_info "updating dvw in $DVW_ROOT"
+  if ! git -C "$DVW_ROOT" pull --ff-only origin main; then
+    ui_error "git pull failed — resolve manually in $DVW_ROOT"; return 1
+  fi
+  bash "$DVW_ROOT/dvw-install.sh" || { ui_error "dvw-install.sh failed"; return 1; }
+  ui_info "dvw now at $(dvw_installed_version)"
+}
+
 # Probe-aware start. The provider probe (set in _dvw_load_probe) tells us
 # precisely what state the workspace is in, so each case maps to the safe
 # action:
