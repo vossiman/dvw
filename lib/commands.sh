@@ -78,7 +78,6 @@ cmd_update() {
     ui_error "git pull failed — resolve manually in $DVW_ROOT"; return 1
   fi
   bash "$DVW_ROOT/dvw-install.sh" || { ui_error "dvw-install.sh failed"; return 1; }
-  dvw_write_version_marker "$DVW_ROOT"
   ui_info "dvw now at $(dvw_installed_version)"
 }
 

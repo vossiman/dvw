@@ -34,6 +34,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw blueprint [path]` | drop `blueprint/devcontainer.json` into `<path>/.devcontainer/` so `dvw new` can build a proper workspace from that repo |
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
 | `dvw stop <id>` | `devpod stop` |
+| `dvw update` | Update dvw in place to latest main and refresh the version marker. |
 | `dvw start <id>` | `devpod up` with the workspace's saved IDE |
 | `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
 | `dvw doctor` | health check: provider probe, rclone mount, catalog, ssh-sync, devpod, gum, per-orphan summary |
