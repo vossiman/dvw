@@ -37,7 +37,10 @@ run when behind, plus a detailed line in `dvw doctor`.
   (same dir as the version marker). Stores last-fetch epoch + behind-count.
 - **TTL:** `${DVW_UPDATE_TTL:-21600}` (6h), matching aicoding's default knob.
 - **`dvw_update_behind_count`** — reader, instant, no network. Echoes the cached
-  behind-count, or `0` if the cache is missing/unparsable. Always exit 0.
+  behind-count, or **empty** if the cache is missing/unparsable. Always exit 0.
+  Callers treat empty as "unknown / not checked yet" and `0` as "up to date"
+  (lets `dvw doctor` distinguish the two; the startup nudge stays silent for
+  both).
 - **`dvw_update_refresh_if_stale`** — throttled writer. If the cache is older than
   the TTL (or missing): spawn a **detached** `git -C "$DVW_ROOT" fetch -q origin
   main`, then record `behind = git -C "$DVW_ROOT" rev-list --count
