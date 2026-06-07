@@ -25,3 +25,15 @@ dvw_update_behind_count() {
   esac
   return 0
 }
+
+# Return 0 (stale → should refresh) if the cache is missing, unparsable, or
+# older than DVW_UPDATE_TTL. Return 1 (fresh) otherwise.
+_dvw_update_cache_stale() {
+  local cache epoch now
+  cache=$(dvw_update_cache_path)
+  [ -f "$cache" ] || return 0
+  epoch=$(sed -n '1p' "$cache" 2>/dev/null)
+  case "$epoch" in ''|*[!0-9]*) return 0 ;; esac
+  now=$(date +%s)
+  [ $(( now - epoch )) -ge "$DVW_UPDATE_TTL" ]
+}

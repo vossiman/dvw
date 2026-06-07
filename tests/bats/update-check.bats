@@ -56,3 +56,26 @@ _write_cache() { mkdir -p "$DVW_STATE_DIR"; printf '%s\n%s\n' "$1" "$2" > "$DVW_
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+@test "cache_stale: true (status 0) when cache missing" {
+  run _dvw_update_cache_stale
+  [ "$status" -eq 0 ]
+}
+
+@test "cache_stale: false (status 1) when cache is fresh" {
+  _write_cache "$(date +%s)" 0
+  run _dvw_update_cache_stale
+  [ "$status" -ne 0 ]
+}
+
+@test "cache_stale: true (status 0) when cache older than TTL" {
+  _write_cache 1 0           # epoch 1 = 1970, far older than any TTL
+  run _dvw_update_cache_stale
+  [ "$status" -eq 0 ]
+}
+
+@test "cache_stale: true when epoch is unparsable" {
+  _write_cache nope 0
+  run _dvw_update_cache_stale
+  [ "$status" -eq 0 ]
+}
