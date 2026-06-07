@@ -411,6 +411,21 @@ cmd_doctor() {
     fail=$((fail+1))
   fi
 
+  # dvw version vs origin/main (advisory; never a doctor failure). Guarded so
+  # the check is a no-op if update-check.sh wasn't sourced (e.g. a test that
+  # sources commands.sh in isolation).
+  if command -v dvw_update_behind_count >/dev/null 2>&1; then
+    dvw_update_refresh_if_stale
+    local _dvw_behind; _dvw_behind=$(dvw_update_behind_count)
+    if [[ -z "$_dvw_behind" ]]; then
+      ui_status_ok "dvw: version check pending (run again after network)"
+    elif [[ "$_dvw_behind" -gt 0 ]]; then
+      ui_status_warn "dvw: $_dvw_behind commit(s) behind main — run: \`dvw update\`"
+    else
+      ui_status_ok "dvw: up to date with main"
+    fi
+  fi
+
   # Per-workspace registration status. Catalog is the cross-machine source of
   # truth (Dropbox-synced); local devpod state is per-machine and may not yet
   # exist for catalog entries created elsewhere — that's fine, the synthesizer
