@@ -1,21 +1,26 @@
 #!/usr/bin/env bats
 #
-# Tests for the multi-machine sync helpers in devpod/lib/connect.sh:
-#   _dvw_ensure_local_devpod_state — synthesize ~/.devpod/.../workspace.json
-#                                    from the catalog snapshot.
+# Tests for the multi-machine sync helper in devpod/lib/connect.sh:
+#   _dvw_ensure_local_devpod_state — synthesize this machine's local
+#     ~/.devpod/.../workspace.json from the catalog's devpod_state snapshot.
 #
-# The canonical-container resolver path (_dvw_resolve_canonical_container)
-# requires a fake SSH host that returns scripted docker+tmux output and is
-# deferred — see the TODO block at the bottom.
+# The snapshot now comes from the catalog SERVICE: _dvw_ensure_local_devpod_state
+# calls catalog_workspace_get_devpod_state, which GETs /v1/workspaces/{id} and
+# extracts .devpod_state. We serve that response via the transport stub
+# (tests/bats/lib/catalog-stub.bash); the synthesized local file is real.
 
 setup() {
   TMPDIR=$(mktemp -d)
-  export DVW_CATALOG="$TMPDIR/catalog.json"
   export HOME="$TMPDIR"
-  # No devpod CLI → catalog_devpod_context falls back to "default".
-  export PATH=/nonexistent:/usr/bin:/bin
-  # Stub out ui_* functions sourced by connect.sh so they don't reference
-  # ANSI variables / gum that aren't available in tests.
+  STUB_BIN="$TMPDIR/stubbin"
+  mkdir -p "$STUB_BIN"
+  # PATH keeps the stub first; no devpod CLI on it → catalog_devpod_context
+  # falls back to "default".
+  export PATH="$STUB_BIN:/usr/bin:/bin"
+  export DVW_CATALOG_HOST=stub
+  export DVW_CATALOG_SOCK="$TMPDIR/not-a-socket.sock"
+  load "lib/catalog-stub.bash"
+
   ui_error()        { echo "ERROR: $*" >&2; }
   ui_info()         { echo "INFO: $*" >&2; }
   ui_action()       { echo "ACTION: $*" >&2; }
@@ -23,48 +28,43 @@ setup() {
   ui_status_warn()  { echo "WARN: $*" >&2; }
   ui_status_fail()  { echo "FAIL: $*" >&2; }
   export -f ui_error ui_info ui_action ui_status_ok ui_status_warn ui_status_fail
-
-  source "$DVW_ROOT/lib/catalog.sh"
-  source "$DVW_ROOT/lib/connect.sh"
 }
 
 teardown() {
   rm -rf "$TMPDIR"
 }
 
-# Helper: write a catalog with one workspace entry that has a devpod_state
-# snapshot (uid + provider.options.HOST). Returns via stdout.
-_seed_catalog_with_snapshot() {
+# Serve a workspace whose response carries a devpod_state snapshot (uid +
+# provider.options.HOST) for <id>; everything else 404. devpod CLI is absent so
+# catalog_devpod_context resolves to "default" and the local path is
+# $HOME/.devpod/contexts/default/workspaces/<id>/workspace.json.
+_serve_workspace_with_snapshot() {
   local id="$1" uid="$2" host="${3:-vossisrv}"
-  cat > "$DVW_CATALOG" <<JSON
-{
-  "version": 1,
-  "defaults": { "ide": "cursor", "provider": "vossisrv" },
-  "workspaces": [{
-    "id": "$id",
-    "repo": "git@github.com:foo/bar.git",
-    "branch": "main",
-    "ide": "cursor",
-    "provider": "vossisrv",
-    "created_at": "2026-05-04T10:00:00Z",
-    "last_used_at": "2026-05-04T10:00:00Z",
-    "created_on": "vossimachine",
-    "uid": "$uid",
-    "devpod_state": {
-      "id": "$id",
-      "workspace": {
-        "uid": "$uid",
-        "provider": { "options": { "HOST": { "value": "$host", "userProvided": true } } }
-      }
-    }
-  }],
-  "repos": []
-}
-JSON
+  export STUB_WS_ID="$id" STUB_WS_UID="$uid" STUB_WS_HOST="$host"
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/workspaces/$STUB_WS_ID")
+        _stub_emit "{
+          \"id\": \"$STUB_WS_ID\",
+          \"uid\": \"$STUB_WS_UID\",
+          \"devpod_state\": {
+            \"id\": \"$STUB_WS_ID\",
+            \"workspace\": {
+              \"uid\": \"$STUB_WS_UID\",
+              \"provider\": { \"options\": { \"HOST\": { \"value\": \"$STUB_WS_HOST\", \"userProvided\": true } } }
+            }
+          }
+        }" 200 ;;
+      *) _stub_emit '{"error":{"code":"not_found"}}' 404 ;;
+    esac
+  }
+  catalog_stub_install
 }
 
 @test "_dvw_ensure_local_devpod_state: writes synthesized workspace.json from catalog snapshot when local missing" {
-  _seed_catalog_with_snapshot "myws" "default-my-abc12"
+  _serve_workspace_with_snapshot "myws" "default-my-abc12"
+  source "$DVW_ROOT/lib/catalog.sh"
+  source "$DVW_ROOT/lib/connect.sh"
   ws_path="$HOME/.devpod/contexts/default/workspaces/myws/workspace.json"
   [ ! -f "$ws_path" ]
   run _dvw_ensure_local_devpod_state myws
@@ -75,7 +75,9 @@ JSON
 }
 
 @test "_dvw_ensure_local_devpod_state: no-op when local workspace.json already exists" {
-  _seed_catalog_with_snapshot "myws" "default-my-abc12"
+  # Local file present → returns before any service call.
+  source "$DVW_ROOT/lib/catalog.sh"
+  source "$DVW_ROOT/lib/connect.sh"
   ws_path="$HOME/.devpod/contexts/default/workspaces/myws/workspace.json"
   mkdir -p "$(dirname "$ws_path")"
   echo '{"sentinel":"do-not-overwrite"}' > "$ws_path"
@@ -85,46 +87,32 @@ JSON
 }
 
 @test "_dvw_ensure_local_devpod_state: errors and prints legacy hint when catalog has no snapshot" {
-  cat > "$DVW_CATALOG" <<'JSON'
-{
-  "version": 1,
-  "defaults": { "ide": "cursor", "provider": "vossisrv" },
-  "workspaces": [{
-    "id": "legacy",
-    "repo": "git@github.com:foo/bar.git",
-    "branch": "main",
-    "ide": "cursor",
-    "provider": "vossisrv",
-    "created_at": "2026-04-01T00:00:00Z",
-    "last_used_at": "2026-04-01T00:00:00Z",
-    "created_on": "vossimachine"
-  }],
-  "repos": []
-}
-JSON
+  # Workspace exists in the catalog but carries no devpod_state snapshot.
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/workspaces/legacy") _stub_emit '{"id":"legacy","provider":"vossisrv"}' 200 ;;
+      *)                           _stub_emit '{"error":{"code":"not_found"}}' 404 ;;
+    esac
+  }
+  catalog_stub_install
+  source "$DVW_ROOT/lib/catalog.sh"
+  source "$DVW_ROOT/lib/connect.sh"
   run _dvw_ensure_local_devpod_state legacy
   [ "$status" -ne 0 ]
-  [[ "$output" == *"legacy"* || "$stderr" == *"legacy"* ]] || [ -n "$output$stderr" ]
+  [[ "$output" == *"legacy"* ]]
 }
 
 @test "_dvw_ensure_local_devpod_state: writes valid JSON (jq can re-parse the synthesized file)" {
-  _seed_catalog_with_snapshot "validjson" "default-vj-zzzzz"
+  _serve_workspace_with_snapshot "validjson" "default-vj-zzzzz"
+  source "$DVW_ROOT/lib/catalog.sh"
+  source "$DVW_ROOT/lib/connect.sh"
   run _dvw_ensure_local_devpod_state validjson
   [ "$status" -eq 0 ]
   ws_path="$HOME/.devpod/contexts/default/workspaces/validjson/workspace.json"
   jq -e . "$ws_path" >/dev/null
 }
 
-# TODO: canonical-container resolver tests
-#
-# _dvw_resolve_canonical_container requires a stand-in SSH host that emits
-# scripted `docker ps` + `docker exec tmux list-sessions` output. Cases to
-# feed once the ssh stub is in place:
-#   - 0 containers labeled → returns 0, local untouched (cold-start path)
-#   - 1 container, 0 tmux → returns 0, local gets that uid
-#   - 1 container, 1 tmux → returns 0, local gets that uid
-#   - 2+ containers, 1 with tmux → returns 0, local gets the tmux holder's uid
-#   - 2+ containers, ≥2 with tmux → returns 0, picks most-recently-active,
-#     emits WARN
-#   - 2+ containers, 0 with tmux → returns 1 (pathological), local untouched
-#   - SSH unreachable → returns 0 (best-effort), local untouched
+# TODO: canonical-container resolver tests (_dvw_resolve_canonical_container,
+# now lib/connect-resolver.sh → GET /v1/workspaces/{id}/container). Feed the
+# stub container responses for: no container (cold), single container align,
+# ambiguous (status 1), uid-claimed-by-other refusal, service unreachable.
