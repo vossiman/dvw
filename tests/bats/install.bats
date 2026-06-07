@@ -8,7 +8,7 @@ setup() {
   mkdir -p "$HOME/.local/bin"
   # Stub apt/sudo/curl so --check-only can probe without touching the real host.
   mkdir -p "$TMPDIR/stubs"
-  for cmd in apt apt-get sudo curl rclone; do
+  for cmd in apt apt-get sudo curl; do
     cat > "$TMPDIR/stubs/$cmd" <<'STUB'
 #!/bin/sh
 exit 0

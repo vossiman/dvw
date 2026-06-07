@@ -36,42 +36,15 @@ is_wsl() {
 
 step() { echo; echo "▸ $*"; }
 
-step "checking apt dependencies (jq, fuse3)"
+step "checking apt dependencies (jq)"
 NEEDED=()
-for pkg in jq fuse3; do
+for pkg in jq; do
   dpkg -s "$pkg" >/dev/null 2>&1 || NEEDED+=("$pkg")
 done
 if (( ${#NEEDED[@]} )); then
   echo "installing: ${NEEDED[*]}"
   sudo apt update
   sudo apt install -y "${NEEDED[@]}"
-fi
-
-step "checking rclone (upstream installer; not apt)"
-# Ubuntu noble ships rclone 1.60.1 (late 2022). Upstream is 1.74+. Older
-# versions have FUSE/Dropbox stability bugs. Install (or replace apt
-# version with) the upstream binary unconditionally if too old/missing.
-NEED_RCLONE=1
-if command -v rclone >/dev/null; then
-  RCLONE_VER=$(rclone --version 2>/dev/null | head -1 | awk '{print $2}' | sed 's/^v//;s/-.*//')
-  RCLONE_MAJOR=${RCLONE_VER%%.*}
-  RCLONE_MINOR=$(echo "$RCLONE_VER" | cut -d. -f2)
-  if (( RCLONE_MAJOR > 1 )) || { (( RCLONE_MAJOR == 1 )) && (( ${RCLONE_MINOR:-0} >= 65 )); }; then
-    NEED_RCLONE=0
-  else
-    echo "found rclone $RCLONE_VER — too old; will replace with upstream"
-    # Apt's rclone owns /usr/bin/rclone; remove it before the upstream
-    # installer drops in (which also writes to /usr/bin/rclone). This avoids
-    # the trap where a later `apt remove rclone` would delete the upstream
-    # binary because dpkg still owns the path.
-    if dpkg -s rclone >/dev/null 2>&1; then
-      sudo apt remove -y rclone
-    fi
-  fi
-fi
-if (( NEED_RCLONE )); then
-  echo "installing rclone via https://rclone.org/install.sh"
-  curl -fsSL https://rclone.org/install.sh | sudo bash
 fi
 
 step "checking gum"
@@ -118,47 +91,6 @@ CONF
   fi
 fi
 
-step "checking rclone Dropbox remote"
-if ! rclone listremotes 2>/dev/null | grep -qx 'dropbox:'; then
-  echo "no 'dropbox:' rclone remote configured"
-  echo "run: rclone config"
-  echo "  → n (new remote), name = dropbox, type = dropbox"
-  echo "  → follow OAuth prompts, then re-run this installer"
-  exit 1
-fi
-
-step "installing systemd user unit"
-mkdir -p "$HOME/.config/systemd/user"
-install -m 0644 "$SCRIPT_DIR/systemd/rclone-dropbox.service" \
-  "$HOME/.config/systemd/user/rclone-dropbox.service"
-mkdir -p "$HOME/Dropbox-remote"
-systemctl --user daemon-reload
-systemctl --user enable --now rclone-dropbox.service
-
-# On Ubuntu/Mint with "Encrypt Home" (ecryptfs), linger=yes makes the
-# user systemd manager start at boot — before pam_ecryptfs has decrypted
-# ~/.config — so this unit's default.target.wants symlink is invisible
-# and the mount never auto-starts. Disable linger so user@UID.service
-# starts at login (after ecryptfs unwrap). LP #1746527 / #1734290.
-if findmnt -no FSTYPE "$HOME" 2>/dev/null | grep -qx ecryptfs \
-   && [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" == "yes" ]]; then
-  echo "encrypted home + linger=yes is incompatible; disabling linger"
-  loginctl disable-linger "$USER"
-fi
-
-step "waiting for rclone mount to come up"
-for _ in $(seq 1 15); do
-  if mountpoint -q "$HOME/Dropbox-remote"; then break; fi
-  sleep 1
-done
-if ! mountpoint -q "$HOME/Dropbox-remote"; then
-  echo "rclone mount did not appear within 15s. Check:"
-  echo "  systemctl --user status rclone-dropbox"
-  echo "Re-run this installer once the mount is live."
-  exit 1
-fi
-systemctl --user status rclone-dropbox.service --no-pager || true
-
 step "installing dvw to $TARGET_BIN"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$SCRIPT_DIR/dvw" "$TARGET_BIN"
@@ -175,14 +107,19 @@ if dvw_write_version_marker "$SCRIPT_DIR"; then
   [ -n "$_dvw_ver" ] && echo "recorded dvw version $_dvw_ver"
 fi
 
-step "first-run catalog init"
-mkdir -p "$HOME/Dropbox-remote/dvw"
-"$TARGET_BIN" -l >/dev/null
+step "first-run catalog init (catalog service health check)"
+# shellcheck source=lib/catalog.sh
+. "$SCRIPT_DIR/lib/catalog.sh"
+# Warn-and-continue: an unreachable service must not abort the install (the
+# client just needs SSH access to vossisrv, which may not be set up yet).
+catalog_init_if_missing || echo "  (catalog service not reachable yet — set up SSH access to the box, then run: dvw doctor)"
 
 step "ssh blueprint sync (Include + first refresh)"
 # shellcheck source=lib/ssh-sync.sh
 . "$SCRIPT_DIR/lib/ssh-sync.sh"
-ssh_sync_init
+# Warn-and-continue: ssh_sync_init returns non-zero if the catalog service is
+# unreachable; don't let that abort the install under set -e.
+ssh_sync_init || echo "  (ssh blueprint not synced — catalog service unreachable; re-run dvw-install.sh once SSH access is set up)"
 
 echo
 echo "✓ install complete. Try: dvw doctor"

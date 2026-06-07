@@ -80,7 +80,7 @@ ui_error() {
 #
 # Run CMD; if it doesn't return within ~0.8s, emit a dim "› LABEL…" hint
 # so the user isn't staring at a silent terminal during slow pre-flights
-# (rclone-mounted catalog/blueprint stat, ssh blueprint cp, etc).
+# (catalog service catalog/blueprint fetch, ssh blueprint cp, etc).
 # Returns CMD's exit code unchanged. Cheap on the happy path: no output
 # at all, just one fork+sleep that gets killed before it prints.
 ui_progress() {

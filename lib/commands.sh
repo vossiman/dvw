@@ -241,9 +241,6 @@ cmd_status() {
 
 cmd_doctor() {
   local fail=0 warn=0
-  local cat_path cat_dir
-  cat_path=$(catalog_path)
-  cat_dir=$(dirname "$cat_path")
 
   ui_banner "dvw doctor" "health check across all dvw surfaces"
 
@@ -309,32 +306,13 @@ cmd_doctor() {
     ui_info "         (run \`dvw\` and pick \"Audit orphan containers\" for git status / unpushed / stashes inside each)"
   fi
 
-  # rclone mount
-  if mountpoint -q "$cat_dir" 2>/dev/null \
-     || mountpoint -q "$(dirname "$cat_dir")" 2>/dev/null; then
-    ui_status_ok "rclone mount: $cat_dir is on a FUSE mount"
-  elif [[ -d "$cat_dir" ]]; then
-    ui_status_warn "rclone mount: $cat_dir exists but is not a mountpoint (regular directory)"
-    warn=$((warn+1))
-  else
-    ui_status_fail "rclone mount: $cat_dir does not exist"
-    ui_info "          try: systemctl --user status rclone-dropbox"
-    fail=$((fail+1))
-  fi
-
-  # catalog readable
+  # catalog readable (served by the catalog service)
   local cat_data
   if cat_data=$(catalog_read 2>&1); then
     ui_status_ok "catalog: readable, version=$(echo "$cat_data" | jq -r .version)"
   else
     ui_status_fail "catalog: $cat_data"
     fail=$((fail+1))
-  fi
-
-  # conflicted-copy detection
-  if compgen -G "$cat_dir/*conflicted copy*" >/dev/null; then
-    ui_status_warn "Dropbox conflicted-copy file(s) present in $cat_dir"
-    warn=$((warn+1))
   fi
 
   # ssh blueprint sync (delegates to ssh-sync.sh, which uses ui_status_*)
@@ -427,7 +405,7 @@ cmd_doctor() {
   fi
 
   # Per-workspace registration status. Catalog is the cross-machine source of
-  # truth (Dropbox-synced); local devpod state is per-machine and may not yet
+  # truth (served by the catalog service); local devpod state is per-machine and may not yet
   # exist for catalog entries created elsewhere — that's fine, the synthesizer
   # in connect.sh will materialize it on first connect. This block is purely
   # informational and never tries to "fix" anything.
