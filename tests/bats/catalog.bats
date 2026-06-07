@@ -1,8 +1,31 @@
 #!/usr/bin/env bats
+#
+# Client-side tests for lib/catalog.sh against the dvw-catalog HTTP service.
+#
+# The catalog is no longer a Dropbox-synced JSON file; it's an HTTP service
+# reached over a unix socket (lib/catalog-http-lib.sh). These tests exercise the
+# CLIENT half: the service URL it advertises, the request method/path it sends,
+# how it maps HTTP status to return codes, and the jq it runs on responses.
+#
+# The service itself (atomic writes, schema validation, MRU ordering, conflict
+# detection, devpod_state opacity) is covered by catalog-service/tests/ pytest;
+# those server-side concerns are intentionally NOT re-tested here.
+#
+# Transport is stubbed via tests/bats/lib/catalog-stub.bash: each test defines a
+# `catalog_route` function answering the routes it needs.
 
 setup() {
   TMPDIR=$(mktemp -d)
-  export DVW_CATALOG="$TMPDIR/catalog.json"
+  export HOME="$TMPDIR"
+  STUB_BIN="$TMPDIR/stubbin"
+  mkdir -p "$STUB_BIN"
+  export PATH="$STUB_BIN:/usr/bin:/bin"
+  # Force the deterministic ssh transport branch: a non-socket path here means
+  # lib/catalog-http-lib.sh runs `ssh $DVW_CATALOG_HOST -- curl …`, which the
+  # stub intercepts.
+  export DVW_CATALOG_HOST=stub
+  export DVW_CATALOG_SOCK="$TMPDIR/not-a-socket.sock"
+  load "lib/catalog-stub.bash"
 }
 
 teardown() {
@@ -13,233 +36,257 @@ teardown() {
   [ 1 = 1 ]
 }
 
-@test "catalog_path: respects DVW_CATALOG env" {
+# --- catalog_path: advertises the service URL, not a file path --------------
+
+@test "catalog_path: reflects DVW_CATALOG_HOST and DVW_CATALOG_SOCK" {
   source "$DVW_ROOT/lib/catalog.sh"
   run catalog_path
   [ "$status" -eq 0 ]
-  [ "$output" = "$DVW_CATALOG" ]
+  [ "$output" = "service://stub$DVW_CATALOG_SOCK" ]
 }
 
-@test "catalog_path: defaults to ~/Dropbox-remote/dvw/catalog.json when DVW_CATALOG unset" {
-  unset DVW_CATALOG
+@test "catalog_path: defaults to vossisrv + /run/dvw-catalog/catalog.sock when unset" {
+  unset DVW_CATALOG_HOST DVW_CATALOG_SOCK
   source "$DVW_ROOT/lib/catalog.sh"
   run catalog_path
   [ "$status" -eq 0 ]
-  [ "$output" = "$HOME/Dropbox-remote/dvw/catalog.json" ]
+  [ "$output" = "service://vossisrv/run/dvw-catalog/catalog.sock" ]
 }
 
-@test "catalog_init_if_missing: creates fresh catalog when absent and sibling visible" {
+# --- catalog_init_if_missing: now a service health check --------------------
+
+@test "catalog_init_if_missing: succeeds when the service health check passes" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/health") _stub_emit '{"status":"ok"}' 200 ;;
+      *)                _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  touch "$TMPDIR/ssh-blueprint.conf"
-  [ ! -f "$DVW_CATALOG" ]
   run catalog_init_if_missing
   [ "$status" -eq 0 ]
-  [ -f "$DVW_CATALOG" ]
-  jq -e '.version == 1' "$DVW_CATALOG"
-  jq -e '.workspaces | length == 0' "$DVW_CATALOG"
-  jq -e '.repos | length == 0' "$DVW_CATALOG"
-  jq -e '.defaults.ide == "cursor"' "$DVW_CATALOG"
 }
 
-@test "catalog_init_if_missing: refuses to init when sibling also invisible (rclone listing broken)" {
+@test "catalog_init_if_missing: fails loudly with guidance when service unreachable" {
+  catalog_route() { _stub_emit '' 503; }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  [ ! -f "$DVW_CATALOG" ]
-  [ ! -f "$TMPDIR/ssh-blueprint.conf" ]
   run catalog_init_if_missing
   [ "$status" -ne 0 ]
-  [ ! -f "$DVW_CATALOG" ]
-  [[ "$output" == *"ssh-blueprint.conf"* ]]
-  [[ "$output" == *"refusing"* ]] || [[ "$output" == *"rclone"* ]]
+  [[ "$output" == *"unreachable"* ]]
+  [[ "$output" == *"stub"* ]]
 }
 
-@test "catalog_init_if_missing: leaves existing catalog untouched (sibling check skipped on short-circuit)" {
-  source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
-  before_hash=$(sha256sum "$DVW_CATALOG")
-  run catalog_init_if_missing
-  [ "$status" -eq 0 ]
-  after_hash=$(sha256sum "$DVW_CATALOG")
-  [ "$before_hash" = "$after_hash" ]
-}
+# --- catalog_read: GET /v1/catalog ------------------------------------------
 
-@test "catalog_init_if_missing: fails loudly when parent dir is unwritable" {
+@test "catalog_read: returns the catalog body from GET /v1/catalog" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/catalog") _stub_emit '{"version": 1, "workspaces": [], "repos": []}' 200 ;;
+      *)                 _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  export DVW_CATALOG=/nonexistent-path-xyz/dvw/catalog.json
-  run catalog_init_if_missing
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"catalog unreachable"* ]] || [[ "$output" == *"rclone mount"* ]]
-}
-
-@test "catalog_read: returns valid catalog content" {
-  source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   run catalog_read
   [ "$status" -eq 0 ]
   [[ "$output" == *'"version": 1'* ]]
 }
 
-@test "catalog_read: fails loudly on malformed JSON" {
+@test "catalog_read: fails when the service is unreachable" {
+  catalog_route() { _stub_emit '' 503; }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/malformed-catalog.json" "$DVW_CATALOG"
-  run catalog_read
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"malformed"* ]] || [[ "$output" == *"parse"* ]]
-}
-
-@test "catalog_read: fails loudly on future schema version" {
-  source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/future-version-catalog.json" "$DVW_CATALOG"
-  run catalog_read
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"newer"* ]] || [[ "$output" == *"version"* ]]
-}
-
-@test "catalog_read: fails when catalog file missing (does NOT auto-create)" {
-  source "$DVW_ROOT/lib/catalog.sh"
-  [ ! -f "$DVW_CATALOG" ]
   run catalog_read
   [ "$status" -ne 0 ]
 }
 
-@test "catalog_write: writes JSON atomically (no .tmp left behind)" {
-  source "$DVW_ROOT/lib/catalog.sh"
-  touch "$TMPDIR/ssh-blueprint.conf"
-  catalog_init_if_missing
-  echo '{"version":1,"defaults":{"ide":"cursor","provider":"vossisrv"},"workspaces":[{"id":"x","repo":"r","branch":"b","ide":"cursor","provider":"vossisrv","created_at":"2026-04-29T00:00:00Z","last_used_at":"2026-04-29T00:00:00Z","created_on":"test"}],"repos":[]}' \
-    | catalog_write
-  [ -f "$DVW_CATALOG" ]
-  [ ! -f "$DVW_CATALOG.tmp" ]
-  jq -e '.workspaces[0].id == "x"' "$DVW_CATALOG"
-}
+# --- workspaces: typed HTTP ops ---------------------------------------------
 
-@test "catalog_write: refuses to write malformed JSON" {
+@test "catalog_workspace_ids: extracts ids in the server's (MRU) order" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/workspaces") _stub_emit '[{"id":"myrepo-feature-x"},{"id":"other-main"}]' 200 ;;
+      *)                    _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  touch "$TMPDIR/ssh-blueprint.conf"
-  catalog_init_if_missing
-  before=$(cat "$DVW_CATALOG")
-  run bash -c 'source "$DVW_ROOT/lib/catalog.sh"; echo "{ bad json" | catalog_write'
-  [ "$status" -ne 0 ]
-  after=$(cat "$DVW_CATALOG")
-  [ "$before" = "$after" ]
-}
-
-@test "catalog_workspace_ids: lists IDs in last-used-desc order" {
-  source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   run catalog_workspace_ids
   [ "$status" -eq 0 ]
   [ "${lines[0]}" = "myrepo-feature-x" ]
   [ "${lines[1]}" = "other-main" ]
 }
 
-@test "catalog_workspace_ids: empty list when no workspaces" {
+@test "catalog_workspace_ids: empty output for an empty workspace list" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/workspaces") _stub_emit '[]' 200 ;;
+      *)                    _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/empty-catalog.json" "$DVW_CATALOG"
   run catalog_workspace_ids
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
 
-@test "catalog_workspace_get: returns workspace JSON for known ID" {
+@test "catalog_workspace_get: returns the workspace JSON for a known ID" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/workspaces/myrepo-feature-x")
+        _stub_emit '{"id":"myrepo-feature-x","ide":"cursor"}' 200 ;;
+      *) _stub_emit '{"error":{"code":"not_found"}}' 404 ;;
+    esac
+  }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   run catalog_workspace_get myrepo-feature-x
   [ "$status" -eq 0 ]
   echo "$output" | jq -e '.id == "myrepo-feature-x"'
   echo "$output" | jq -e '.ide == "cursor"'
 }
 
-@test "catalog_workspace_get: exits non-zero for unknown ID" {
+@test "catalog_workspace_get: exits non-zero on 404 for an unknown ID" {
+  catalog_route() { _stub_emit '{"error":{"code":"not_found"}}' 404; }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   run catalog_workspace_get nonexistent
   [ "$status" -ne 0 ]
 }
 
-@test "catalog_workspace_add: appends a new workspace entry" {
+@test "catalog_workspace_add: POSTs a workspace payload and succeeds on 201" {
+  # Capture the POST body so we can assert the client builds it correctly.
+  local capture="$TMPDIR/add-body.json"
+  catalog_route() {
+    case "$1 $2" in
+      "POST /v1/workspaces")
+        printf '%s' "$3" > "$ADD_CAPTURE"
+        _stub_emit "$3" 201 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  export ADD_CAPTURE="$capture"
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/empty-catalog.json" "$DVW_CATALOG"
-  run catalog_workspace_add new-ws \
-    git@github.com:foo/bar.git main cursor vossisrv testhost
+  run catalog_workspace_add new-ws git@github.com:foo/bar.git main cursor vossisrv testhost
   [ "$status" -eq 0 ]
-  jq -e '.workspaces | length == 1' "$DVW_CATALOG"
-  jq -e '.workspaces[0].id == "new-ws"' "$DVW_CATALOG"
-  jq -e '.workspaces[0].ide == "cursor"' "$DVW_CATALOG"
-  jq -e '.workspaces[0].created_on == "testhost"' "$DVW_CATALOG"
-  jq -e '.workspaces[0].created_at | test("[0-9]{4}-[0-9]{2}-[0-9]{2}T")' "$DVW_CATALOG"
+  jq -e '.id == "new-ws"'          "$capture"
+  jq -e '.repo == "git@github.com:foo/bar.git"' "$capture"
+  jq -e '.branch == "main"'        "$capture"
+  jq -e '.ide == "cursor"'         "$capture"
+  jq -e '.provider == "vossisrv"'  "$capture"
+  jq -e '.created_on == "testhost"' "$capture"
 }
 
-@test "catalog_workspace_add: rejects duplicate ID" {
+@test "catalog_workspace_add: maps a 409 to a 'already exists' failure" {
+  catalog_route() {
+    case "$1 $2" in
+      "POST /v1/workspaces") _stub_emit '{"error":{"code":"conflict"}}' 409 ;;
+      *)                     _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
-  run catalog_workspace_add myrepo-feature-x \
-    git@github.com:foo/bar.git main cursor vossisrv testhost
+  run catalog_workspace_add myrepo-feature-x git@github.com:foo/bar.git main cursor vossisrv testhost
   [ "$status" -ne 0 ]
+  [[ "$output" == *"already exists"* ]]
 }
 
-@test "catalog_workspace_remove: removes by ID" {
+@test "catalog_workspace_remove: DELETEs and returns success" {
+  local hit="$TMPDIR/deleted"
+  catalog_route() {
+    case "$1 $2" in
+      "DELETE /v1/workspaces/myrepo-feature-x")
+        : > "$DEL_HIT"; _stub_emit '' 204 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  export DEL_HIT="$hit"
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   run catalog_workspace_remove myrepo-feature-x
   [ "$status" -eq 0 ]
-  jq -e '.workspaces | length == 1' "$DVW_CATALOG"
-  jq -e '.workspaces[0].id == "other-main"' "$DVW_CATALOG"
+  [ -f "$hit" ]
 }
 
-@test "catalog_workspace_remove: no-op on unknown ID returns success" {
+@test "catalog_workspace_remove: idempotent — success even on a 404" {
+  catalog_route() { _stub_emit '{"error":{"code":"not_found"}}' 404; }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   run catalog_workspace_remove nonexistent
   [ "$status" -eq 0 ]
-  jq -e '.workspaces | length == 2' "$DVW_CATALOG"
 }
 
-@test "catalog_workspace_touch: bumps last_used_at" {
+@test "catalog_workspace_touch: POSTs to the touch route and returns success" {
+  local hit="$TMPDIR/touched"
+  catalog_route() {
+    case "$1 $2" in
+      "POST /v1/workspaces/myrepo-feature-x/touch")
+        : > "$TOUCH_HIT"; _stub_emit '{}' 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  export TOUCH_HIT="$hit"
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
-  before=$(jq -r '.workspaces[] | select(.id=="myrepo-feature-x") | .last_used_at' "$DVW_CATALOG")
-  sleep 1
   run catalog_workspace_touch myrepo-feature-x
   [ "$status" -eq 0 ]
-  after=$(jq -r '.workspaces[] | select(.id=="myrepo-feature-x") | .last_used_at' "$DVW_CATALOG")
-  [ "$before" != "$after" ]
+  [ -f "$hit" ]
 }
 
-@test "catalog_repo_upsert: appends a new repo entry" {
+# --- repos ------------------------------------------------------------------
+
+@test "catalog_repo_upsert: POSTs the repo payload and succeeds on 2xx" {
+  local capture="$TMPDIR/repo-body.json"
+  catalog_route() {
+    case "$1 $2" in
+      "POST /v1/repos") printf '%s' "$3" > "$REPO_CAPTURE"; _stub_emit "$3" 200 ;;
+      *)                _stub_emit '{}' 404 ;;
+    esac
+  }
+  export REPO_CAPTURE="$capture"
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/empty-catalog.json" "$DVW_CATALOG"
   run catalog_repo_upsert git@github.com:foo/bar.git main
   [ "$status" -eq 0 ]
-  jq -e '.repos | length == 1' "$DVW_CATALOG"
-  jq -e '.repos[0].url == "git@github.com:foo/bar.git"' "$DVW_CATALOG"
-  jq -e '.repos[0].last_branch == "main"' "$DVW_CATALOG"
+  jq -e '.url == "git@github.com:foo/bar.git"' "$capture"
+  jq -e '.last_branch == "main"'               "$capture"
 }
 
-@test "catalog_repo_upsert: updates last_branch and last_used_at on existing repo" {
+@test "catalog_repo_list: extracts repo URLs in the server's (MRU) order" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/repos")
+        _stub_emit '[{"url":"git@github.com:owner/myrepo.git"},{"url":"git@github.com:owner/other.git"}]' 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
-  before_used=$(jq -r '.repos[] | select(.url=="git@github.com:owner/myrepo.git") | .last_used_at' "$DVW_CATALOG")
-  sleep 1
-  run catalog_repo_upsert git@github.com:owner/myrepo.git different-branch
-  [ "$status" -eq 0 ]
-  jq -e '.repos | length == 2' "$DVW_CATALOG"
-  jq -e '.repos[] | select(.url=="git@github.com:owner/myrepo.git") | .last_branch == "different-branch"' "$DVW_CATALOG"
-  after_used=$(jq -r '.repos[] | select(.url=="git@github.com:owner/myrepo.git") | .last_used_at' "$DVW_CATALOG")
-  [ "$before_used" != "$after_used" ]
-}
-
-@test "catalog_repo_list: returns URLs in MRU order" {
-  source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   run catalog_repo_list
   [ "$status" -eq 0 ]
   [ "${lines[0]}" = "git@github.com:owner/myrepo.git" ]
   [ "${lines[1]}" = "git@github.com:owner/other.git" ]
 }
 
-@test "catalog_repo_last_branch: returns last branch for known URL, empty for unknown" {
+@test "catalog_repo_last_branch: returns last_branch for a known URL, empty for unknown" {
+  catalog_route() {
+    # by-url carries the url as a query string; match on the path prefix.
+    case "$1 ${2%%\?*}" in
+      "GET /v1/repos/by-url")
+        if [[ "$2" == *"myrepo"* ]]; then
+          _stub_emit '{"url":"git@github.com:owner/myrepo.git","last_branch":"feature-x"}' 200
+        else
+          _stub_emit '{"error":{"code":"not_found"}}' 404
+        fi ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   run catalog_repo_last_branch git@github.com:owner/myrepo.git
   [ "$status" -eq 0 ]
   [ "$output" = "feature-x" ]
@@ -248,9 +295,17 @@ teardown() {
   [ -z "$output" ]
 }
 
-@test "catalog_default: returns default value for known key" {
+# --- defaults ---------------------------------------------------------------
+
+@test "catalog_default: extracts a known key from GET /v1/defaults" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/defaults") _stub_emit '{"ide":"cursor","provider":"vossisrv"}' 200 ;;
+      *)                  _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   run catalog_default ide
   [ "$status" -eq 0 ]
   [ "$output" = "cursor" ]
@@ -259,15 +314,22 @@ teardown() {
   [ "$output" = "vossisrv" ]
 }
 
-@test "catalog_default: empty for unknown key" {
+@test "catalog_default: empty for an unknown key" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/defaults") _stub_emit '{"ide":"cursor","provider":"vossisrv"}' 200 ;;
+      *)                  _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   run catalog_default unknown_key
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
 
-# --- multi-machine sync helpers ---------------------------------------------
+# --- client-local: devpod context + per-machine workspace.json --------------
+# These read this machine's local files and never touch the service.
 
 @test "catalog_devpod_context: falls back to default when devpod CLI absent" {
   source "$DVW_ROOT/lib/catalog.sh"
@@ -283,70 +345,84 @@ teardown() {
   [ "$output" = "$TMPDIR/.devpod/contexts/default/workspaces/foo-id/workspace.json" ]
 }
 
-@test "catalog_workspace_set_devpod_state: writes uid + devpod_state from local workspace.json" {
+@test "catalog_workspace_set_devpod_state: PATCHes uid + devpod_state read from the local workspace.json" {
+  local capture="$TMPDIR/patch-body.json"
+  catalog_route() {
+    case "$1 $2" in
+      "PATCH /v1/workspaces/myrepo-feature-x")
+        printf '%s' "$3" > "$PATCH_CAPTURE"; _stub_emit "$3" 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  export PATCH_CAPTURE="$capture"
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
-  export HOME="$TMPDIR"
-  PATH=/nonexistent:/usr/bin:/bin
+  # The client reads the LOCAL devpod workspace.json (top-level .uid) and snapshots
+  # it into the PATCH payload; per PR #9 35e40dc we materialize a real local file.
   ws_path="$HOME/.devpod/contexts/default/workspaces/myrepo-feature-x/workspace.json"
   mkdir -p "$(dirname "$ws_path")"
-  # Client-side workspace.json layout: top-level .uid and .provider (the agent
-  # side uses .workspace.uid). catalog_workspace_set_devpod_state reads the
-  # client file, so .uid lives at the top level here.
   cat > "$ws_path" <<'JSON'
 {"id":"myrepo-feature-x","uid":"default-my-abc12","provider":{"options":{"HOST":{"value":"vossisrv","userProvided":true}}}}
 JSON
-  PATH=/nonexistent:/usr/bin:/bin run catalog_workspace_set_devpod_state myrepo-feature-x
+  PATH="$STUB_BIN:/usr/bin:/bin" run catalog_workspace_set_devpod_state myrepo-feature-x
   [ "$status" -eq 0 ]
-  jq -e '.workspaces[] | select(.id=="myrepo-feature-x") | .uid == "default-my-abc12"' "$DVW_CATALOG"
-  jq -e '.workspaces[] | select(.id=="myrepo-feature-x") | .devpod_state.uid == "default-my-abc12"' "$DVW_CATALOG"
-  jq -e '.workspaces[] | select(.id=="myrepo-feature-x") | .devpod_state.provider.options.HOST.value == "vossisrv"' "$DVW_CATALOG"
+  jq -e '.uid == "default-my-abc12"'                       "$capture"
+  jq -e '.devpod_state.uid == "default-my-abc12"'          "$capture"
+  jq -e '.devpod_state.provider.options.HOST.value == "vossisrv"' "$capture"
 }
 
-@test "catalog_workspace_set_devpod_state: errors when local workspace.json missing" {
+@test "catalog_workspace_set_devpod_state: errors when the local workspace.json is missing" {
+  # No HTTP needed: the function bails before any request when the file is absent.
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
-  export HOME="$TMPDIR"
   PATH=/nonexistent:/usr/bin:/bin run catalog_workspace_set_devpod_state myrepo-feature-x
   [ "$status" -ne 0 ]
 }
 
-@test "catalog_workspace_get_devpod_state: round-trips snapshot" {
+@test "catalog_workspace_get_devpod_state: extracts the snapshot from the workspace response" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/workspaces/myrepo-feature-x")
+        _stub_emit '{"id":"myrepo-feature-x","devpod_state":{"workspace":{"uid":"default-my-abc12"}}}' 200 ;;
+      *) _stub_emit '{"error":{"code":"not_found"}}' 404 ;;
+    esac
+  }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
-  export HOME="$TMPDIR"
-  PATH=/nonexistent:/usr/bin:/bin
-  ws_path="$HOME/.devpod/contexts/default/workspaces/myrepo-feature-x/workspace.json"
-  mkdir -p "$(dirname "$ws_path")"
-  cat > "$ws_path" <<'JSON'
-{"workspace":{"uid":"default-my-abc12","provider":{"options":{"HOST":{"value":"vossisrv"}}}},"id":"myrepo-feature-x"}
-JSON
-  PATH=/nonexistent:/usr/bin:/bin catalog_workspace_set_devpod_state myrepo-feature-x
   run catalog_workspace_get_devpod_state myrepo-feature-x
   [ "$status" -eq 0 ]
   echo "$output" | jq -e '.workspace.uid == "default-my-abc12"'
 }
 
-@test "catalog_workspace_get_devpod_state: errors when no snapshot" {
+@test "catalog_workspace_get_devpod_state: errors when the workspace has no snapshot" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/workspaces/myrepo-feature-x")
+        _stub_emit '{"id":"myrepo-feature-x"}' 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
   run catalog_workspace_get_devpod_state myrepo-feature-x
   [ "$status" -ne 0 ]
 }
 
-@test "catalog_workspace_get_uid: returns top-level uid; empty when unset" {
+@test "catalog_workspace_get_uid: returns the workspace uid from the response; empty when unset" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/workspaces/has-uid")
+        _stub_emit '{"id":"has-uid","uid":"default-xy-99999"}' 200 ;;
+      "GET /v1/workspaces/no-uid")
+        _stub_emit '{"id":"no-uid"}' 200 ;;
+      *) _stub_emit '{"error":{"code":"not_found"}}' 404 ;;
+    esac
+  }
+  catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  cp "$DVW_ROOT/tests/bats/fixtures/valid-catalog.json" "$DVW_CATALOG"
-  run catalog_workspace_get_uid myrepo-feature-x
+  run catalog_workspace_get_uid no-uid
   [ "$status" -eq 0 ]
   [ -z "$output" ]
-  export HOME="$TMPDIR"
-  ws_path="$HOME/.devpod/contexts/default/workspaces/myrepo-feature-x/workspace.json"
-  mkdir -p "$(dirname "$ws_path")"
-  # Client-side layout: top-level .uid (see catalog_workspace_set_devpod_state).
-  echo '{"uid":"default-xy-99999"}' > "$ws_path"
-  PATH=/nonexistent:/usr/bin:/bin catalog_workspace_set_devpod_state myrepo-feature-x
-  run catalog_workspace_get_uid myrepo-feature-x
+  run catalog_workspace_get_uid has-uid
   [ "$status" -eq 0 ]
   [ "$output" = "default-xy-99999" ]
 }
