@@ -40,15 +40,6 @@ main() {
     ui_info "[dry-run] no commands will be executed; would-be invocations are printed"
   fi
 
-  # `blueprint` is a pure file copy from this repo's blueprint/ directory
-  # into a target repo. It doesn't touch the catalog or need the rclone
-  # mount, so it should work even when those are unavailable. Short-circuit
-  # before the catalog gate.
-  if [[ "${1:-}" == "blueprint" ]]; then
-    shift; cmd_blueprint "$@"
-    return $?
-  fi
-
   ui_progress "checking catalog"        catalog_init_if_missing || exit 1
   ui_progress "syncing ssh blueprint"   ssh_sync_refresh
   ui_progress "syncing wsl bridge"      wsl_bridge_refresh

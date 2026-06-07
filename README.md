@@ -1,6 +1,6 @@
 # dvw — DevPod workspace orchestrator
 
-Host-side scripts and operational notes for running DevPod workspaces on `vossisrv`. The main entrypoint is `dvw`, a bash CLI that replaces the DevPod Desktop app's missing cross-machine workspace sync via a catalog file kept in sync through the existing rclone Dropbox mount. Container-side configuration (Claude/opencode/codex/cursor-agent + MCPs) lives in the sister repo [`vossiman/aiCodingBaseSetup`](https://github.com/vossiman/aiCodingBaseSetup); [`blueprint/`](blueprint/) here is the `.devcontainer/devcontainer.json` template that pairs with it.
+Host-side scripts and operational notes for running DevPod workspaces on `vossisrv`. The main entrypoint is `dvw`, a bash CLI that replaces the DevPod Desktop app's missing cross-machine workspace sync via a catalog file kept in sync through the existing rclone Dropbox mount. Container-side configuration (Claude/opencode/codex/cursor-agent + MCPs) lives in the sister repo [`vossiman/aiCodingBaseSetup`](https://github.com/vossiman/aiCodingBaseSetup), which also owns the canonical `.devcontainer/devcontainer.json` (see [Devcontainer for a new workspace](#devcontainer-for-a-new-workspace) below).
 
 ## Why dvw exists
 
@@ -15,7 +15,6 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `systemd/rclone-dropbox.service` | rclone mount as a systemd user unit |
 | `dvw-install.sh` | idempotent bootstrap for Mint and WSL |
 | `tests/bats/` | bats test suite for catalog logic |
-| `blueprint/` | `.devcontainer/devcontainer.json` template; the scripts it invokes live in [`vossiman/aiCodingBaseSetup`](https://github.com/vossiman/aiCodingBaseSetup). |
 | `tmux/` | host-side tmux config |
 | `cursor-shim.sh`, `install-cursor-shim.sh` | Cursor AppImage triple-launch workaround |
 | `KNOWN_ISSUES.md` | catalog of current rough edges |
@@ -31,7 +30,6 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw <id> --both` | skip the prompt; open in Cursor, then ssh + attach `work` tmux session |
 | `dvw -l` | list workspaces (MRU order) |
 | `dvw new` | wizard: create a new workspace, append to catalog |
-| `dvw blueprint [path]` | drop `blueprint/devcontainer.json` into `<path>/.devcontainer/` so `dvw new` can build a proper workspace from that repo |
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
 | `dvw stop <id>` | `devpod stop` |
 | `dvw update` | Update dvw in place to latest main and refresh the version marker. |
@@ -39,6 +37,30 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
 | `dvw doctor` | health check: provider probe, rclone mount, catalog, ssh-sync, devpod, gum, per-orphan summary |
 | `dvw <anything> --dry-run` | print would-be `devpod ...` / `docker ...` invocations without executing — works on any mutating subcommand |
+
+## Devcontainer for a new workspace
+
+`aiCodingBaseSetup` owns the canonical `.devcontainer/devcontainer.json`
+(clone-based provisioning + the generic `${localEnv:HOME}/devpod/<name>` bind
+mounts). dvw no longer ships a copy. To make a repo build into a proper
+workspace, drop the canonical file into its `.devcontainer/`, then commit + push
+so any future `dvw new` from that repo picks it up:
+
+```bash
+# 1. create the host state dirs the mounts bind to (once per host)
+mkdir -p ~/devpod/{aicodingsetup,claude,opencode,codex,cursor}
+
+# 2. pull the canonical devcontainer.json into the repo
+mkdir -p .devcontainer
+curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json \
+  -o .devcontainer/devcontainer.json
+
+# 3. commit + push so `dvw new` builds from it
+git add .devcontainer && git commit -m 'add devcontainer' && git push
+```
+
+The mounts resolve `${localEnv:HOME}` on the **host** at provision time, so the
+same file is portable across machines — no per-host editing needed.
 
 ## Install on Mint
 
@@ -280,6 +302,5 @@ Catalog logic is covered by bats. Wizard and TUI behavior is verified manually.
 
 ## See also
 
-- [`blueprint/README.md`](blueprint/README.md) — `devcontainer.json` template
 - [`tmux/README.md`](tmux/README.md) — host-side tmux config installation
 - [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — current quirks log
