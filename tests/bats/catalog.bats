@@ -376,6 +376,7 @@ JSON
   source "$DVW_ROOT/lib/catalog.sh"
   PATH=/nonexistent:/usr/bin:/bin run catalog_workspace_set_devpod_state myrepo-feature-x
   [ "$status" -ne 0 ]
+  [[ "$output" == *"not found"* ]]
 }
 
 @test "catalog_workspace_get_devpod_state: extracts the snapshot from the workspace response" {
