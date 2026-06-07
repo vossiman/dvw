@@ -1,6 +1,0 @@
-{
-  "version": 1,
-  "defaults": { "ide": "cursor", "provider": "vossisrv" },
-  "workspaces": [],
-  "repos": []
-}
