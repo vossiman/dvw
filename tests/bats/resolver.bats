@@ -1,14 +1,28 @@
 #!/usr/bin/env bats
+#
+# Client-side resolver logic in lib/connect.sh:
+#   _dvw_pick_canonical_uid    — pure winner-selection over a probe blob
+#   _dvw_uid_claimed_by_other  — jq over the full catalog (GET /v1/catalog)
+#
+# _dvw_pick_canonical_uid is pure (no I/O) and unchanged by the HTTP migration.
+# _dvw_uid_claimed_by_other still reasons CLIENT-side over the whole catalog; it
+# just sources the catalog from GET /v1/catalog now instead of a local file, so
+# those tests serve the catalog body via the transport stub.
 
 setup() {
   TMPDIR=$(mktemp -d)
-  export DVW_CATALOG="$TMPDIR/catalog.json"
+  export HOME="$TMPDIR"
+  STUB_BIN="$TMPDIR/stubbin"
+  mkdir -p "$STUB_BIN"
+  export PATH="$STUB_BIN:/usr/bin:/bin"
+  export DVW_CATALOG_HOST=stub
+  export DVW_CATALOG_SOCK="$TMPDIR/not-a-socket.sock"
+  load "lib/catalog-stub.bash"
 }
 
 teardown() { rm -rf "$TMPDIR"; }
 
-# Load connect.sh with its deps. connect.sh uses ui_* and catalog_* functions;
-# stub the ui layer and source the real catalog lib before sourcing connect.sh.
+# Load connect.sh with its deps and a stubbed ui layer.
 _load_resolver() {
   ui_status_warn() { :; }
   ui_status_ok()   { :; }
@@ -17,6 +31,18 @@ _load_resolver() {
   export -f ui_status_warn ui_status_ok ui_info ui_error
   source "$DVW_ROOT/lib/catalog.sh"
   source "$DVW_ROOT/lib/connect.sh"
+}
+
+# Serve a fixed catalog body on GET /v1/catalog (everything else 404).
+_serve_catalog() {
+  export STUB_CATALOG_BODY="$1"
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/catalog") _stub_emit "$STUB_CATALOG_BODY" 200 ;;
+      *)                 _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
 }
 
 @test "pick_canonical_uid: single candidate is chosen" {
@@ -60,50 +86,42 @@ _load_resolver() {
 }
 
 @test "uid_claimed_by_other: true when another workspace records the uid" {
+  _serve_catalog '{ "version":1, "defaults":{}, "repos":[],
+    "workspaces":[
+      {"id":"alpha","uid":"default-de-aaaaa","devpod_state":{"uid":"default-de-aaaaa"}},
+      {"id":"beta","uid":"default-de-bbbbb","devpod_state":{"uid":"default-de-bbbbb"}}
+    ] }'
   _load_resolver
-  cat > "$DVW_CATALOG" <<'JSON'
-{ "version":1, "defaults":{}, "repos":[],
-  "workspaces":[
-    {"id":"alpha","uid":"default-de-aaaaa","devpod_state":{"uid":"default-de-aaaaa"}},
-    {"id":"beta","uid":"default-de-bbbbb","devpod_state":{"uid":"default-de-bbbbb"}}
-  ] }
-JSON
   run _dvw_uid_claimed_by_other "alpha" "default-de-bbbbb"
   [ "$status" -eq 0 ]
 }
 
 @test "uid_claimed_by_other: false when only the same workspace records it" {
+  _serve_catalog '{ "version":1, "defaults":{}, "repos":[],
+    "workspaces":[
+      {"id":"alpha","uid":"default-de-aaaaa","devpod_state":{"uid":"default-de-aaaaa"}}
+    ] }'
   _load_resolver
-  cat > "$DVW_CATALOG" <<'JSON'
-{ "version":1, "defaults":{}, "repos":[],
-  "workspaces":[
-    {"id":"alpha","uid":"default-de-aaaaa","devpod_state":{"uid":"default-de-aaaaa"}}
-  ] }
-JSON
   run _dvw_uid_claimed_by_other "alpha" "default-de-aaaaa"
   [ "$status" -ne 0 ]
 }
 
 @test "uid_claimed_by_other: false when uid is unclaimed" {
+  _serve_catalog '{ "version":1, "defaults":{}, "repos":[],
+    "workspaces":[
+      {"id":"alpha","uid":"default-de-aaaaa","devpod_state":{"uid":"default-de-aaaaa"}}
+    ] }'
   _load_resolver
-  cat > "$DVW_CATALOG" <<'JSON'
-{ "version":1, "defaults":{}, "repos":[],
-  "workspaces":[
-    {"id":"alpha","uid":"default-de-aaaaa","devpod_state":{"uid":"default-de-aaaaa"}}
-  ] }
-JSON
   run _dvw_uid_claimed_by_other "alpha" "default-de-zzzzz"
   [ "$status" -ne 0 ]
 }
 
 @test "uid_claimed_by_other: false for empty uid" {
+  _serve_catalog '{ "version":1, "defaults":{}, "repos":[],
+    "workspaces":[
+      {"id":"alpha","uid":"default-de-aaaaa","devpod_state":{"uid":"default-de-aaaaa"}}
+    ] }'
   _load_resolver
-  cat > "$DVW_CATALOG" <<'JSON'
-{ "version":1, "defaults":{}, "repos":[],
-  "workspaces":[
-    {"id":"alpha","uid":"default-de-aaaaa","devpod_state":{"uid":"default-de-aaaaa"}}
-  ] }
-JSON
   run _dvw_uid_claimed_by_other "alpha" ""
   [ "$status" -ne 0 ]
 }
