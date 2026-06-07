@@ -32,7 +32,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw new` | wizard: create a new workspace, append to catalog |
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
 | `dvw stop <id>` | `devpod stop` |
-| `dvw update` | Update dvw in place to latest main and refresh the version marker. |
+| `dvw update` | Update dvw in place to latest main and refresh the version marker. dvw nudges you to run this (and `dvw doctor` reports it) when the checkout falls behind `origin/main`. |
 | `dvw start <id>` | `devpod up` with the workspace's saved IDE |
 | `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
 | `dvw doctor` | health check: provider probe, rclone mount, catalog, ssh-sync, devpod, gum, per-orphan summary |

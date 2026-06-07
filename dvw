@@ -21,6 +21,8 @@ DVW_ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 . "$DVW_ROOT/lib/wizard.sh"
 # shellcheck source=lib/ui.sh
 . "$DVW_ROOT/lib/ui.sh"
+# shellcheck source=lib/update-check.sh
+. "$DVW_ROOT/lib/update-check.sh"
 
 main() {
   # Pull out --dry-run (anywhere in argv) before subcommand dispatch.
@@ -39,6 +41,11 @@ main() {
   if [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
     ui_info "[dry-run] no commands will be executed; would-be invocations are printed"
   fi
+
+  # Update notifier: kick a throttled background fetch, then print the cached
+  # "behind main" nudge (suppressed for `dvw update` itself). Fail-open.
+  dvw_update_refresh_if_stale
+  dvw_update_maybe_nudge "${1:-}"
 
   ui_progress "checking catalog"        catalog_init_if_missing || exit 1
   ui_progress "syncing ssh blueprint"   ssh_sync_refresh

@@ -4,9 +4,32 @@ import asyncio
 import json
 
 import pytest
+from pydantic import ValidationError
 
-from app.models import Workspace
+from app.models import CATALOG_VERSION, Catalog, Workspace
 from app.store import CatalogStore, ConflictError, NotFoundError
+
+
+def test_rejects_future_schema_version():
+    # A catalog written by a newer dvw-catalog must be refused, not loaded.
+    with pytest.raises(ValidationError):
+        Catalog.model_validate({"version": CATALOG_VERSION + 1})
+
+
+def test_accepts_current_and_seed_versions():
+    # Current schema and the version-0 empty seed both load fine.
+    assert Catalog.model_validate({"version": CATALOG_VERSION}).version == CATALOG_VERSION
+    assert Catalog.model_validate({"version": 0}).version == 0
+
+
+def test_store_load_fails_on_future_schema_version(tmp_path):
+    # Mirrors the legacy client's "fails loudly on future schema version":
+    # CatalogStore._load validates on read, so a future-version file on disk
+    # makes construction raise rather than silently operate.
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps({"version": CATALOG_VERSION + 1, "workspaces": [], "repos": []}))
+    with pytest.raises(ValidationError):
+        CatalogStore(path)
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Workspace ids and repo branches end up in shell commands, file paths, and the
 # /workspaces/<id> bind-mount destination, so keep the charset tight.
@@ -76,6 +76,20 @@ class Catalog(BaseModel):
     defaults: Defaults = Field(default_factory=Defaults)
     workspaces: list[Workspace] = Field(default_factory=list)
     repos: list[Repo] = Field(default_factory=list)
+
+    @field_validator("version")
+    @classmethod
+    def _reject_future_version(cls, v: int) -> int:
+        # Forward-compat guard: refuse to load/import a catalog written by a
+        # newer dvw-catalog rather than silently mishandle an unknown schema.
+        # (Restores the safety the legacy client had; older/seed versions —
+        # incl. the version-0 empty seed — are still accepted.)
+        if v > CATALOG_VERSION:
+            raise ValueError(
+                f"catalog schema version {v} is newer than this service "
+                f"supports ({CATALOG_VERSION}); upgrade dvw-catalog"
+            )
+        return v
 
 
 # ---- Request bodies -------------------------------------------------------

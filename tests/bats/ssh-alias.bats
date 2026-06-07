@@ -10,7 +10,11 @@
 setup() {
   TMPDIR=$(mktemp -d)
   export HOME="$TMPDIR"
-  export DVW_CATALOG="$TMPDIR/catalog.json"
+  # Catalog transport points at a non-socket so any accidental HTTP call fails
+  # fast rather than reaching a real service; these tests never need it — the
+  # ssh-alias path reads only this machine's local workspace.json.
+  export DVW_CATALOG_HOST=stub
+  export DVW_CATALOG_SOCK="$TMPDIR/not-a-socket.sock"
   export DVW_SSH_CONFIG="$TMPDIR/.ssh/config"
   mkdir -p "$TMPDIR/.ssh"
   # Capture the real ssh path before we shadow it via the stub dir.
@@ -35,32 +39,22 @@ setup() {
 
 teardown() { rm -rf "$TMPDIR"; }
 
-# Seed a catalog with one workspace whose devpod_state carries a provider HOST,
-# uid, and context — so _dvw_ensure_local_devpod_state materializes a
-# workspace.json the resolver can read.
-_seed_catalog_alias() {
-  local id="$1" uid="$2" host="${3:-vossisrv}"
-  cat > "$DVW_CATALOG" <<JSON
+# Write this machine's local devpod workspace.json directly (the 35e40dc
+# pattern). The ssh-alias path is client-local: _dvw_resolve_ssh_user and
+# _dvw_ensure_ssh_alias read ONLY this file (top-level .uid, .context,
+# .provider.options.HOST.value), never the catalog service. Writing it here
+# replaces the old "seed a catalog file then _dvw_ensure_local_devpod_state"
+# dance, which depended on the now-removed local catalog file.
+_write_local_workspace_json() {
+  local id="$1" uid="$2" host="${3:-vossisrv}" path
+  path=$(catalog_devpod_workspace_json_path "$id")
+  mkdir -p "$(dirname "$path")"
+  cat > "$path" <<JSON
 {
-  "version": 1,
-  "defaults": { "ide": "cursor", "provider": "vossisrv" },
-  "workspaces": [{
-    "id": "$id", "repo": "git@github.com:foo/bar.git", "branch": "main",
-    "ide": "cursor", "provider": "vossisrv",
-    "created_at": "2026-05-04T10:00:00Z", "last_used_at": "2026-05-04T10:00:00Z",
-    "created_on": "vossimachine", "uid": "$uid",
-    "devpod_state": {
-      "id": "$id",
-      "uid": "$uid",
-      "context": "default",
-      "provider": { "options": { "HOST": { "value": "$host", "userProvided": true } } },
-      "workspace": {
-        "uid": "$uid",
-        "provider": { "options": { "HOST": { "value": "$host", "userProvided": true } } }
-      }
-    }
-  }],
-  "repos": []
+  "id": "$id",
+  "uid": "$uid",
+  "context": "default",
+  "provider": { "options": { "HOST": { "value": "$host", "userProvided": true } } }
 }
 JSON
 }
@@ -182,8 +176,7 @@ EOF
 }
 
 @test "_dvw_resolve_ssh_user: tier 2 — reads remoteUser from provider container label" {
-  _seed_catalog_alias myws default-my-abc12 vossisrv
-  _dvw_ensure_local_devpod_state myws
+  _write_local_workspace_json myws default-my-abc12 vossisrv
   cat > "$STUB_BIN/ssh" <<'EOF'
 #!/usr/bin/env bash
 echo '[{"remoteUser":"bob"}]'
@@ -195,8 +188,7 @@ EOF
 }
 
 @test "_dvw_resolve_ssh_user: tier 3 — defaults to codespace when label query yields nothing" {
-  _seed_catalog_alias myws default-my-abc12 vossisrv
-  _dvw_ensure_local_devpod_state myws
+  _write_local_workspace_json myws default-my-abc12 vossisrv
   cat > "$STUB_BIN/ssh" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -208,8 +200,7 @@ EOF
 }
 
 @test "_dvw_resolve_ssh_user: tier 3 — defaults to codespace when ssh unreachable" {
-  _seed_catalog_alias myws default-my-abc12 vossisrv
-  _dvw_ensure_local_devpod_state myws
+  _write_local_workspace_json myws default-my-abc12 vossisrv
   cat > "$STUB_BIN/ssh" <<'EOF'
 #!/usr/bin/env bash
 exit 255
@@ -225,8 +216,7 @@ EOF
 # ---------------------------------------------------------------------------
 
 @test "_dvw_ensure_ssh_alias: writes a block when absent and lands as codespace" {
-  _seed_catalog_alias myws default-my-abc12 vossisrv
-  _dvw_ensure_local_devpod_state myws
+  _write_local_workspace_json myws default-my-abc12 vossisrv
   cat > "$STUB_BIN/ssh" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -262,8 +252,7 @@ EOF
 
 @test "_dvw_ensure_ssh_alias: appends a separating newline (no jammed marker)" {
   printf 'Host vossisrv\n  User vossi\n  IdentitiesOnly yes' > "$DVW_SSH_CONFIG"
-  _seed_catalog_alias myws default-my-abc12 vossisrv
-  _dvw_ensure_local_devpod_state myws
+  _write_local_workspace_json myws default-my-abc12 vossisrv
   cat > "$STUB_BIN/ssh" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -282,8 +271,7 @@ EOF
 }
 
 @test "_dvw_ensure_ssh_alias: result file is mode 600" {
-  _seed_catalog_alias myws default-my-abc12 vossisrv
-  _dvw_ensure_local_devpod_state myws
+  _write_local_workspace_json myws default-my-abc12 vossisrv
   cat > "$STUB_BIN/ssh" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -300,8 +288,7 @@ EOF
 }
 
 @test "_dvw_ensure_ssh_alias: errors when devpod binary cannot be resolved" {
-  _seed_catalog_alias myws default-my-abc12 vossisrv
-  _dvw_ensure_local_devpod_state myws
+  _write_local_workspace_json myws default-my-abc12 vossisrv
   run _dvw_ensure_ssh_alias myws
   [ "$status" -ne 0 ]
 }
