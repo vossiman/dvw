@@ -122,3 +122,30 @@ _write_cache() { mkdir -p "$DVW_STATE_DIR"; printf '%s\n%s\n' "$1" "$2" > "$DVW_
   run dvw_update_refresh_if_stale
   [ "$status" -eq 0 ]
 }
+
+@test "maybe_nudge: prints the CTA line when behind and subcommand != update" {
+  _write_cache 123 2
+  run dvw_update_maybe_nudge connect
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"behind main — run: dvw update"* ]]
+}
+
+@test "maybe_nudge: silent for the update subcommand even when behind" {
+  _write_cache 123 2
+  run dvw_update_maybe_nudge update
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "maybe_nudge: silent when up to date (count 0)" {
+  _write_cache 123 0
+  run dvw_update_maybe_nudge connect
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "maybe_nudge: silent when unknown (no cache)" {
+  run dvw_update_maybe_nudge connect
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}

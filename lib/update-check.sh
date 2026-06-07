@@ -70,3 +70,13 @@ dvw_update_refresh_if_stale() {
   ( _dvw_update_do_refresh; rmdir "$lock" 2>/dev/null || true ) >/dev/null 2>&1 &
   return 0
 }
+
+# Print the one-line startup nudge if behind. $1 = the subcommand being
+# dispatched; the nudge is suppressed for `update` (no point nagging mid-update)
+# and silent when up to date (0) or unknown (empty). Reads cached state only.
+dvw_update_maybe_nudge() {
+  [ "${1:-}" = "update" ] && return 0
+  local behind; behind=$(dvw_update_behind_count)
+  case "$behind" in ''|0) return 0 ;; esac
+  printf '⬆ dvw behind main — run: dvw update\n'
+}
