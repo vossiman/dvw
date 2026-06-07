@@ -305,7 +305,6 @@ ui_top_menu() {
   local -a choices=(
     "❯ Connect to workspace"
     "+ Create new workspace"
-    "⊞ Install blueprint into a workspace"
     "● Status"
     "■ Stop a workspace"
     "▶ Start a workspace"
@@ -333,9 +332,6 @@ ui_top_menu() {
       ;;
     *"Create new workspace")
       cmd_new
-      ;;
-    *"Install blueprint into a workspace")
-      cmd_blueprint
       ;;
     *"Status")
       cmd_status
