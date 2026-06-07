@@ -1,0 +1,54 @@
+[Unit]
+Description=dvw catalog service (DevPod workspace catalog + container resolver)
+Documentation=https://github.com/vossiman/dvw
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=exec
+User=vossi
+Group=vossi
+# Needed only when talking to the LOCAL docker socket directly. When using the
+# docker-socket-proxy (recommended, see deploy/docker-socket-proxy.md) set
+# CATALOG_DOCKER_HOST=tcp://127.0.0.1:2375 in catalog.env and DELETE this line.
+SupplementaryGroups=docker
+
+WorkingDirectory=/opt/dvw-catalog
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/opt/dvw-catalog/catalog.env
+
+# Bind uvicorn to a unix socket — no TCP port is ever opened on the box.
+# systemd creates/owns /run/dvw-catalog (0750, vossi:vossi); UMask makes the
+# socket 0660 so only processes running as vossi (i.e. an SSH-authenticated
+# session) can connect.
+RuntimeDirectory=dvw-catalog
+RuntimeDirectoryMode=0750
+UMask=0117
+ExecStart=/opt/dvw-catalog/.venv/bin/uvicorn app.main:app \
+    --uds /run/dvw-catalog/catalog.sock \
+    --no-access-log \
+    --workers 1
+
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+
+# --- Hardening (must not break docker access) ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/dvw-catalog
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+# AF_UNIX: local docker socket + the service's own listen socket.
+# AF_INET/AF_INET6: required ONLY when CATALOG_DOCKER_HOST points at the
+# docker-socket-proxy over tcp://127.0.0.1.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

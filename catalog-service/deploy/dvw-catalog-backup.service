@@ -1,0 +1,14 @@
+[Unit]
+Description=dvw catalog backup (git commit + push of the data dir)
+After=dvw-catalog.service
+
+[Service]
+Type=oneshot
+User=vossi
+Group=vossi
+WorkingDirectory=/var/lib/dvw-catalog
+# /var/lib/dvw-catalog is a git repo (init once: see deploy/deploy.sh).
+# Commits are no-ops when nothing changed; the push is best-effort so a
+# missing/unreachable remote never fails the unit.
+ExecStart=/bin/sh -c 'git add -A && (git diff --cached --quiet || git commit -q -m "snapshot $(date -Iseconds)")'
+ExecStart=-/usr/bin/git push --quiet
