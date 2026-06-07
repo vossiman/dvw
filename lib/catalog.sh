@@ -1,143 +1,105 @@
 #!/usr/bin/env bash
-# Catalog read/write/mutation. Pure functions, no UI.
-# All functions read $DVW_CATALOG (or default path) for catalog location.
+# Service-backed implementation of dvw's catalog layer (was a Dropbox JSON file).
+#
+# Same function names, signatures, stdout, and return-code contract as the
+# original — but every workspace/repo/defaults operation goes to the
+# dvw-catalog service over HTTP instead of a Dropbox-synced JSON file. The rest
+# of dvw (connect.sh, commands.sh) sources this and is unchanged.
+#
+# Functions that are inherently client-local (devpod context + the path to
+# devpod's per-machine workspace.json) keep their original local behavior.
 
-DVW_CATALOG_DEFAULT="$HOME/Dropbox-remote/dvw/catalog.json"
+_CATALOG_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=catalog-http-lib.sh
+. "$_CATALOG_LIB_DIR/catalog-http-lib.sh"
 
+# Descriptive "path" for doctor/log messages.
 catalog_path() {
-  echo "${DVW_CATALOG:-$DVW_CATALOG_DEFAULT}"
+  echo "service://${DVW_CATALOG_HOST}${DVW_CATALOG_SOCK}"
 }
 
+# Replaces the "create the JSON file if missing" startup gate. Here it means
+# "is the service reachable?". Print actionable guidance if not.
 catalog_init_if_missing() {
-  local path dir sibling
-  path=$(catalog_path)
-  dir=$(dirname "$path")
-  sibling="$dir/ssh-blueprint.conf"
-  if [[ ! -d "$dir" ]]; then
-    echo "catalog unreachable: $dir does not exist (rclone mount likely down)" >&2
-    echo "try: systemctl --user status rclone-dropbox" >&2
-    return 1
-  fi
-  if [[ -e "$path" ]]; then
+  if _catalog_reachable; then
     return 0
   fi
-  # Distinguish genuinely-missing from rclone-can't-tell: require a known
-  # sibling to be visible before treating the catalog as absent. Without
-  # this, a transient list_folder failure on the rclone mount could cause
-  # us to silently overwrite the live catalog with the empty template.
-  if [[ ! -e "$sibling" ]]; then
-    echo "catalog appears missing, but $sibling is also invisible." >&2
-    echo "rclone listing is likely broken — refusing to write empty template." >&2
-    echo "check: journalctl --user -u rclone-dropbox -n 50" >&2
-    return 1
-  fi
-  cat > "$path" <<'JSON'
-{
-  "version": 1,
-  "defaults": { "ide": "cursor", "provider": "vossisrv" },
-  "workspaces": [],
-  "repos": []
-}
-JSON
+  echo "catalog service unreachable: ${DVW_CATALOG_HOST}:${DVW_CATALOG_SOCK}" >&2
+  echo "try: ssh ${DVW_CATALOG_HOST} systemctl status dvw-catalog" >&2
+  return 1
 }
 
-# Print catalog JSON to stdout, validating schema version.
-# Caller is responsible for catalog_init_if_missing if they want auto-create.
+# Whole catalog, legacy schema (for `dvw doctor` and ad-hoc jq).
 catalog_read() {
-  local path
-  path=$(catalog_path)
-  if [[ ! -f "$path" ]]; then
-    echo "catalog not found: $path" >&2
-    return 1
-  fi
-  if ! jq -e . "$path" >/dev/null 2>&1; then
-    echo "catalog malformed (parse failed): $path" >&2
-    echo "open it in an editor and fix; dvw will not overwrite" >&2
-    return 1
-  fi
-  local version
-  version=$(jq -r '.version // 0' "$path")
-  if (( version > 1 )); then
-    echo "catalog version $version is newer than this dvw supports — upgrade this machine" >&2
-    return 1
-  fi
-  cat "$path"
-}
-
-# Read JSON from stdin, validate, atomically write to catalog path.
-catalog_write() {
-  local path tmp content
-  path=$(catalog_path)
-  tmp="$path.tmp"
-  content=$(cat)
-  if ! echo "$content" | jq -e . >/dev/null 2>&1; then
-    echo "catalog_write: refusing to write malformed JSON" >&2
-    return 1
-  fi
-  printf '%s\n' "$content" > "$tmp"
-  mv "$tmp" "$path"
-}
-
-# Print workspace IDs, one per line, sorted by last_used_at descending.
-catalog_workspace_ids() {
-  catalog_read | jq -r '.workspaces | sort_by(.last_used_at) | reverse | .[].id'
-}
-
-# Print the workspace object for the given ID. Exit 1 if not found.
-catalog_workspace_get() {
-  local id="$1"
-  local result
-  result=$(catalog_read | jq -e --arg id "$id" '.workspaces[] | select(.id == $id)') || {
-    echo "workspace not found in catalog: $id" >&2
+  local body
+  body=$(_catalog_req GET /v1/catalog) || {
+    echo "catalog service unreachable or returned an error" >&2
     return 1
   }
-  echo "$result"
+  printf '%s\n' "$body"
 }
 
-# ISO-8601 UTC timestamp helper.
+# ISO-8601 UTC timestamp helper (still local; cheap).
 catalog_now() {
   date -u +%Y-%m-%dT%H:%M:%SZ
 }
 
-# Append a new workspace. Args: id repo branch ide provider hostname
+catalog_workspace_ids() {
+  local body
+  body=$(_catalog_req GET /v1/workspaces) || return 1
+  jq -r '.[].id' <<<"$body"   # server already returns MRU order
+}
+
+catalog_workspace_get() {
+  local id="$1" body rc
+  # NB: capture the rc of the substitution (it carries _catalog_req's return).
+  # DVW_CAT_STATUS is set in a subshell here and would NOT propagate.
+  body=$(_catalog_req GET "/v1/workspaces/$id"); rc=$?
+  if [[ $rc -eq 0 ]]; then
+    printf '%s\n' "$body"; return 0
+  fi
+  echo "workspace not found in catalog: $id" >&2
+  return 1
+}
+
+# Args: id repo branch ide provider host
 catalog_workspace_add() {
   local id="$1" repo="$2" branch="$3" ide="$4" provider="$5" host="$6"
-  local now content
-  now=$(catalog_now)
-  content=$(catalog_read) || return 1
-  if echo "$content" | jq -e --arg id "$id" '.workspaces[] | select(.id == $id)' >/dev/null; then
-    echo "workspace ID already exists: $id" >&2
-    return 1
-  fi
-  echo "$content" | jq --arg id "$id" --arg repo "$repo" --arg branch "$branch" \
-    --arg ide "$ide" --arg provider "$provider" --arg host "$host" --arg now "$now" \
-    '.workspaces += [{
-       id: $id, repo: $repo, branch: $branch, ide: $ide, provider: $provider,
-       created_at: $now, last_used_at: $now, created_on: $host
-     }]' | catalog_write
+  local payload
+  payload=$(jq -n --arg id "$id" --arg repo "$repo" --arg branch "$branch" \
+    --arg ide "$ide" --arg provider "$provider" --arg host "$host" \
+    '{id:$id, repo:$repo, branch:$branch, ide:$ide, provider:$provider, created_on:$host}')
+  # `|| true`: _catalog_req returns non-zero on >=400; without this, dvw's
+  # `set -e` would abort before the status dispatch below ever runs.
+  _catalog_req POST /v1/workspaces "$payload" >/dev/null || true
+  case "$DVW_CAT_STATUS" in
+    2*) return 0 ;;
+    409) echo "workspace ID already exists: $id" >&2; return 1 ;;
+    *)   echo "catalog: failed to add workspace $id (status ${DVW_CAT_STATUS:-unreachable})" >&2; return 1 ;;
+  esac
 }
 
-# Remove workspace by ID. Returns success even if ID not present.
+# Remove workspace by ID. Returns success even if ID not present (DELETE is
+# idempotent, matching the original).
 catalog_workspace_remove() {
   local id="$1"
-  catalog_read | jq --arg id "$id" '.workspaces |= map(select(.id != $id))' | catalog_write
+  _catalog_req DELETE "/v1/workspaces/$id" >/dev/null
+  return 0
 }
 
-# Bump last_used_at on a workspace. Returns success even if ID missing.
+# Bump last_used_at. Returns success even if ID missing (best-effort, as before).
 catalog_workspace_touch() {
-  local id="$1" now
-  now=$(catalog_now)
-  catalog_read | jq --arg id "$id" --arg now "$now" \
-    '.workspaces |= map(if .id == $id then .last_used_at = $now else . end)' \
-    | catalog_write
+  local id="$1"
+  _catalog_req POST "/v1/workspaces/$id/touch" >/dev/null
+  return 0
 }
 
-# Print the active devpod context name (the .name where .default == true).
-# Falls back to "default" if devpod is unavailable.
+# ---- client-local: devpod context + per-machine workspace.json -------------
+# (Identical to the original; these are this-machine facts, not catalog data.)
+
 catalog_devpod_context() {
   if ! command -v devpod >/dev/null 2>&1; then
-    echo "default"
-    return 0
+    echo "default"; return 0
   fi
   local ctx
   ctx=$(devpod context list --output json 2>/dev/null \
@@ -145,27 +107,17 @@ catalog_devpod_context() {
   echo "${ctx:-default}"
 }
 
-# Print the absolute path to devpod's local workspace.json for <id>.
 catalog_devpod_workspace_json_path() {
   local id="$1" ctx
   ctx=$(catalog_devpod_context)
   echo "$HOME/.devpod/contexts/$ctx/workspaces/$id/workspace.json"
 }
 
-# Snapshot devpod's local workspace.json for <id> into the catalog entry.
-# Sets two fields: .uid (convenience copy of the local file's .uid) and
-# .devpod_state (the verbatim devpod workspace.json contents as an object).
-# Atomic via catalog_write. Returns 1 if the local workspace.json doesn't
-# exist or the catalog entry isn't present.
-#
-# Layout note: devpod's *client-side* workspace.json has `.uid` at top
-# level; the *agent-side* one (on the provider host) uses `.workspace.uid`.
-# This function reads the client-side file, so it queries `.uid`. Earlier
-# versions queried `.workspace.uid` here, which silently returned empty
-# and left catalog .uid unpopulated for every client snapshot.
+# Snapshot devpod's local workspace.json (this machine) into the catalog entry
+# via the service: PATCH {uid, devpod_state}. Mirrors the original's local read
+# of `.uid` from the client-side file.
 catalog_workspace_set_devpod_state() {
-  local id="$1"
-  local path snapshot uid
+  local id="$1" path snapshot uid payload
   path=$(catalog_devpod_workspace_json_path "$id")
   if [[ ! -f "$path" ]]; then
     echo "catalog_workspace_set_devpod_state: $path not found" >&2
@@ -175,62 +127,60 @@ catalog_workspace_set_devpod_state() {
     echo "catalog_workspace_set_devpod_state: $path is not valid JSON" >&2
     return 1
   fi
-  uid=$(echo "$snapshot" | jq -r '.uid // empty')
-  catalog_read \
-    | jq --arg id "$id" --arg uid "$uid" --argjson state "$snapshot" '
-        .workspaces |= map(
-          if .id == $id then
-            (if $uid == "" then . else .uid = $uid end)
-            | .devpod_state = $state
-          else . end)
-      ' | catalog_write
+  uid=$(jq -r '.uid // empty' <<<"$snapshot")
+  if [[ -n "$uid" ]]; then
+    payload=$(jq -n --arg uid "$uid" --argjson state "$snapshot" \
+      '{uid:$uid, devpod_state:$state}')
+  else
+    payload=$(jq -n --argjson state "$snapshot" '{devpod_state:$state}')
+  fi
+  _catalog_req PATCH "/v1/workspaces/$id" "$payload" >/dev/null || true
+  [[ "$DVW_CAT_STATUS" =~ ^2 ]] || {
+    echo "catalog_workspace_set_devpod_state: PATCH failed for $id (status ${DVW_CAT_STATUS:-unreachable})" >&2
+    return 1
+  }
 }
 
-# Print the .devpod_state object for <id>. Exit 1 if absent.
 catalog_workspace_get_devpod_state() {
-  local id="$1"
-  catalog_read \
-    | jq -e --arg id "$id" '.workspaces[] | select(.id == $id) | .devpod_state // empty | select(. != null and . != {})' \
+  local id="$1" body
+  body=$(catalog_workspace_get "$id") || return 1
+  jq -e '.devpod_state // empty | select(. != null and . != {})' <<<"$body" \
     >/dev/null 2>&1 || { echo "catalog_workspace_get_devpod_state: no snapshot for $id" >&2; return 1; }
-  catalog_read \
-    | jq --arg id "$id" '.workspaces[] | select(.id == $id) | .devpod_state'
+  jq '.devpod_state' <<<"$body"
 }
 
-# Print the .uid convenience field for <id>, or empty.
 catalog_workspace_get_uid() {
-  local id="$1"
-  catalog_read \
-    | jq -r --arg id "$id" '.workspaces[] | select(.id == $id) | .uid // empty'
+  local id="$1" body
+  body=$(catalog_workspace_get "$id" 2>/dev/null) || return 0
+  jq -r '.uid // empty' <<<"$body"
 }
 
-# Insert or update a repo entry (keyed by URL).
+# ---- repos -----------------------------------------------------------------
+
 catalog_repo_upsert() {
-  local url="$1" branch="$2" now
-  now=$(catalog_now)
-  catalog_read | jq --arg url "$url" --arg branch "$branch" --arg now "$now" '
-    if (.repos | map(.url) | index($url)) == null then
-      .repos += [{ url: $url, last_branch: $branch, last_used_at: $now }]
-    else
-      .repos |= map(if .url == $url
-                    then .last_branch = $branch | .last_used_at = $now
-                    else . end)
-    end' | catalog_write
+  local url="$1" branch="$2" payload
+  payload=$(jq -n --arg url "$url" --arg branch "$branch" \
+    '{url:$url, last_branch:$branch}')
+  _catalog_req POST /v1/repos "$payload" >/dev/null || true
+  [[ "$DVW_CAT_STATUS" =~ ^2 ]]
 }
 
-# Print repo URLs in MRU order, one per line.
 catalog_repo_list() {
-  catalog_read | jq -r '.repos | sort_by(.last_used_at) | reverse | .[].url'
+  local body
+  body=$(_catalog_req GET /v1/repos) || return 1
+  jq -r '.[].url' <<<"$body"
 }
 
-# Print last_branch for a URL, or empty if not in catalog.
 catalog_repo_last_branch() {
-  local url="$1"
-  catalog_read | jq -r --arg url "$url" \
-    '.repos[] | select(.url == $url) | .last_branch' 2>/dev/null
+  local url="$1" enc body rc
+  enc=$(jq -rn --arg u "$url" '$u|@uri')
+  body=$(_catalog_req GET "/v1/repos/by-url?url=$enc"); rc=$?
+  [[ $rc -eq 0 ]] || return 0   # not found -> empty, like the original
+  jq -r '.last_branch // empty' <<<"$body"
 }
 
-# Read a default value by key (e.g., "ide", "provider").
 catalog_default() {
-  local key="$1"
-  catalog_read | jq -r --arg k "$key" '.defaults[$k] // ""'
+  local key="$1" body
+  body=$(_catalog_req GET /v1/defaults) || return 1
+  jq -r --arg k "$key" '.[$k] // ""' <<<"$body"
 }

@@ -11,6 +11,10 @@ DVW_ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 . "$DVW_ROOT/lib/wsl-bridge.sh"
 # shellcheck source=lib/connect.sh
 . "$DVW_ROOT/lib/connect.sh"
+# Service-backed overrides for the resolver/probe functions. MUST come after
+# connect.sh so its definitions win.
+# shellcheck source=lib/connect-resolver.sh
+. "$DVW_ROOT/lib/connect-resolver.sh"
 # shellcheck source=lib/commands.sh
 . "$DVW_ROOT/lib/commands.sh"
 # shellcheck source=lib/wizard.sh
