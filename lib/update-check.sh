@@ -37,3 +37,19 @@ _dvw_update_cache_stale() {
   now=$(date +%s)
   [ $(( now - epoch )) -ge "$DVW_UPDATE_TTL" ]
 }
+
+# Synchronous refresh: fetch origin/main, record <epoch>\n<behind>. Fail-open —
+# any failure (offline, bad remote) returns 0 and leaves the cache untouched, so
+# the next run simply retries. Writes atomically via a temp file + mv.
+_dvw_update_do_refresh() {
+  local cache behind now tmp
+  cache=$(dvw_update_cache_path)
+  mkdir -p "$(dirname "$cache")" 2>/dev/null || return 0
+  git -C "$DVW_ROOT" fetch -q origin main 2>/dev/null || return 0
+  behind=$(git -C "$DVW_ROOT" rev-list --count HEAD..origin/main 2>/dev/null)
+  case "$behind" in ''|*[!0-9]*) behind=0 ;; esac
+  now=$(date +%s)
+  tmp="${cache}.tmp.$$"
+  printf '%s\n%s\n' "$now" "$behind" > "$tmp" 2>/dev/null && mv -f "$tmp" "$cache" 2>/dev/null
+  return 0
+}

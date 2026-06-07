@@ -79,3 +79,23 @@ _write_cache() { mkdir -p "$DVW_STATE_DIR"; printf '%s\n%s\n' "$1" "$2" > "$DVW_
   run _dvw_update_cache_stale
   [ "$status" -eq 0 ]
 }
+
+@test "do_refresh: records the correct behind-count against the remote" {
+  _advance_remote 2
+  run _dvw_update_do_refresh
+  [ "$status" -eq 0 ]
+  [ "$(dvw_update_behind_count)" = "2" ]
+}
+
+@test "do_refresh: records 0 when up to date" {
+  run _dvw_update_do_refresh
+  [ "$status" -eq 0 ]
+  [ "$(dvw_update_behind_count)" = "0" ]
+}
+
+@test "do_refresh: fail-open (exit 0, no cache) when remote is unreachable" {
+  git -C "$DVW_ROOT" remote set-url origin "$TMP/does-not-exist.git"
+  run _dvw_update_do_refresh
+  [ "$status" -eq 0 ]
+  [ ! -f "$DVW_STATE_DIR/update-check" ]
+}
