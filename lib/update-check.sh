@@ -53,3 +53,20 @@ _dvw_update_do_refresh() {
   printf '%s\n%s\n' "$now" "$behind" > "$tmp" 2>/dev/null && mv -f "$tmp" "$cache" 2>/dev/null
   return 0
 }
+
+# Refresh the cache iff stale. Fail-open and non-blocking: the fetch runs
+# detached in the background (the foreground returns immediately and prints the
+# CURRENT cached state). Set DVW_UPDATE_SYNC=1 to run it inline (tests).
+dvw_update_refresh_if_stale() {
+  _dvw_update_cache_stale || return 0
+  git -C "$DVW_ROOT" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  if [ -n "${DVW_UPDATE_SYNC:-}" ]; then
+    _dvw_update_do_refresh
+    return 0
+  fi
+  local lock; lock="$(dvw_update_cache_path).lock"
+  mkdir -p "$(dirname "$lock")" 2>/dev/null || return 0
+  mkdir "$lock" 2>/dev/null || return 0     # another refresh already in flight
+  ( _dvw_update_do_refresh; rmdir "$lock" 2>/dev/null || true ) >/dev/null 2>&1 &
+  return 0
+}

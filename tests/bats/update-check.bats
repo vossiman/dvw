@@ -99,3 +99,26 @@ _write_cache() { mkdir -p "$DVW_STATE_DIR"; printf '%s\n%s\n' "$1" "$2" > "$DVW_
   [ "$status" -eq 0 ]
   [ ! -f "$DVW_STATE_DIR/update-check" ]
 }
+
+@test "refresh_if_stale: stale cache refreshes (sync mode) and records count" {
+  export DVW_UPDATE_SYNC=1
+  _advance_remote 3
+  run dvw_update_refresh_if_stale
+  [ "$status" -eq 0 ]
+  [ "$(dvw_update_behind_count)" = "3" ]
+}
+
+@test "refresh_if_stale: fresh cache does NOT refresh (count stays put)" {
+  export DVW_UPDATE_SYNC=1
+  _write_cache "$(date +%s)" 0     # fresh, says up-to-date
+  _advance_remote 5                # remote moves ahead, but cache is fresh
+  run dvw_update_refresh_if_stale
+  [ "$status" -eq 0 ]
+  [ "$(dvw_update_behind_count)" = "0" ]   # unchanged — no fetch happened
+}
+
+@test "refresh_if_stale: fail-open (exit 0) when DVW_ROOT is not a git repo" {
+  export DVW_ROOT="$TMP/notgit"; mkdir -p "$DVW_ROOT"
+  run dvw_update_refresh_if_stale
+  [ "$status" -eq 0 ]
+}
