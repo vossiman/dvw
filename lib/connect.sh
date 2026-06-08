@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Connect to a workspace via SSH (terminal + tmux session) or Cursor (GUI).
 #
-# Multi-machine model: the catalog (Dropbox-shared) carries each workspace's
+# Multi-machine model: the catalog (served by the catalog service) carries each workspace's
 # devpod `workspace.json` snapshot; on a fresh machine, the synthesizer below
 # materializes the local devpod state from that snapshot — without ever
 # running `devpod up <repo>@<branch> --id <id>`, which provisions a brand-new
@@ -611,7 +611,7 @@ _dvw_run_or_print() {
 # ----------------------------------------------------------------------------
 # Multi-machine sync helpers
 #
-# These bridge the catalog (Dropbox, shared) and devpod's per-machine state
+# These bridge the catalog (served by the catalog service) and devpod's per-machine state
 # (~/.devpod/contexts/<ctx>/workspaces/<id>/workspace.json). The catalog stores
 # a verbatim snapshot of workspace.json plus a top-level `uid` field.
 # ----------------------------------------------------------------------------
@@ -886,7 +886,7 @@ _dvw_pick_canonical_uid() {
 
 # Resolve which container is canonical for <id> by direct observation of the
 # provider host. Writes the resolved uid into the local workspace.json (#1)
-# and pushes to the Dropbox catalog (#3). The agent's workspace.json (#2)
+# and pushes to the catalog service (#3). The agent's workspace.json (#2)
 # is intentionally NOT consulted or written for uid purposes.
 #
 # Authority: a container is canonical iff its bind-mount destination is

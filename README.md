@@ -1,10 +1,10 @@
 # dvw — DevPod workspace orchestrator
 
-Host-side scripts and operational notes for running DevPod workspaces on `vossisrv`. The main entrypoint is `dvw`, a bash CLI that replaces the DevPod Desktop app's missing cross-machine workspace sync via a catalog file kept in sync through the existing rclone Dropbox mount. Container-side configuration (Claude/opencode/codex/cursor-agent + MCPs) lives in the sister repo [`vossiman/aiCodingBaseSetup`](https://github.com/vossiman/aiCodingBaseSetup), which also owns the canonical `.devcontainer/devcontainer.json` (see [Devcontainer for a new workspace](#devcontainer-for-a-new-workspace) below).
+Host-side scripts and operational notes for running DevPod workspaces on `vossisrv`. The main entrypoint is `dvw`, a bash CLI that replaces the DevPod Desktop app's missing cross-machine workspace sync via a catalog served by the **`dvw-catalog` service** on `vossisrv`. Each client reaches the catalog over SSH (`ssh vossisrv -- curl --unix-socket …`), so every machine sees the same workspaces. Container-side configuration (Claude/opencode/codex/cursor-agent + MCPs) lives in the sister repo [`vossiman/aiCodingBaseSetup`](https://github.com/vossiman/aiCodingBaseSetup), which also owns the canonical `.devcontainer/devcontainer.json` (see [Devcontainer for a workspace repo](#devcontainer-for-a-workspace-repo) below).
 
 ## Why dvw exists
 
-The DevPod Desktop app stores workspace metadata locally per machine. Switching from Mint to WSL means the second machine sees an empty workspace list, even though all the containers are still running on `vossisrv`. `dvw` fixes that by writing every workspace to a shared JSON catalog at `~/Dropbox-remote/dvw/catalog.json`. Any client that has the rclone mount and the dvw script sees the same workspaces and can connect, start, stop, and create new ones.
+The DevPod Desktop app stores workspace metadata locally per machine. Switching from Mint to WSL means the second machine sees an empty workspace list, even though all the containers are still running on `vossisrv`. `dvw` fixes that by recording every workspace in a central catalog served by the `dvw-catalog` service on `vossisrv`. Any client that has SSH access to the box and the dvw script sees the same workspaces and can connect, start, stop, and create new ones.
 
 ## Folder layout
 
@@ -12,8 +12,8 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 |------|---------|
 | `dvw` | CLI entrypoint (sources `lib/*`) |
 | `lib/` | catalog, ssh-sync, connect, wizard, commands, UI |
-| `systemd/rclone-dropbox.service` | rclone mount as a systemd user unit |
-| `dvw-install.sh` | idempotent bootstrap for Mint and WSL |
+| `catalog-service/` | the `dvw-catalog` HTTP service (runs on vossisrv), its deploy scripts and migration tooling |
+| `dvw-install.sh` | idempotent client bootstrap for Mint and WSL |
 | `tests/bats/` | bats test suite for catalog logic |
 | `tmux/` | host-side tmux config |
 | `cursor-shim.sh`, `install-cursor-shim.sh` | Cursor AppImage triple-launch workaround |
@@ -32,13 +32,50 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw new` | wizard: create a new workspace, append to catalog |
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
 | `dvw stop <id>` | `devpod stop` |
-| `dvw update` | Update dvw in place to latest main and refresh the version marker. dvw nudges you to run this (and `dvw doctor` reports it) when the checkout falls behind `origin/main`. |
 | `dvw start <id>` | `devpod up` with the workspace's saved IDE |
+| `dvw recreate <id>` (alias `rebuild`) | rebuild the container (`devpod up --recreate`) — needed to pick up a changed `devcontainer.json` (mounts/hooks) |
+| `dvw update` | Update dvw in place to latest main and refresh the version marker. dvw nudges you to run this (and `dvw doctor` reports it) when the checkout falls behind `origin/main`. |
 | `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
-| `dvw doctor` | health check: provider probe, rclone mount, catalog, ssh-sync, devpod, gum, per-orphan summary |
+| `dvw doctor` | health check: provider probe, catalog service, ssh-sync, devpod, gum, per-orphan summary |
 | `dvw <anything> --dry-run` | print would-be `devpod ...` / `docker ...` invocations without executing — works on any mutating subcommand |
 
-## Devcontainer for a new workspace
+## Server (catalog-service) — on vossisrv
+
+```bash
+# first time, as vossi on vossisrv
+git clone -b main git@github.com:vossiman/dvw.git /opt/dvw
+/opt/dvw/catalog-service/deploy/host-install.sh   # idempotent; installs+enables the systemd unit, smoke-tests /v1/health
+# one-time cutover from the old Dropbox catalog:
+cd /opt/dvw-catalog && uv run dvw-catalog-migrate \
+    --from ~/Dropbox-remote/dvw/catalog.json --blueprint ~/Dropbox-remote/dvw/ssh-blueprint.conf
+sudo systemctl restart dvw-catalog
+```
+
+Updates: `/opt/dvw/catalog-service/deploy/host-update.sh`. No TCP port — the service binds a unix socket; auth is SSH + `0660 vossi:vossi` socket perms. Full detail in [`catalog-service/README.md`](catalog-service/README.md). Verify:
+
+```bash
+ssh vossisrv -- curl --unix-socket /run/dvw-catalog/catalog.sock http://localhost/v1/health
+```
+
+## Client — on each laptop (Mint / WSL)
+
+```bash
+git clone https://github.com/vossiman/dvw
+cd dvw
+./dvw-install.sh     # installs jq/gum/devpod, symlinks dvw into ~/.local/bin
+dvw doctor
+```
+
+The installer is idempotent — re-run it any time.
+
+**Requirement:** SSH access to the box — a `Host vossisrv` entry in `~/.ssh/config` with key auth as `vossi`. The client reaches the catalog via `ssh vossisrv -- curl --unix-socket …`; the defaults are `DVW_CATALOG_HOST=vossisrv` and `DVW_CATALOG_SOCK=/run/dvw-catalog/catalog.sock`, override per-machine if needed. Ensure `~/.local/bin` is on PATH (the installer warns if it isn't).
+
+**WSL note:** the first run on a fresh WSL detects that systemd is not enabled, writes `/etc/wsl.conf`, and stops with:
+> systemd is now enabled, but WSL must be restarted. From Windows PowerShell: `wsl --shutdown`. Then re-open WSL and re-run.
+
+After `wsl --shutdown` and reopening WSL, re-run `./dvw-install.sh` and it continues from where it left off.
+
+## Devcontainer for a workspace repo
 
 `aiCodingBaseSetup` owns the canonical `.devcontainer/devcontainer.json`
 (clone-based provisioning + the generic `${localEnv:HOME}/devpod/<name>` bind
@@ -61,32 +98,6 @@ git add .devcontainer && git commit -m 'add devcontainer' && git push
 
 The mounts resolve `${localEnv:HOME}` on the **host** at provision time, so the
 same file is portable across machines — no per-host editing needed.
-
-## Install on Mint
-
-```bash
-git clone https://github.com/vossiman/dvw
-cd dvw
-./dvw-install.sh
-dvw doctor
-```
-
-The installer is idempotent — re-run it any time. It will install missing apt packages (jq, fuse3, gum, devpod), pull rclone ≥ 1.65 from the upstream installer (replacing apt's old 1.60.1 if present, since noble's stale rclone has known FUSE/Dropbox stability bugs), set up the systemd rclone-dropbox unit, wire up the SSH config sync, and symlink `dvw` into `~/.local/bin`.
-
-## Install on WSL Ubuntu
-
-```bash
-git clone https://github.com/vossiman/dvw
-cd dvw
-./dvw-install.sh
-```
-
-**First run on a fresh WSL** will detect that systemd is not enabled, write `/etc/wsl.conf`, and stop with this message:
-> systemd is now enabled, but WSL must be restarted. From Windows PowerShell: `wsl --shutdown`. Then re-open WSL and re-run.
-
-After `wsl --shutdown` and reopening WSL, re-run `./dvw-install.sh`. It will continue from where it left off (configure rclone, drop the systemd unit, install dvw).
-
-If you do not yet have an rclone Dropbox remote configured, the installer will instruct you to run `rclone config` interactively (one-time per machine).
 
 ## Installing as a submodule
 
@@ -115,8 +126,8 @@ Three update flows, depending on how you installed.
     git pull
     ./dvw-install.sh
 
-`dvw-install.sh` is idempotent — re-running re-checks apt deps, re-runs the
-rclone-binary version probe, and re-creates the `~/.local/bin/dvw` symlink.
+`dvw-install.sh` is idempotent — re-running re-checks apt deps and re-creates
+the `~/.local/bin/dvw` symlink.
 
 ### Submodule consumer
 
@@ -168,17 +179,18 @@ dvw new
 
 The `sudo rm` step requires interactive auth; don't try to script past it.
 
-### Pull the latest `install.sh` into a running workspace
+## Updating a running container
 
-```bash
-ssh -t <workspace>.devpod 'bash -lc "cd /workspaces/<repo>/devpod/aicoding && git pull && bash install.sh"'
-```
+Two mechanisms, depending on what changed:
+
+- **New aiCodingBaseSetup (config + CLIs) — no rebuild.** Inside the container: `aicoding-status` (what's behind), `aicoding-sync` (pull latest blueprint, reconcile config, update CLIs). Also runs automatically on every container start (`on-start.sh` → `aicoding-sync --boot`).
+- **Updated `devcontainer.json` (mounts/provisioning) — needs rebuild.** Mounts are fixed at container-create time, so from the laptop: `dvw recreate <id>`.
 
 ## Multi-machine sync model
 
-A single user across multiple machines (e.g. laptop + WSL on a PC), one remote provider (`vossisrv`), one shared Dropbox catalog. Three pieces of state participate:
+A single user across multiple machines (e.g. laptop + WSL on a PC), one remote provider (`vossisrv`), one central catalog served by the catalog service. Three pieces of state participate:
 
-- **Catalog (Dropbox-shared)** — `~/Dropbox-remote/dvw/catalog.json`. Authoritative for *which workspaces exist*: id, repo, branch, ide, provider name. Also caches a per-workspace `.devpod_state` snapshot opportunistically. **The catalog `.uid` is a convenience copy; the agent is authoritative for the actual id↔uid mapping** (see below).
+- **Catalog (the catalog service)** — served by `dvw-catalog` on `vossisrv`, reached over SSH. Authoritative for *which workspaces exist*: id, repo, branch, ide, provider name. Also caches a per-workspace `.devpod_state` snapshot opportunistically. **The catalog `.uid` is a convenience copy; the agent is authoritative for the actual id↔uid mapping** (see below).
 - **Client workspace.json (per-machine)** — `~/.devpod/contexts/default/workspaces/<id>/workspace.json`. DevPod CLI's local record on each client. Layout: `{ "id": ..., "uid": ..., "provider": { "options": { "HOST": ... } }, ... }` (fields at top level).
 - **Agent workspace.json (on the provider)** — `~/.devpod/agent/contexts/default/workspaces/<id>/workspace.json` on `vossisrv`. DevPod agent's record. Layout: `{ "workspace": { "uid": ..., "provider": ... }, ... }` (fields nested under `.workspace`). **This is authoritative** — the agent uses *its own* workspace.json to pick which docker container to exec into, so any client uid that disagrees with the agent's is wrong from DevPod's perspective.
 
@@ -215,31 +227,22 @@ When DevPod recreates a workspace (`devpod up --recreate`, or `devpod up` after 
 
 The `dvw` top menu shows **⚠ Audit orphan containers (N)** when N > 0. Choosing it runs a deeper audit per orphan: branch, modified file count, unpushed commit count, stash count, verdict. Removal is always manual — `dvw` prints the `ssh <host> 'docker rm -f <name>'` template; you type it after deciding.
 
-## Catalog location and sync
-
-- Catalog: `~/Dropbox-remote/dvw/catalog.json` — single JSON file, hand-editable.
-- Sync: rclone mount of the `dropbox:` remote, running as a systemd user service. Poll interval 30s; staleness is bounded by that.
-- Conflicts: ignored by design (single user, two machines, no concurrent writes). `dvw doctor` flags any `*conflicted copy*` files Dropbox might create.
-- Mount hardening (`systemd/rclone-dropbox.service`): `ExecStartPre` cleans stale FUSE handles + ensures the mountpoint dir exists; `Restart=always` (was `on-failure`) catches clean exits and FUSE wedges; `--vfs-cache-mode writes` (was `minimal`) for resilience under intermittent connectivity; `Environment=PATH=/usr/local/bin:/usr/bin:/bin` + `ExecStart=/usr/bin/env rclone …` so the unit works whether rclone is at the apt path or the upstream path.
-
 ## SSH config sync
 
-Same Dropbox-backed pattern as the catalog. A blueprint at
-`~/Dropbox-remote/dvw/ssh-blueprint.conf` is the single source of truth.
-On every `dvw` invocation, `lib/ssh-sync.sh` refreshes the local copy at
-`~/.ssh/dvw.conf` if the blueprint is newer (mtime check). Your real
-`~/.ssh/config` is untouched apart from one `Include "dvw.conf"` line
-that the installer prepends at the top of the file.
+The ssh-blueprint now lives in the catalog service at `/v1/blueprint` (single
+source of truth). On every `dvw` invocation, `lib/ssh-sync.sh` fetches the
+blueprint and refreshes the local copy at `~/.ssh/dvw.conf` if it differs. Your
+real `~/.ssh/config` is untouched apart from one `Include "dvw.conf"` line that
+the installer prepends at the top of the file.
 
-The seeded blueprint contains a `Host *.devpod` block with
-`ControlMaster auto` for SSH multiplexing — first connect to a workspace
-takes ~2s, every subsequent ssh to the same host within 10 minutes is
-near-instant (~5ms; verified: 400× speedup on second connect).
+The seeded blueprint contains a `Host *.devpod` block with `ControlMaster auto`
+for SSH multiplexing — first connect to a workspace takes ~2s, every subsequent
+ssh to the same host within 10 minutes is near-instant (~5ms; verified: 400×
+speedup on second connect).
 
-To roll out a config change to all machines, edit
-`~/Dropbox-remote/dvw/ssh-blueprint.conf` on either box. Within ~30s the
-other machine sees the new blueprint and the next `dvw` call refreshes
-its local copy.
+To roll out a config change to all machines, update the blueprint in the service
+(`PUT /v1/blueprint`). The next `dvw` call on each machine refreshes its local
+copy.
 
 **Why the Include sits at the top of `~/.ssh/config`:** OpenSSH
 propagates the enclosing Host block's `activep` flag into `Include`
@@ -253,17 +256,6 @@ wildcard pattern is evaluated).
 
 Private SSH keys are **not** synced via dvw; use per-machine keypairs and
 list both pubkeys in each server's `authorized_keys`.
-
-## What to do if rclone mount dies
-
-```bash
-systemctl --user status rclone-dropbox
-systemctl --user restart rclone-dropbox
-```
-
-dvw will refuse to run when the mount is down rather than silently using a stale local copy. If the catalog directory itself looks fine but you suspect bad cached state, `fusermount -u ~/Dropbox-remote && systemctl --user restart rclone-dropbox`.
-
-If the unit is `inactive (dead)` after every reboot (not `failed`, just never started) and a `systemctl --user daemon-reload` "fixes" it — that's the ecryptfs+linger ordering bug ([LP #1746527](https://bugs.launchpad.net/ubuntu/+source/systemd/+bug/1746527) / [#1734290](https://bugs.launchpad.net/ecryptfs/+bug/1734290)). With `/home/$USER` on ecryptfs and `Linger=yes`, the user systemd manager starts at boot before PAM decrypts home, so `~/.config/systemd/user/default.target.wants/` is invisible. The installer detects this and disables linger; if you re-enabled it manually, run `loginctl disable-linger "$USER"`.
 
 ## Cursor shim (cursor-shim.sh)
 
@@ -302,5 +294,6 @@ Catalog logic is covered by bats. Wizard and TUI behavior is verified manually.
 
 ## See also
 
+- [`catalog-service/README.md`](catalog-service/README.md) — the `dvw-catalog` service (deploy, migration, API)
 - [`tmux/README.md`](tmux/README.md) — host-side tmux config installation
 - [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — current quirks log
