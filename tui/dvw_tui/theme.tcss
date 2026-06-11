@@ -14,6 +14,17 @@ Screen {
     color: $fg;
 }
 
+/* Nord scrollbars everywhere — the defaults are harsh black. */
+* {
+    scrollbar-background: $bg;
+    scrollbar-background-hover: $bg;
+    scrollbar-background-active: $bg;
+    scrollbar-color: $grey;
+    scrollbar-color-hover: $subtle;
+    scrollbar-color-active: $subtle;
+    scrollbar-size-vertical: 1;
+}
+
 #error-banner {
     display: none;
     height: auto;
@@ -149,5 +160,26 @@ MenuScreen {
 }
 
 #menu-list {
+    width: 100%;
+    height: auto;
     background: $bg-panel;
+    border: none;
+    padding: 0;
+    background-tint: $fg 0%;
+}
+
+#menu-list > .option-list--option {
+    padding: 0 1;
+}
+
+#menu-list > .option-list--option-highlighted {
+    background: $bg-panel;
+    color: $accent;
+    text-style: bold;
+}
+
+#menu-list:focus > .option-list--option-highlighted {
+    background: $bg-panel;
+    color: $accent;
+    text-style: bold;
 }
