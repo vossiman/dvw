@@ -10,9 +10,10 @@
 # We can't run a real service in bats, so we shim BOTH `curl` and `ssh` onto a
 # PATH-first stub dir. Tests set DVW_CATALOG_HOST=stub and ensure
 # DVW_CATALOG_SOCK is NOT a real socket, so the deterministic ssh-branch fires;
-# the ssh shim strips its own ssh args and re-dispatches to the curl shim, which
-# parses `-X METHOD` and the request path out of curl's argv and emits the
-# canned `<body>\n<code>` for that route.
+# the ssh shim hands the remote command string to a real shell (`bash -c`),
+# exactly as OpenSSH hands it to the remote login shell, which re-parses it and
+# runs the curl shim. That shim parses `-X METHOD` and the request path out of
+# curl's argv and emits the canned `<body>\n<code>` for that route.
 #
 # A test supplies route answers by defining the bash function `catalog_route`:
 #   catalog_route() {  # args: METHOD PATH BODY
@@ -46,23 +47,18 @@ _stub_parse_curl "\$@"
 EOF
   chmod +x "$STUB_BIN/curl"
 
-  # ssh shim: drop ssh options/host up to the `--` separator, then treat the
-  # remainder ("curl <args…>") as a curl invocation and dispatch it. stdin (the
-  # request body, if any) flows straight through to _stub_parse_curl.
+  # ssh shim: faithfully emulate OpenSSH. A real `ssh host <cmd>` hands the
+  # final argument to the remote LOGIN SHELL as a single string, which RE-PARSES
+  # (word-splits / quote-removes) it. The lib relies on this and pre-quotes the
+  # command with printf %q. Emulating it via `bash -c "$cmd"` means transport
+  # bugs that only appear when a real shell re-tokenizes an arg — an unquoted
+  # newline (the -w status format) or a spaced `Bearer <token>` header — surface
+  # in tests instead of being masked by argv-preserving array passing. stdin
+  # (the request body) flows straight through to the curl shim.
   cat > "$STUB_BIN/ssh" <<EOF
 #!/usr/bin/env bash
-source "$dispatch"
-args=("\$@")
-i=0
-while (( i < \${#args[@]} )); do
-  if [[ "\${args[\$i]}" == "--" ]]; then
-    ((i++)); break
-  fi
-  ((i++))
-done
-rest=("\${args[@]:\$i}")
-# rest = (curl <curl-args…>); drop the leading "curl" token.
-_stub_parse_curl "\${rest[@]:1}"
+cmd="\${@: -1}"
+exec bash -c "\$cmd"
 EOF
   chmod +x "$STUB_BIN/ssh"
 }
@@ -72,10 +68,11 @@ EOF
 # then hand off to the test's catalog_route. Defined here so it can be dumped
 # into the dispatcher file via `declare -f`.
 _stub_parse_curl() {
-  local method="GET" url="" path="" body="" has_data=0
+  local method="GET" url="" path="" body="" has_data=0 auth=""
   while (( $# )); do
     case "$1" in
       -X) method="$2"; shift 2 ;;
+      -H) [[ "$2" == [Aa]uthorization:* ]] && auth="$2"; shift 2 ;;
       --data-binary|--data|-d) has_data=1; shift 2 ;;
       http://*|https://*) url="$1"; shift ;;
       *) shift ;;
@@ -84,7 +81,10 @@ _stub_parse_curl() {
   path="${url#http://localhost}"
   path="${path#https://localhost}"
   (( has_data )) && body="$(cat)"
-  catalog_route "$method" "$path" "$body"
+  # 4th arg = the Authorization header verbatim (empty if none). A split/mangled
+  # header arrives here as just "authorization:" — tests assert on it to catch
+  # transport-quoting regressions.
+  catalog_route "$method" "$path" "$body" "$auth"
 }
 
 # Emit a response the way lib/catalog-http-lib.sh parses it: body, newline, code.

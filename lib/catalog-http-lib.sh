@@ -45,12 +45,21 @@ _catalog_req() {
       raw=$(curl "${curl_args[@]}" 2>/dev/null); rc=$?
     fi
   else
+    # Over ssh the remote login shell RE-PARSES the command, so ssh's naive
+    # space-join of argv is unsafe: any arg containing whitespace — the -w
+    # status format's newline, or an `authorization: Bearer <token>` header —
+    # would be word-split into separate tokens and mangle the request (this is
+    # what made `dvw doctor` report the service unreachable). Build an
+    # explicitly quoted command string with printf %q so the remote shell
+    # reconstructs the exact argv we intended.
+    local rcmd='curl' _a
+    for _a in "${curl_args[@]}"; do printf -v rcmd '%s %q' "$rcmd" "$_a"; done
     if [[ -n "$body" ]]; then
       raw=$(printf '%s' "$body" \
-        | ssh -o BatchMode=yes -o ConnectTimeout=5 "$DVW_CATALOG_HOST" -- curl "${curl_args[@]}" 2>/dev/null)
+        | ssh -o BatchMode=yes -o ConnectTimeout=5 "$DVW_CATALOG_HOST" "$rcmd" 2>/dev/null)
       rc=$?
     else
-      raw=$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$DVW_CATALOG_HOST" -- curl "${curl_args[@]}" 2>/dev/null)
+      raw=$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$DVW_CATALOG_HOST" "$rcmd" 2>/dev/null)
       rc=$?
     fi
   fi
