@@ -3,7 +3,11 @@
 # dvw repo. After this, updates are just `deploy/host-update.sh` (git pull +
 # restart) — no laptop, no rsync.
 #
-# Run as `vossi` on vossisrv:
+# Run as `vossi` on vossisrv — NOT with sudo. The script runs as your normal
+# user (it clones, builds the venv, and owns the data dir as $USER) and calls
+# `sudo` itself only for the steps that touch system paths. You do NOT need to
+# pre-create any directories; in particular do not `mkdir /opt/dvw-catalog` — it
+# is a symlink this script manages (a real dir there breaks the service).
 #     git clone -b main git@github.com:vossiman/dvw.git /opt/dvw \
 #       && /opt/dvw/catalog-service/deploy/host-install.sh
 # (until PR #9 merges, clone -b feat/catalog-service-client, or pass BRANCH=…)
@@ -23,6 +27,19 @@ APP_LINK="/opt/dvw-catalog"          # stable path the systemd unit references
 DATA_DIR="/var/lib/dvw-catalog"
 SOCK="/run/dvw-catalog/catalog.sock"
 
+# Must run as the normal user, not root. The venv/checkout are owned by $USER
+# and the service runs as User=vossi; a root-owned install breaks it, and the
+# sudoers drop-in below is keyed to your login. The script sudo's where needed.
+if [ "$(id -u)" -eq 0 ]; then
+  echo "error: run this as your normal user, not root/sudo." >&2
+  echo "       it will invoke sudo itself for the steps that need it." >&2
+  exit 1
+fi
+# Prime sudo up front: fail fast now if you lack sudo rights, and avoid a
+# password prompt stalling the install halfway through.
+echo "==> 0/7 installer needs sudo for /opt, /var/lib, /etc/systemd and sudoers; priming…"
+sudo -v
+
 echo "==> 1/7 checkout ($BRANCH -> $CHECKOUT)"
 if [ ! -d "$CHECKOUT/.git" ]; then
   sudo install -d -o "$USER" -g "$USER" "$(dirname "$CHECKOUT")"
@@ -34,6 +51,15 @@ else
 fi
 
 echo "==> 2/7 stable symlink $APP_LINK -> $SVC_DIR"
+# $APP_LINK must be a symlink. If a previous run or a manual `mkdir` left a real
+# directory here, `ln -sfn` would silently create the link *inside* it
+# ($APP_LINK/catalog-service) instead of replacing it, and the unit's ExecStart
+# (=$APP_LINK/.venv/bin/uvicorn) would fail with status=203/EXEC. Replace
+# anything that isn't already a symlink before (re)creating it.
+if [ -e "$APP_LINK" ] && [ ! -L "$APP_LINK" ]; then
+  echo "    $APP_LINK exists as a real path; replacing it with the symlink"
+  sudo rm -rf "$APP_LINK"
+fi
 sudo ln -sfn "$SVC_DIR" "$APP_LINK"
 
 echo "==> 3/7 data dir + git backup repo ($DATA_DIR)"
