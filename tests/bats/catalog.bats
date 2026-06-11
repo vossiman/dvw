@@ -2,8 +2,8 @@
 #
 # Client-side tests for lib/catalog.sh against the dvw-catalog HTTP service.
 #
-# The catalog is no longer a Dropbox-synced JSON file; it's an HTTP service
-# reached over a unix socket (lib/catalog-http-lib.sh). These tests exercise the
+# The catalog is an HTTP service reached over a unix socket
+# (lib/catalog-http-lib.sh), not a local file. These tests exercise the
 # CLIENT half: the service URL it advertises, the request method/path it sends,
 # how it maps HTTP status to return codes, and the jq it runs on responses.
 #

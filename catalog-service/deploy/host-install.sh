@@ -71,7 +71,7 @@ echo "==> 3/7 data dir + git backup repo ($DATA_DIR)"
 sudo install -d -o "$USER" -g "$USER" -m 0750 "$DATA_DIR"
 if [ ! -d "$DATA_DIR/.git" ]; then
   git -C "$DATA_DIR" init -q
-  git -C "$DATA_DIR" config user.email "dvw-catalog@vossisrv"
+  git -C "$DATA_DIR" config user.email "dvw-catalog@$(hostname -s)"
   git -C "$DATA_DIR" config user.name  "dvw-catalog"
 fi
 

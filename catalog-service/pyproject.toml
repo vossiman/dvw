@@ -1,7 +1,7 @@
 [project]
 name = "dvw-catalog"
 version = "0.1.0"
-description = "Authoritative DevPod workspace catalog + container resolver for vossisrv. Replaces the Dropbox-synced catalog.json and the client-side, SSH-bound container resolver with a local FastAPI service that has direct Docker access."
+description = "Authoritative DevPod workspace catalog + container resolver: a local FastAPI service on the Docker host that owns the workspace catalog, the shared ssh-blueprint, and the id->container resolver."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
