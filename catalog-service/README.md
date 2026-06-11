@@ -1,8 +1,9 @@
 # dvw-catalog
 
-Authoritative DevPod workspace **catalog + container resolver**, running on
-`vossisrv`. Replaces three Dropbox-coupled pieces of the `dvw` workflow with one
-small FastAPI service that has **local Docker access**:
+Authoritative DevPod workspace **catalog + container resolver**, running on the
+Docker host (`vossisrv` in the reference deployment — the install adapts to
+whatever user/host you run it on). Replaces three Dropbox-coupled pieces of the
+`dvw` workflow with one small FastAPI service that has **local Docker access**:
 
 1. the Dropbox-synced `catalog.json` (which workspaces exist),
 2. the Dropbox-synced `ssh-blueprint.conf`, and
@@ -82,10 +83,12 @@ against a fake docker client to pin dvw's exact semantics.
 
 ## Deploy
 
-Runs as a **systemd service on vossisrv**, deployed from a git checkout on the
-box (so updates are `git pull`, no laptop in the loop).
+Runs as a **systemd service on the Docker host** (the reference host is
+`vossisrv`), deployed from a git checkout on the box (so updates are `git pull`,
+no laptop in the loop). `host-install.sh` rewrites the units' `User=`/`Group=`
+to whoever runs it, so it isn't tied to `vossi`.
 
-**First time** — run as `vossi` on vossisrv:
+**First time** — run as your normal user on the host (reference: `vossi@vossisrv`):
 
 ```bash
 sudo install -d -o "$USER" -g "$USER" /opt/dvw

@@ -1,6 +1,6 @@
 # dvw — DevPod workspace orchestrator
 
-Host-side scripts and operational notes for running DevPod workspaces on `vossisrv`. The main entrypoint is `dvw`, a bash CLI that replaces the DevPod Desktop app's missing cross-machine workspace sync via a catalog served by the **`dvw-catalog` service** on `vossisrv`. Each client reaches the catalog over SSH (`ssh vossisrv -- curl --unix-socket …`), so every machine sees the same workspaces. Container-side configuration (Claude/opencode/codex/cursor-agent + MCPs) lives in the sister repo [`vossiman/aiCodingBaseSetup`](https://github.com/vossiman/aiCodingBaseSetup), which also owns the canonical `.devcontainer/devcontainer.json` (see [Devcontainer for a workspace repo](#devcontainer-for-a-workspace-repo) below).
+Host-side scripts and operational notes for running DevPod workspaces on a shared Linux host (`vossisrv` in the reference deployment — host, user, and provider are all configurable, see [Configuration](#configuration-host-user-provider)). The main entrypoint is `dvw`, a bash CLI that replaces the DevPod Desktop app's missing cross-machine workspace sync via a catalog served by the **`dvw-catalog` service** on `vossisrv`. Each client reaches the catalog over SSH (`ssh vossisrv -- curl --unix-socket …`), so every machine sees the same workspaces. Container-side configuration (Claude/opencode/codex/cursor-agent + MCPs) lives in the sister repo [`vossiman/aiCodingBaseSetup`](https://github.com/vossiman/aiCodingBaseSetup), which also owns the canonical `.devcontainer/devcontainer.json` (see [Devcontainer for a workspace repo](#devcontainer-for-a-workspace-repo) below).
 
 ## Why dvw exists
 
@@ -39,10 +39,12 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw doctor` | health check: provider probe, catalog service, ssh-sync, devpod, gum, per-orphan summary |
 | `dvw <anything> --dry-run` | print would-be `devpod ...` / `docker ...` invocations without executing — works on any mutating subcommand |
 
-## Server (catalog-service) — on vossisrv
+## Server (catalog-service)
+
+Runs on one Linux host (the reference deployment is `vossisrv`).
 
 ```bash
-# first time, as vossi on vossisrv
+# first time, as your normal user on the catalog host (reference: vossi@vossisrv)
 sudo install -d -o "$USER" -g "$USER" /opt/dvw
 git clone -b main https://github.com/vossiman/dvw.git /opt/dvw
 /opt/dvw/catalog-service/deploy/host-install.sh   # idempotent; installs+enables the systemd unit, smoke-tests /v1/health
@@ -70,12 +72,32 @@ dvw doctor
 
 The installer is idempotent — re-run it any time.
 
-**Requirement:** SSH access to the box — a `Host vossisrv` entry in `~/.ssh/config` with key auth as `vossi`. The client reaches the catalog via `ssh vossisrv -- curl --unix-socket …`; the defaults are `DVW_CATALOG_HOST=vossisrv` and `DVW_CATALOG_SOCK=/run/dvw-catalog/catalog.sock`, override per-machine if needed. Ensure `~/.local/bin` is on PATH (the installer warns if it isn't).
+**Requirement:** SSH access to the box — a `Host <alias>` entry in `~/.ssh/config` with key auth (the reference deployment uses alias `vossisrv`, user `vossi`). The client reaches the catalog via `ssh <alias> -- curl --unix-socket …`. The defaults are `DVW_CATALOG_HOST=vossisrv` and `DVW_CATALOG_SOCK=/run/dvw-catalog/catalog.sock`; point them at your own host with `dvw config set DVW_CATALOG_HOST <alias>` (see [Configuration](#configuration-host-user-provider)). Ensure `~/.local/bin` is on PATH (the installer warns if it isn't).
 
 **WSL note:** the first run on a fresh WSL detects that systemd is not enabled, writes `/etc/wsl.conf`, and stops with:
 > systemd is now enabled, but WSL must be restarted. From Windows PowerShell: `wsl --shutdown`. Then re-open WSL and re-run.
 
 After `wsl --shutdown` and reopening WSL, re-run `./dvw-install.sh` and it continues from where it left off.
+
+## Configuration: host, user, provider
+
+`vossisrv` (host) and `vossi` (user) are just the reference deployment's
+defaults — nothing in dvw is hardwired to them.
+
+**Client** — pin per machine with `dvw config` (writes
+`~/.config/dvw/config`; precedence is env > file > built-in default). `dvw config`
+with no args prints the effective values:
+
+```bash
+dvw config set DVW_CATALOG_HOST myhost     # ssh alias of the catalog box (default: vossisrv)
+dvw config set DVW_PROVIDER     myhost     # devpod provider name for new workspaces (default: vossisrv)
+# also honored: DVW_CATALOG_SOCK, DVW_CATALOG_TOKEN
+```
+
+**Server** — `host-install.sh` runs as your normal user and rewrites the systemd
+units' `User=`/`Group=` to whoever installs, so the service isn't tied to `vossi`.
+The default devpod-provider name stamped on entries is `CATALOG_DEFAULT_PROVIDER`
+(default `vossisrv`) in `catalog.env`; real catalog data overrides it per entry.
 
 ## Devcontainer for a workspace repo
 
