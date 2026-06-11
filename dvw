@@ -3,6 +3,11 @@
 set -euo pipefail
 
 DVW_ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+# Optional per-machine config (catalog host / provider). Loaded BEFORE the libs
+# so it can set DVW_* values the libs then fall back on. env > file > default.
+# shellcheck source=lib/config.sh
+. "$DVW_ROOT/lib/config.sh"
+dvw_load_config
 # shellcheck source=lib/catalog.sh
 . "$DVW_ROOT/lib/catalog.sh"
 # shellcheck source=lib/ssh-sync.sh

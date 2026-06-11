@@ -356,7 +356,8 @@ cmd_doctor() {
     if [[ -n "$devpod_providers" ]]; then
       ui_status_ok "devpod providers: $(printf '%s\n' "$devpod_providers" | paste -sd, -)"
     elif (( ${#needed_providers[@]} == 0 )); then
-      ui_status_fail "devpod providers: none configured (run \`devpod provider add ssh --name vossisrv --option HOST=<user@host>\` then \`devpod provider use vossisrv\`)"
+      local _p="${DVW_PROVIDER:-vossisrv}"
+      ui_status_fail "devpod providers: none configured (run \`devpod provider add ssh --name $_p --option HOST=<user@host>\` then \`devpod provider use $_p\`)"
       fail=$((fail+1))
     fi
     # If devpod_providers is empty AND needed_providers is non-empty, the loop
