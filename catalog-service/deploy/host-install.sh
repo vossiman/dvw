@@ -14,14 +14,13 @@
 #     sudo install -d -o "$USER" -g "$USER" /opt/dvw
 #     git clone -b main https://github.com/vossiman/dvw.git /opt/dvw
 #     /opt/dvw/catalog-service/deploy/host-install.sh
-# (until PR #9 merges, clone -b feat/catalog-service-client, or pass BRANCH=…)
 # Re-run any time to reconfigure — it's idempotent.
 #
 # Overridable via env:
 #   REPO_URL   default https://github.com/vossiman/dvw.git  (HTTPS works with no
 #              SSH keys on the box; set REPO_URL=git@github.com:vossiman/dvw.git
 #              to use SSH, which needs a key configured on this host)
-#   BRANCH     default main          (use feat/catalog-service-client until PR #9 merges)
+#   BRANCH     default main
 #   CHECKOUT   default /opt/dvw
 set -euo pipefail
 

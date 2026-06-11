@@ -5,7 +5,7 @@ lives in its only runnable home, the `vossiman/dvw` repo under `lib/`, where the
 `dvw` entrypoint sources it. (dvw sources `$DVW_ROOT/lib/*.sh`; a second copy in
 this repo would only drift.)
 
-**Canonical location:** `vossiman/dvw`, branch `feat/catalog-service-client`:
+**Canonical location:** `vossiman/dvw`, under `lib/`:
 
 | File (in dvw `lib/`) | Replaces | What changes |
 |---|---|---|

@@ -94,7 +94,6 @@ to whoever runs it, so it isn't tied to `vossi`.
 sudo install -d -o "$USER" -g "$USER" /opt/dvw
 git clone -b main https://github.com/vossiman/dvw.git /opt/dvw
 /opt/dvw/catalog-service/deploy/host-install.sh
-# (until PR #9 merges: clone -b feat/catalog-service-client, or BRANCH=feat/catalog-service-client host-install.sh)
 ```
 
 `host-install.sh` is idempotent: it symlinks `/opt/dvw-catalog` → the checkout
