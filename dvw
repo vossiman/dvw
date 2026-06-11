@@ -87,8 +87,10 @@ main() {
       if _dvw_tui_available; then
         dvw_tui_launch || ui_top_menu
       else
-        command -v uv >/dev/null 2>&1 \
-          || ui_info "tip: install uv for the dvw TUI (https://docs.astral.sh/uv/) — falling back to menu"
+        if [[ -d "$DVW_ROOT/tui" ]] && [[ "${DVW_NO_TUI:-}" != "1" ]]; then
+          command -v uv >/dev/null 2>&1 \
+            || ui_info "tip: install uv for the dvw TUI (https://docs.astral.sh/uv/) — falling back to menu"
+        fi
         ui_top_menu
       fi ;;
     *)

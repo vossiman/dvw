@@ -14,6 +14,10 @@ setup() {
   mkdir -p "$STUB_DIR"
 }
 
+teardown() {
+  rm -rf "$STUB_DIR"
+}
+
 # --- _dvw_tui_available -----------------------------------------------------
 
 @test "_dvw_tui_available: no tui/ dir disables" {
@@ -28,7 +32,7 @@ setup() {
 }
 
 @test "_dvw_tui_available: missing uv disables" {
-  printf '#!/bin/sh\nexit 0\n' > /dev/null  # no uv stub on purpose
+  # no uv stub on purpose — STUB_DIR has no uv binary
   PATH="$STUB_DIR" DVW_TUI_FORCE=1 run _dvw_tui_available
   [ "$status" -ne 0 ]
 }
@@ -83,4 +87,22 @@ EOF
     XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR" \
     run _dvw_tui_ensure_socket
   [ "$status" -ne 0 ]
+}
+
+@test "_dvw_tui_ensure_socket: healthy forward socket is reused without ssh" {
+  local fwd="$BATS_TEST_TMPDIR/dvw-catalog-fwd-$(id -u).sock"
+  # Create a real AF_UNIX socket at the forward path to satisfy [[ -S ]]
+  python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])" "$fwd"
+  # Stub curl to succeed (socket is "healthy")
+  printf '#!/bin/sh\nexit 0\n' > "$STUB_DIR/curl"; chmod +x "$STUB_DIR/curl"
+  # Stub ssh to record a marker and fail — it must NOT be called
+  local marker="$BATS_TEST_TMPDIR/ssh-called"
+  printf '#!/bin/sh\ntouch "%s"\nexit 1\n' "$marker" > "$STUB_DIR/ssh"; chmod +x "$STUB_DIR/ssh"
+  PATH="$STUB_DIR:$PATH" \
+    DVW_CATALOG_SOCK=/nonexistent/catalog.sock \
+    XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR" \
+    run _dvw_tui_ensure_socket
+  [ "$status" -eq 0 ]
+  [ "$output" = "$fwd" ]
+  [ ! -f "$marker" ]
 }

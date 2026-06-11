@@ -23,8 +23,9 @@ _dvw_tui_available() {
 # On the box: the service socket itself. Remote: an ssh -L UDS forward,
 # reused across launches when still healthy.
 _dvw_tui_ensure_socket() {
-  if [[ -S "${DVW_CATALOG_SOCK:-/run/dvw-catalog/catalog.sock}" ]]; then
-    printf '%s' "${DVW_CATALOG_SOCK:-/run/dvw-catalog/catalog.sock}"
+  local sock="${DVW_CATALOG_SOCK:-/run/dvw-catalog/catalog.sock}"
+  if [[ -S "$sock" ]]; then
+    printf '%s' "$sock"
     return 0
   fi
   local dir="${XDG_RUNTIME_DIR:-/tmp}"
@@ -37,7 +38,7 @@ _dvw_tui_ensure_socket() {
   rm -f "$fwd"
   ssh -f -N -o BatchMode=yes -o ConnectTimeout=5 \
       -o ExitOnForwardFailure=yes -o StreamLocalBindUnlink=yes \
-      -L "$fwd:${DVW_CATALOG_SOCK:-/run/dvw-catalog/catalog.sock}" \
+      -L "$fwd:$sock" \
       "${DVW_CATALOG_HOST:-vossisrv}" 2>/dev/null || return 1
   [[ -S "$fwd" ]] || return 1
   printf '%s' "$fwd"
