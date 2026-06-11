@@ -28,6 +28,8 @@ dvw_load_config
 . "$DVW_ROOT/lib/ui.sh"
 # shellcheck source=lib/update-check.sh
 . "$DVW_ROOT/lib/update-check.sh"
+# shellcheck source=lib/tui-launch.sh
+. "$DVW_ROOT/lib/tui-launch.sh"
 
 main() {
   # Pull out --dry-run (anywhere in argv) before subcommand dispatch.
@@ -82,7 +84,13 @@ main() {
     doctor)
       cmd_doctor ;;
     "")
-      ui_top_menu ;;
+      if _dvw_tui_available; then
+        dvw_tui_launch || ui_top_menu
+      else
+        command -v uv >/dev/null 2>&1 \
+          || ui_info "tip: install uv for the dvw TUI (https://docs.astral.sh/uv/) — falling back to menu"
+        ui_top_menu
+      fi ;;
     *)
       cmd_connect "$1" ;;
   esac
