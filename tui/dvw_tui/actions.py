@@ -14,10 +14,6 @@ import os
 import subprocess
 from dataclasses import dataclass
 
-# IDEs that open out-of-terminal; everything else gets the terminal.
-GUI_IDES = {"cursor", "vscode", "jetbrains"}
-
-
 def dvw_bin() -> str:
     return os.environ.get("DVW_BIN", "dvw")
 
@@ -38,8 +34,12 @@ def remove(workspace_id: str) -> list[str]:
     return [dvw_bin(), "rm", workspace_id]
 
 
-def connect(workspace_id: str) -> list[str]:
-    return [dvw_bin(), workspace_id]
+def connect(workspace_id: str, mode: str | None = None) -> list[str]:
+    """Connect argv. With an explicit mode ("ssh"/"cursor"/"both") the bash
+    side skips its gum chooser (--ssh/--cursor/--both)."""
+    if mode is None:
+        return [dvw_bin(), workspace_id]
+    return [dvw_bin(), workspace_id, f"--{mode}"]
 
 
 def new() -> list[str]:
@@ -50,10 +50,12 @@ def doctor() -> list[str]:
     return [dvw_bin(), "doctor"]
 
 
-def connect_mode(ide: str) -> str:
-    """'background' keeps the TUI up (GUI IDE); 'suspend' hands over the
-    terminal (ssh/tmux/none and anything unrecognized — safe default)."""
-    return "background" if ide in GUI_IDES else "suspend"
+def connect_mode(mode: str) -> str:
+    """Map a chosen connect MODE ("ssh"/"cursor"/"both") to an execution
+    style: 'background' keeps the TUI up (cursor opens out-of-terminal);
+    'suspend' hands over the terminal (ssh, both, and anything
+    unrecognized — safe default, since "both" includes an ssh session)."""
+    return "background" if mode == "cursor" else "suspend"
 
 
 @dataclass

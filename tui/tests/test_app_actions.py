@@ -3,9 +3,12 @@ we assert the right argv/mode is chosen, not that devpod runs."""
 
 import contextlib
 
+from textual.widgets import OptionList
+
 from dvw_tui import actions
 from dvw_tui.app import DvwApp
 from dvw_tui.screens.confirm import ConfirmScreen
+from dvw_tui.screens.connect import ConnectScreen
 
 
 async def test_connect_gui_runs_background(fake_client, monkeypatch):
@@ -15,9 +18,15 @@ async def test_connect_gui_runs_background(fake_client, monkeypatch):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")          # alpha, ide=cursor -> background
+        await pilot.press("enter")          # alpha -> ConnectScreen
         await pilot.pause()
-        assert calls["bg"] == ["dvw", "alpha"]
+        assert isinstance(app.screen, ConnectScreen)
+        option_list = app.screen.query_one("#connect-list", OptionList)
+        # alpha's catalog ide is cursor -> cursor preselected
+        assert option_list.get_option_at_index(option_list.highlighted).id == "cursor"
+        await pilot.press("enter")          # cursor -> background
+        await pilot.pause()
+        assert calls["bg"] == ["dvw", "alpha", "--cursor"]
 
 
 async def test_connect_terminal_suspends(fake_client, monkeypatch):
@@ -29,11 +38,16 @@ async def test_connect_terminal_suspends(fake_client, monkeypatch):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("down")           # focus beta, ide=ssh -> suspend
+        await pilot.press("down")           # focus beta, ide=ssh
         await pilot.pause()
-        await pilot.press("enter")
+        await pilot.press("enter")          # -> ConnectScreen
         await pilot.pause()
-        assert calls["suspended"] == ["dvw", "beta"]
+        assert isinstance(app.screen, ConnectScreen)
+        option_list = app.screen.query_one("#connect-list", OptionList)
+        assert option_list.get_option_at_index(option_list.highlighted).id == "ssh"
+        await pilot.press("enter")          # ssh -> suspend
+        await pilot.pause()
+        assert calls["suspended"] == ["dvw", "beta", "--ssh"]
 
 
 async def test_stop_runs_suspended(fake_client, monkeypatch):

@@ -22,12 +22,18 @@ def test_argv_builders(monkeypatch):
     assert actions.doctor() == ["dvw", "doctor"]
 
 
-def test_connect_mode_gui_vs_terminal():
+def test_connect_with_explicit_mode(monkeypatch):
+    monkeypatch.setenv("DVW_BIN", "dvw")
+    assert actions.connect("alpha", "ssh") == ["dvw", "alpha", "--ssh"]
+    assert actions.connect("alpha", "cursor") == ["dvw", "alpha", "--cursor"]
+    assert actions.connect("alpha", "both") == ["dvw", "alpha", "--both"]
+    assert actions.connect("alpha", None) == ["dvw", "alpha"]
+
+
+def test_connect_mode_maps_mode_to_execution_style():
     assert actions.connect_mode("cursor") == "background"
-    assert actions.connect_mode("vscode") == "background"
-    assert actions.connect_mode("jetbrains") == "background"
     assert actions.connect_mode("ssh") == "suspend"
-    assert actions.connect_mode("none") == "suspend"
+    assert actions.connect_mode("both") == "suspend"
     assert actions.connect_mode("anything-else") == "suspend"
 
 

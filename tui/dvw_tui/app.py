@@ -11,6 +11,7 @@ from textual.app import App
 from . import actions
 from .client import CatalogClient, Workspace
 from .screens.confirm import ConfirmScreen
+from .screens.connect import ConnectScreen
 from .screens.doctor import DoctorScreen
 from .screens.main import MainScreen
 from .screens.menu import MenuScreen
@@ -83,13 +84,19 @@ class DvwApp(App):
     def do_connect(self, workspace: Workspace | None) -> None:
         if workspace is None:
             return
-        argv = actions.connect(workspace.id)
-        if actions.connect_mode(workspace.ide) == "background":
-            actions.run_background(argv)
-            self.notify(f"connecting {workspace.id} ({workspace.ide})…",
-                        title="dvw")
-        else:
-            self._run_suspended(argv)
+
+        def on_mode(mode: str | None) -> None:
+            if mode is None:
+                return
+            argv = actions.connect(workspace.id, mode)
+            if actions.connect_mode(mode) == "background":
+                actions.run_background(argv)
+                self.notify(f"connecting {workspace.id} (cursor)…",
+                            title="dvw")
+            else:
+                self._run_suspended(argv)
+
+        self.push_screen(ConnectScreen(workspace.id, workspace.ide), on_mode)
 
     def do_simple_action(self, name: str, workspace: Workspace | None) -> None:
         if workspace is None:
