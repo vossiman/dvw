@@ -12,7 +12,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 |------|---------|
 | `dvw` | CLI entrypoint (sources `lib/*`) |
 | `lib/` | catalog, ssh-sync, connect, wizard, commands, UI |
-| `catalog-service/` | the `dvw-catalog` HTTP service (runs on vossisrv), its deploy scripts and migration tooling |
+| `catalog-service/` | the `dvw-catalog` HTTP service (runs on vossisrv) and its deploy scripts |
 | `dvw-install.sh` | idempotent client bootstrap for Mint and WSL |
 | `tests/bats/` | bats test suite for catalog logic |
 | `tmux/` | host-side tmux config |
@@ -43,13 +43,14 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 
 ```bash
 # first time, as vossi on vossisrv
-git clone -b main git@github.com:vossiman/dvw.git /opt/dvw
+sudo install -d -o "$USER" -g "$USER" /opt/dvw
+git clone -b main https://github.com/vossiman/dvw.git /opt/dvw
 /opt/dvw/catalog-service/deploy/host-install.sh   # idempotent; installs+enables the systemd unit, smoke-tests /v1/health
-# one-time cutover from the old Dropbox catalog:
-cd /opt/dvw-catalog && uv run dvw-catalog-migrate \
-    --from ~/Dropbox-remote/dvw/catalog.json --blueprint ~/Dropbox-remote/dvw/ssh-blueprint.conf
-sudo systemctl restart dvw-catalog
 ```
+The catalog starts empty. To seed it from an existing `catalog.json` (and
+`ssh-blueprint.conf`), stop the service, copy the files into
+`/var/lib/dvw-catalog/`, then start it again — the service loads + validates
+them on startup.
 
 Updates: `/opt/dvw/catalog-service/deploy/host-update.sh`. No TCP port — the service binds a unix socket; auth is SSH + `0660 vossi:vossi` socket perms. Full detail in [`catalog-service/README.md`](catalog-service/README.md). Verify:
 
@@ -294,6 +295,6 @@ Catalog logic is covered by bats. Wizard and TUI behavior is verified manually.
 
 ## See also
 
-- [`catalog-service/README.md`](catalog-service/README.md) — the `dvw-catalog` service (deploy, migration, API)
+- [`catalog-service/README.md`](catalog-service/README.md) — the `dvw-catalog` service (deploy, API)
 - [`tmux/README.md`](tmux/README.md) — host-side tmux config installation
 - [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — current quirks log

@@ -63,17 +63,16 @@ app/                FastAPI service
   docker_inspect.py local docker: resolver, deep inspect, bulk status, orphans
   deps.py           DI providers, auth, threadpool bridge, resolve TTL cache
   routers/          health, catalog, workspaces, repos, defaults, blueprint, containers
-  migrate.py        one-shot importer from the old Dropbox catalog
 clients/            pointer to the dvw bash shim (the shim itself lives in dvw/lib/)
 deploy/             systemd units, backup timer, deploy.sh, socket-proxy hardening
-tests/              pytest suite (CRUD, resolver tie-break parity, store, migration)
+tests/              pytest suite (CRUD, resolver tie-break parity, store)
 ```
 
 ## Develop
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-.venv/bin/python -m pytest -q          # 34 tests, no docker daemon required
+.venv/bin/python -m pytest -q          # 36 tests, no docker daemon required
 uv run uvicorn app.main:app --reload   # dev server on http://127.0.0.1:8000
 ```
 
@@ -89,7 +88,8 @@ box (so updates are `git pull`, no laptop in the loop).
 **First time** — run as `vossi` on vossisrv:
 
 ```bash
-git clone -b main git@github.com:vossiman/dvw.git /opt/dvw
+sudo install -d -o "$USER" -g "$USER" /opt/dvw
+git clone -b main https://github.com/vossiman/dvw.git /opt/dvw
 /opt/dvw/catalog-service/deploy/host-install.sh
 # (until PR #9 merges: clone -b feat/catalog-service-client, or BRANCH=feat/catalog-service-client host-install.sh)
 ```
@@ -106,13 +106,17 @@ and smoke-tests `/v1/health`.
 /opt/dvw/catalog-service/deploy/host-update.sh   # git pull + uv sync + restart
 ```
 
-**First-time cutover from the old Dropbox catalog:**
+**Seeding the catalog** — the service starts with an empty catalog. To import an
+existing `catalog.json` (and `ssh-blueprint.conf`), copy them into the data dir
+while the service is stopped (so the running process can't overwrite them), then
+start it again — `catalog.json` is loaded and validated on startup:
 
 ```bash
-cd /opt/dvw-catalog && uv run dvw-catalog-migrate \
-    --from ~/Dropbox-remote/dvw/catalog.json \
-    --blueprint ~/Dropbox-remote/dvw/ssh-blueprint.conf
-sudo systemctl restart dvw-catalog
+sudo systemctl stop dvw-catalog
+# from wherever the files live, e.g. your dev box:
+scp catalog.json       vossi@vossisrv:/var/lib/dvw-catalog/catalog.json
+scp ssh-blueprint.conf vossi@vossisrv:/var/lib/dvw-catalog/ssh-blueprint.conf
+sudo systemctl start dvw-catalog
 ```
 
 Alternative (no git on the box): `REMOTE=vossi@vossisrv ./deploy/deploy.sh`
