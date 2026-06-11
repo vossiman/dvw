@@ -293,16 +293,16 @@ cmd_doctor() {
         IFS=$'\t' read -r o_host o_name o_state o_mstatus o_msrc o_wsdest <<<"$info"
         case "$o_mstatus" in
           alive)
-            ui_info "          $orphan_uid · $o_name · $o_state · /workspaces/$o_wsdest mount alive (may contain data)"
+            ui_info "          container $o_name · uid $orphan_uid · $o_state · /workspaces/$o_wsdest mount alive (may contain data)"
             ;;
           deleted)
-            ui_info "          $orphan_uid · $o_name · $o_state · /workspaces/$o_wsdest mount stale (deleted inode — workspaces data unrecoverable)"
+            ui_info "          container $o_name · uid $orphan_uid · $o_state · /workspaces/$o_wsdest mount stale (deleted inode — workspaces data unrecoverable)"
             ;;
           nomount)
-            ui_info "          $orphan_uid · $o_name · $o_state · no /workspaces mount"
+            ui_info "          container $o_name · uid $orphan_uid · $o_state · no /workspaces mount"
             ;;
           *)
-            ui_info "          $orphan_uid · $o_name · $o_state · mount status unknown"
+            ui_info "          container $o_name · uid $orphan_uid · $o_state · mount status unknown"
             ;;
         esac
       else
@@ -648,6 +648,7 @@ _dvw_render_audit_output() {
   local host="$1" out="$2"
   echo
   local in_block=0
+  local -a rm_names=()
   local b_uid b_name b_state b_mstatus b_msrc b_wsdest
   local verdict branch modified unpushed stashes upstream err other_flag
   local line
@@ -662,6 +663,7 @@ _dvw_render_audit_output() {
     if [[ "$line" == "===ORPHAN_END===" ]]; then
       in_block=0
       _dvw_print_one_orphan_audit
+      [[ -n "$b_name" ]] && rm_names+=("$b_name")
       continue
     fi
     if (( in_block )); then
@@ -680,16 +682,22 @@ _dvw_render_audit_output() {
   done <<<"$out"
 
   echo
-  ui_info "to remove an orphan after verifying it has no data you need:"
-  ui_info "  ssh $host 'docker rm -f <container-name>'"
-  ui_info "(dvw does not perform this for you on purpose — destructive ops stay manual)"
+  if (( ${#rm_names[@]} )); then
+    ui_info "to remove an orphan after verifying it has no data you need, run its"
+    ui_info "container name through docker rm -f (the 'container:' field above):"
+    local _n
+    for _n in "${rm_names[@]}"; do
+      ui_info "  ssh $host 'docker rm -f $_n'"
+    done
+    ui_info "(dvw does not perform this for you on purpose — destructive ops stay manual)"
+  fi
 }
 
 # Print one orphan's audit summary using the variables set in the calling
 # scope (b_*, verdict, branch, modified, unpushed, stashes, upstream, err).
 # Verdict emoji: ✓ clean, ⚠ has-work, ✗ unrecoverable, ? unknown.
 _dvw_print_one_orphan_audit() {
-  local header="$b_uid · $b_name · $b_state · /workspaces/$b_wsdest"
+  local header="container: $b_name   (uid $b_uid · $b_state · /workspaces/$b_wsdest)"
   printf '  %s%s%s\n' "$(_ansi "$DVW_ACCENT" bold)" "$header" "$(ui_reset)"
   case "$verdict" in
     no-workspaces-mount)
