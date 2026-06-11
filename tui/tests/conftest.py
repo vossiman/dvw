@@ -9,6 +9,7 @@ class FakeClient:
 
     def __init__(self):
         self.fail = False
+        self.inspect_calls = []
         self._workspaces = [
             Workspace(id="alpha", repo="git@github.com:vossiman/alpha.git",
                       branch="main", ide="cursor", provider="vossisrv",
@@ -42,6 +43,7 @@ class FakeClient:
         return list(self._workspaces)
 
     async def inspect(self, workspace_id):
+        self.inspect_calls.append(workspace_id)
         self._check()
         return self._inspect[workspace_id]
 

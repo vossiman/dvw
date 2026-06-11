@@ -10,6 +10,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import DataTable, Footer, Input, Static
 
 from ..client import CatalogError, Workspace
@@ -42,6 +43,10 @@ class MainScreen(Screen):
         super().__init__()
         self._workspaces: list[Workspace] = []
         self._filter = ""
+        # Last inspect response per workspace id; rendered instantly on
+        # highlight, freshened by a debounced re-fetch.
+        self._inspect_cache: dict[str, dict] = {}
+        self._inspect_timer: Timer | None = None
 
     # ---- layout -----------------------------------------------------------
 
@@ -130,21 +135,42 @@ class MainScreen(Screen):
         self._update_inspect()
 
     def _update_inspect(self) -> None:
+        if self._inspect_timer is not None:
+            self._inspect_timer.stop()
+            self._inspect_timer = None
         ws_id = self.focused_workspace_id()
         if ws_id is None:
             self.query_one("#inspect-body", Static).update(
                 Text("no workspaces", style=SUBTLE))
             return
-        self._fetch_inspect(ws_id)
+        # Instant render: cached data if we have it, lightweight placeholder
+        # otherwise. Either way the (1-2 s) HTTP fetch is debounced — it only
+        # fires once the cursor has rested on the row for a moment, so flying
+        # through rows doesn't hammer the inspect endpoint.
+        cached = self._inspect_cache.get(ws_id)
+        if cached is not None:
+            self._render_inspect(ws_id, cached)
+        else:
+            self._render_inspect_placeholder(ws_id)
+        self._inspect_timer = self.set_timer(
+            0.3, lambda ws_id=ws_id: self._fetch_inspect(ws_id))
 
-    @work(exclusive=True, group="inspect")
-    async def _fetch_inspect(self, ws_id: str) -> None:
-        body = self.query_one("#inspect-body", Static)
-        try:
-            data = await self.app.client.inspect(ws_id)
-        except CatalogError:
-            body.update(Text("inspect unavailable", style=SUBTLE))
-            return
+    def _render_inspect_placeholder(self, ws_id: str) -> None:
+        """Instant stand-in while no cached inspect data exists yet."""
+        liveness = "unknown"
+        for w in self._workspaces:
+            if w.id == ws_id:
+                liveness = w.liveness
+                break
+        text = Text()
+        text.append(f" {ws_id}\n", style=f"bold {ACCENT}")
+        text.append(" ")
+        text.append_text(liveness_cell(liveness))
+        text.append("\n\n")
+        text.append(" loading…", style=SUBTLE)
+        self.query_one("#inspect-body", Static).update(text)
+
+    def _render_inspect(self, ws_id: str, data: dict) -> None:
         text = Text()
         text.append(f" {ws_id}\n", style=f"bold {ACCENT}")
         text.append(" ")
@@ -153,7 +179,26 @@ class MainScreen(Screen):
         for label, value in inspect_lines(data):
             text.append(f" {label:<10}", style=SUBTLE)
             text.append(f"{value}\n")
-        body.update(text)
+        self.query_one("#inspect-body", Static).update(text)
+
+    @work(exclusive=True, group="inspect")
+    async def _fetch_inspect(self, ws_id: str) -> None:
+        try:
+            data = await self.app.client.inspect(ws_id)
+        except CatalogError:
+            # Keep a stale cached render if we have one; only show the
+            # failure note when the row is still focused and has no cache.
+            if (self.focused_workspace_id() == ws_id
+                    and ws_id not in self._inspect_cache):
+                self.query_one("#inspect-body", Static).update(
+                    Text("inspect unavailable", style=SUBTLE))
+            return
+        self._inspect_cache[ws_id] = data
+        # The cursor may have moved during the await — only re-render if
+        # this workspace is still the focused one.
+        if self.focused_workspace_id() != ws_id:
+            return
+        self._render_inspect(ws_id, data)
 
     # ---- status header ----------------------------------------------------
 

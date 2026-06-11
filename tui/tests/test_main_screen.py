@@ -17,10 +17,40 @@ async def test_table_lists_workspaces(fake_client):
 async def test_inspect_pane_shows_focused_workspace(fake_client):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
-        await pilot.pause()
+        # The inspect fetch is debounced (0.3 s) — wait for it to fire.
+        await pilot.pause(0.4)
         pane = app.query_one("#inspect-body")
         text = str(pane.content)
         assert "devpod-alpha" in text
+
+
+async def test_inspect_debounced_while_scrolling(fake_client):
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.4)  # initial debounce elapses, alpha fetched
+        baseline = len(fake_client.inspect_calls)
+        await pilot.press("down")
+        await pilot.press("up")
+        await pilot.pause()  # well under the 0.3 s debounce
+        assert len(fake_client.inspect_calls) == baseline
+        await pilot.pause(0.4)  # past the debounce
+        assert len(fake_client.inspect_calls) == baseline + 1
+        assert fake_client.inspect_calls[-1] == "alpha"
+
+
+async def test_inspect_renders_from_cache_instantly(fake_client):
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        # Prime the cache: let the debounced fetch for alpha complete.
+        await pilot.pause(0.4)
+        assert "devpod-alpha" in str(app.query_one("#inspect-body").content)
+        baseline = len(fake_client.inspect_calls)
+        await pilot.press("down")
+        await pilot.press("up")
+        await pilot.pause()  # before the debounce — no fetch yet
+        text = str(app.query_one("#inspect-body").content)
+        assert "devpod-alpha" in text  # rendered straight from cache
+        assert len(fake_client.inspect_calls) == baseline
 
 
 async def test_error_banner_on_catalog_failure(fake_client):
