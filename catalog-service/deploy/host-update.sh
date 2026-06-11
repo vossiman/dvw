@@ -38,19 +38,22 @@ echo "==> restart"
 sudo systemctl restart dvw-catalog.service
 
 echo "==> smoke test"
-# Retry briefly: restart returns once the unit execs, but uvicorn may not have
-# bound $SOCK yet. On real failure, point at the upstream diagnostics instead of
-# letting curl's misleading "connect to localhost port 80" be the last word.
-for i in 1 2 3; do
-  curl -fsS --unix-socket "$SOCK" http://localhost/v1/health && break
-  if [ "$i" = 3 ]; then
-    echo >&2
-    echo "smoke test FAILED — service did not answer on $SOCK" >&2
-    echo "  sudo systemctl status dvw-catalog.service" >&2
-    echo "  journalctl -xeu dvw-catalog.service | tail -50" >&2
-    exit 1
+# Poll QUIETLY until the socket answers: `systemctl restart` returns once the
+# unit execs, but uvicorn needs ~1s to bind $SOCK, so the first attempt(s) fail
+# by design. Suppress those expected per-attempt curl errors (no misleading
+# "connect to localhost port 80" noise) and only surface diagnostics if the
+# service genuinely never comes up within the budget.
+ok=0
+for _ in $(seq 1 10); do
+  if body=$(curl -fsS --unix-socket "$SOCK" http://localhost/v1/health 2>/dev/null); then
+    printf '%s\n' "$body"; ok=1; break
   fi
-  sleep 1
+  sleep 0.5
 done
-echo
+if [ "$ok" != 1 ]; then
+  echo "smoke test FAILED — service did not answer on $SOCK after ~5s" >&2
+  echo "  sudo systemctl status dvw-catalog.service" >&2
+  echo "  journalctl -xeu dvw-catalog.service | tail -50" >&2
+  exit 1
+fi
 echo "update ok"
