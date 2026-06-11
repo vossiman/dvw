@@ -36,7 +36,7 @@ class MainScreen(Screen):
         Binding("x", "menu", "menu"),
         Binding("slash", "filter", "filter", key_display="/"),
         Binding("R", "refresh", "refresh"),
-        Binding("q", "quit", "quit"),
+        Binding("q", "app.quit", "quit"),
     ]
 
     def __init__(self) -> None:

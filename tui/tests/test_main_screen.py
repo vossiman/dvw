@@ -4,6 +4,15 @@ from dvw_tui.app import DvwApp
 from dvw_tui.screens.main import MainScreen, WorkspaceTable
 
 
+async def test_q_quits_the_app(fake_client):
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("q")
+        await pilot.pause()
+        assert not app.is_running
+
+
 async def test_table_lists_workspaces(fake_client):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
