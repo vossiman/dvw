@@ -11,6 +11,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import Footer, RichLog, Static
+from textual.worker import get_current_worker
 
 from .. import actions
 from ..render import SUBTLE
@@ -40,15 +41,18 @@ class DoctorScreen(Screen):
 
     @work(exclusive=True, thread=True)
     def _run_doctor(self) -> None:
+        worker = get_current_worker()
         log = self.query_one("#doctor-log", RichLog)
         self.app.call_from_thread(log.clear)
         self.app.call_from_thread(
             log.write, Text("running checks…", style=SUBTLE))
         result = actions.run_captured(actions.doctor())
-        self._last_output = result.output
+        if worker.is_cancelled:
+            return
         report = Text.from_ansi(result.output)
 
         def render() -> None:
+            self._last_output = result.output
             log.clear()
             log.write(report)
             if not result.ok:
