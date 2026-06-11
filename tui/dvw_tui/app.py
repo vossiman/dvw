@@ -13,6 +13,8 @@ from .client import CatalogClient, Workspace
 from .screens.confirm import ConfirmScreen
 from .screens.doctor import DoctorScreen
 from .screens.main import MainScreen
+from .screens.menu import MenuScreen
+from .screens.orphans import OrphansScreen
 
 
 class DvwApp(App):
@@ -20,7 +22,7 @@ class DvwApp(App):
 
     CSS_PATH = "theme.tcss"
     TITLE = "dvw"
-    SCREENS = {"doctor": DoctorScreen}
+    SCREENS = {"doctor": DoctorScreen, "orphans": OrphansScreen}
 
     def __init__(self, client: object | None = None) -> None:
         super().__init__()
@@ -125,7 +127,27 @@ class DvwApp(App):
         self._run_suspended(actions.new())
 
     def open_context_menu(self) -> None:
-        pass  # Task 8
+        main = self.screen
+        if not isinstance(main, MainScreen):
+            return
+        workspace = main.focused_workspace()
+
+        def on_result(action: str | None) -> None:
+            if action is None:
+                return
+            if action == "connect":
+                self.do_connect(workspace)
+            elif action in ("stop", "start"):
+                self.do_simple_action(action, workspace)
+            elif action in ("rebuild", "remove"):
+                self.do_confirmed_action(action, workspace)
+            elif action == "new":
+                self.do_new()
+            elif action in ("doctor", "orphans"):
+                self.push_screen(action)
+
+        self.push_screen(
+            MenuScreen(workspace.id if workspace else None), on_result)
 
 
 def main() -> None:
