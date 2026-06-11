@@ -65,7 +65,7 @@ app/                FastAPI service
   deps.py           DI providers, auth, threadpool bridge, resolve TTL cache
   routers/          health, catalog, workspaces, repos, defaults, blueprint, containers
 clients/            pointer to the dvw bash shim (the shim itself lives in dvw/lib/)
-deploy/             systemd units, backup timer, deploy.sh, socket-proxy hardening
+deploy/             systemd units, backup timer, host-install.sh/host-update.sh, socket-proxy hardening
 tests/              pytest suite (CRUD, resolver tie-break parity, store)
 ```
 
@@ -122,9 +122,6 @@ scp ssh-blueprint.conf vossi@vossisrv:/var/lib/dvw-catalog/ssh-blueprint.conf
 # then on vossisrv (the .service suffix matches the passwordless sudoers rule):
 sudo systemctl restart dvw-catalog.service
 ```
-
-Alternative (no git on the box): `REMOTE=vossi@vossisrv ./deploy/deploy.sh`
-rsyncs from a laptop instead.
 
 Hardening (recommended): front the Docker socket with a read-mostly proxy and
 drop the `docker` group — see `deploy/docker-socket-proxy.md`.
