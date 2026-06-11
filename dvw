@@ -2,7 +2,7 @@
 # dvw — DevPod workspace orchestrator. See devpod/README.md.
 set -euo pipefail
 
-DVW_ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+DVW_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # Optional per-machine config (catalog host / provider). Loaded BEFORE the libs
 # so it can set DVW_* values the libs then fall back on. env > file > default.
 # shellcheck source=lib/config.sh
@@ -94,8 +94,11 @@ main() {
         ui_top_menu
       fi ;;
     *)
-      cmd_connect "$1" ;;
+      cmd_connect "$@" ;;
   esac
 }
 
-main "$@"
+# Sourceable for tests: only dispatch when executed directly.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
