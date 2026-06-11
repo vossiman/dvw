@@ -12,6 +12,7 @@ model its internals — devpod's schema is theirs to change.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -29,10 +30,20 @@ def utcnow_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _default_provider() -> str:
+    """devpod provider name stamped on entries that don't carry one.
+
+    Env-driven (CATALOG_DEFAULT_PROVIDER) so the catalog isn't hardwired to one
+    site's provider; read at instantiation, not import, so it tracks the env the
+    service runs under. Real catalog data overrides it per entry.
+    """
+    return os.getenv("CATALOG_DEFAULT_PROVIDER", "vossisrv")
+
+
 class Defaults(BaseModel):
     model_config = ConfigDict(extra="allow")
     ide: str = "cursor"
-    provider: str = "vossisrv"
+    provider: str = Field(default_factory=_default_provider)
 
 
 class Repo(BaseModel):
@@ -51,7 +62,7 @@ class Workspace(BaseModel):
     repo: str
     branch: str
     ide: str = "cursor"
-    provider: str = "vossisrv"
+    provider: str = Field(default_factory=_default_provider)
     # Defaults are None (not auto-stamped) so loading a hand-edited/partial
     # legacy entry round-trips faithfully without jumping to the top of MRU.
     # New workspaces get stamped on the create path (routers/workspaces.py).

@@ -86,8 +86,13 @@ echo "==> 5/7 env file (once)"
   install -m 0640 "$SVC_DIR/deploy/catalog.env.example" "$SVC_DIR/catalog.env"
 
 echo "==> 6/7 systemd units + passwordless-restart sudoers"
+# The committed units default to User=vossi/Group=vossi; render them for whoever
+# is installing so the service isn't tied to a specific account. Usernames/group
+# names are [A-Za-z0-9_-] so they're safe in the sed replacement.
+RUN_GROUP="$(id -gn)"
 for u in dvw-catalog.service dvw-catalog-backup.service dvw-catalog-backup.timer; do
-  sudo install -m 0644 "$SVC_DIR/deploy/$u" "/etc/systemd/system/$u"
+  sed -e "s/^User=vossi$/User=$USER/" -e "s/^Group=vossi$/Group=$RUN_GROUP/" \
+      "$SVC_DIR/deploy/$u" | sudo install -m 0644 /dev/stdin "/etc/systemd/system/$u"
 done
 # Narrow drop-in so host-update.sh can restart without a password prompt.
 # Scoped to exactly these three commands on this one unit. Comment out the

@@ -7,6 +7,8 @@ Requires=docker.service
 
 [Service]
 Type=exec
+# User/Group default to vossi; host-install.sh rewrites them to the installing
+# account, so the unit isn't tied to a specific user.
 User=vossi
 Group=vossi
 # Needed only when talking to the LOCAL docker socket directly. When using the
