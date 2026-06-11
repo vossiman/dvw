@@ -75,8 +75,11 @@ class OrphansScreen(Screen):
         table = self.query_one("#orphans-table", DataTable)
         if table.row_count == 0 or table.cursor_row is None:
             return None
-        key = str(table.coordinate_to_cell_key(
-            table.cursor_coordinate).row_key.value)
+        try:
+            key = str(table.coordinate_to_cell_key(
+                table.cursor_coordinate).row_key.value)
+        except Exception:
+            return None
         for o in self._orphans:
             if (o.get("container_name") or o.get("container_id")) == key:
                 return o
@@ -94,7 +97,7 @@ class OrphansScreen(Screen):
 
         def on_result(confirmed: bool | None) -> None:
             if confirmed:
-                self.app._run_suspended(["ssh", host, "docker", "rm", "-f", name])
+                self.app.do_remove_orphan(host, name)
                 self.refresh_orphans()
 
         self.app.push_screen(ConfirmScreen(message, danger=True), on_result)

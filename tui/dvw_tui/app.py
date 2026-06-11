@@ -126,6 +126,11 @@ class DvwApp(App):
     def do_new(self) -> None:
         self._run_suspended(actions.new())
 
+    def do_remove_orphan(self, host: str, container_name: str) -> None:
+        """Guarded orphan removal — suspended so the user sees exactly
+        what runs on the provider."""
+        self._run_suspended(["ssh", host, "docker", "rm", "-f", container_name])
+
     def open_context_menu(self) -> None:
         main = self.screen
         if not isinstance(main, MainScreen):
