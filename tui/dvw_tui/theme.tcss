@@ -1,0 +1,194 @@
+/* Nord theme — single source of styling. Palette mirrors lib/ui.sh. */
+
+$accent: #88c0d0;
+$subtle: #616e88;
+$green: #a3be8c;
+$red: #bf616a;
+$grey: #4c566a;
+$bg: #2e3440;
+$bg-panel: #3b4252;
+$fg: #d8dee9;
+
+Screen {
+    background: $bg;
+    color: $fg;
+}
+
+/* Nord scrollbars everywhere — the defaults are harsh black. */
+* {
+    scrollbar-background: $bg;
+    scrollbar-background-hover: $bg;
+    scrollbar-background-active: $bg;
+    scrollbar-color: $grey;
+    scrollbar-color-hover: $subtle;
+    scrollbar-color-active: $subtle;
+    scrollbar-size-vertical: 1;
+}
+
+#status-header {
+    height: 1;
+    padding: 0 1;
+    background: $bg-panel;
+}
+
+#error-banner {
+    display: none;
+    height: auto;
+    padding: 0 1;
+    background: $red 20%;
+    color: $red;
+    border: round $red;
+}
+
+#panes {
+    height: 1fr;
+}
+
+#panes.dimmed {
+    opacity: 40%;
+}
+
+#left {
+    width: 55%;
+    border: round $accent;
+    border-title-color: $accent;
+}
+
+#right {
+    width: 45%;
+    border: round $grey;
+    padding: 0 1;
+}
+
+#left-title, #right-title {
+    color: $accent;
+    text-style: bold;
+    height: 1;
+}
+
+#ws-table {
+    height: 1fr;
+    background: $bg;
+}
+
+#ws-table > .datatable--cursor {
+    background: $bg-panel;
+}
+
+#ws-table > .datatable--header {
+    background: $bg;
+    color: $subtle;
+}
+
+#filter-input {
+    display: none;
+    border: round $accent;
+}
+
+Footer {
+    background: $bg-panel;
+}
+
+Footer FooterKey .footer-key--key {
+    color: $accent;
+}
+
+ConfirmScreen {
+    align: center middle;
+}
+
+#confirm-box {
+    width: auto;
+    max-width: 70;
+    height: auto;
+    padding: 1 2;
+    background: $bg-panel;
+    border: round $accent;
+}
+
+#confirm-box.danger {
+    border: round $red;
+}
+
+#confirm-message {
+    padding-bottom: 1;
+}
+
+#confirm-buttons {
+    height: auto;
+    align-horizontal: center;
+}
+
+#confirm-buttons Button {
+    margin: 0 1;
+}
+
+#doctor-title {
+    color: $accent;
+    text-style: bold;
+    height: 1;
+    padding: 0 1;
+}
+
+#doctor-log {
+    border: round $grey;
+    background: $bg;
+    padding: 0 1;
+}
+
+#orphans-title {
+    color: $red;
+    text-style: bold;
+    height: 1;
+    padding: 0 1;
+}
+
+#orphans-table {
+    border: round $red;
+    background: $bg;
+}
+
+MenuScreen, ConnectScreen {
+    align: center middle;
+}
+
+#menu-box, #connect-box {
+    width: 40;
+    height: auto;
+    background: $bg-panel;
+    border: round $accent;
+    padding: 1;
+}
+
+#menu-title, #connect-title {
+    color: $accent;
+    text-style: bold;
+}
+
+#menu-list, #connect-list {
+    width: 100%;
+    height: auto;
+    background: $bg-panel;
+    border: none;
+    padding: 0;
+    background-tint: $fg 0%;
+}
+
+#menu-list > .option-list--option,
+#connect-list > .option-list--option {
+    padding: 0 1;
+}
+
+#menu-list > .option-list--option-highlighted,
+#connect-list > .option-list--option-highlighted {
+    background: $bg-panel;
+    color: $accent;
+    text-style: bold;
+}
+
+#menu-list:focus > .option-list--option-highlighted,
+#connect-list:focus > .option-list--option-highlighted {
+    background: $bg-panel;
+    color: $accent;
+    text-style: bold;
+}

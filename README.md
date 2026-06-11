@@ -309,6 +309,20 @@ Prerequisites:
 
 Editing `.devcontainer/devcontainer.json` after a container exists doesn't update the in-place container — DevPod baked the old hooks at creation. Recreate to apply new hooks.
 
+## TUI
+
+Bare `dvw` opens a lazydocker-style TUI (requires [uv](https://docs.astral.sh/uv/);
+falls back to the gum menu without it, or with `DVW_NO_TUI=1`).
+
+- left: workspaces with live state (● running / ⚠ stale / ○ stopped / ✗ absent)
+- right: inspect detail (health, mounts, cpu/mem, disk) for the focused workspace
+- `enter` connect · `s`/`S` stop/start · `r` rebuild · `X` remove · `n` new
+- `d` doctor · `o` orphans · `x` menu · `/` filter · `R` refresh · `q` quit
+
+GUI IDE connects (cursor/vscode/jetbrains) launch in the background and the TUI
+stays up; terminal connects (ssh) suspend the TUI and resume when the session
+ends. All mutations run through the same bash code paths as the CLI.
+
 ## Tests
 
 ```bash

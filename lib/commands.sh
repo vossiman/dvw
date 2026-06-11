@@ -239,6 +239,17 @@ cmd_status() {
   fi
 }
 
+# uv check, extracted for testability. Returns 0 (ok) / 1 (warn).
+# Warn-only: without uv, bare `dvw` falls back to the gum menu.
+_dvw_doctor_check_uv() {
+  if command -v uv >/dev/null; then
+    ui_status_ok "uv: $(uv --version 2>/dev/null)"
+    return 0
+  fi
+  ui_status_warn "uv: not on PATH — bare \`dvw\` falls back to the gum menu (install: https://docs.astral.sh/uv/)"
+  return 1
+}
+
 cmd_doctor() {
   local fail=0 warn=0
 
@@ -395,6 +406,9 @@ cmd_doctor() {
     ui_status_fail "jq: not on PATH"
     fail=$((fail+1))
   fi
+
+  # uv (powers the TUI)
+  _dvw_doctor_check_uv || warn=$((warn+1))
 
   # dvw version vs origin/main (advisory; never a doctor failure). Guarded so
   # the check is a no-op if update-check.sh wasn't sourced (e.g. a test that
