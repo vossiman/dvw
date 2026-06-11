@@ -30,6 +30,8 @@ _dvw_tui_ensure_socket() {
   fi
   local dir="${XDG_RUNTIME_DIR:-/tmp}"
   local fwd="$dir/dvw-catalog-fwd-$(id -u).sock"
+  # Probe sends no token, so with auth enabled this returns 401 — that's fine;
+  # we only need transport liveness here, not a successful auth round-trip.
   if [[ -S "$fwd" ]] && curl -sS --unix-socket "$fwd" --max-time 2 \
        http://localhost/v1/health >/dev/null 2>&1; then
     printf '%s' "$fwd"

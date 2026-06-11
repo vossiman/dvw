@@ -1,7 +1,7 @@
 """App entry point: wires client, screens, and shared action plumbing.
 
 Action methods live on the app (not the screen) because the context menu
-(Task 8) and the main screen both invoke them.
+and the main screen both invoke them.
 """
 
 from __future__ import annotations

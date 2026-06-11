@@ -1,3 +1,5 @@
+import os
+
 from dvw_tui.app import DvwApp
 from dvw_tui.screens.main import MainScreen, WorkspaceTable
 
@@ -41,6 +43,36 @@ async def test_retry_clears_banner(fake_client):
         await pilot.pause()
         assert app.query_one("#error-banner").display is False
         assert app.query_one(WorkspaceTable).row_count == 2
+
+
+async def test_status_header_connected(fake_client, monkeypatch):
+    monkeypatch.setenv("DVW_CATALOG_HOST", "testhost")
+    # Re-import so the module-level constant picks up the patched env var.
+    import importlib
+    import dvw_tui.screens.main as main_mod
+    importlib.reload(main_mod)
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        header = app.query_one("#status-header")
+        text = str(header.content)
+        assert "testhost" in text
+        assert "connected" in text
+
+
+async def test_status_header_unreachable(fake_client, monkeypatch):
+    monkeypatch.setenv("DVW_CATALOG_HOST", "testhost")
+    import importlib
+    import dvw_tui.screens.main as main_mod
+    importlib.reload(main_mod)
+    fake_client.fail = True
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        header = app.query_one("#status-header")
+        text = str(header.content)
+        assert "testhost" in text
+        assert "unreachable" in text
 
 
 async def test_filter_narrows_rows(fake_client):

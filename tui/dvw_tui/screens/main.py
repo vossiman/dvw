@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
@@ -11,7 +13,9 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Input, Static
 
 from ..client import CatalogError, Workspace
-from ..render import ACCENT, SUBTLE, ide_cell, inspect_lines, liveness_cell
+from ..render import ACCENT, GREEN, RED, SUBTLE, ide_cell, inspect_lines, liveness_cell
+
+_CATALOG_HOST = os.environ.get("DVW_CATALOG_HOST", "vossisrv")
 
 
 class WorkspaceTable(DataTable):
@@ -42,6 +46,7 @@ class MainScreen(Screen):
     # ---- layout -----------------------------------------------------------
 
     def compose(self) -> ComposeResult:
+        yield Static(id="status-header")
         yield Static(id="error-banner")
         with Horizontal(id="panes"):
             with Vertical(id="left"):
@@ -54,6 +59,7 @@ class MainScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
+        self._update_header(connected=False)
         self.query_one("#error-banner", Static).display = False
         self.query_one("#filter-input", Input).display = False
         table = self.query_one(WorkspaceTable)
@@ -70,8 +76,10 @@ class MainScreen(Screen):
             self._workspaces = await self.app.client.workspaces_with_status()
         except CatalogError as exc:
             self._show_error(f"catalog unreachable — {exc} — R to retry")
+            self._update_header(connected=False)
             return
         self._hide_error()
+        self._update_header(connected=True)
         self._render_table()
 
     def _visible_workspaces(self) -> list[Workspace]:
@@ -147,6 +155,19 @@ class MainScreen(Screen):
             text.append(f"{value}\n")
         body.update(text)
 
+    # ---- status header ----------------------------------------------------
+
+    def _update_header(self, connected: bool) -> None:
+        """Rebuild the one-line status bar: host on the left, connection state on the right."""
+        text = Text()
+        text.append(" dvw", style=f"bold {ACCENT}")
+        text.append(f" · {_CATALOG_HOST}", style=SUBTLE)
+        if connected:
+            text.append(" · connected", style=GREEN)
+        else:
+            text.append(" · unreachable", style=RED)
+        self.query_one("#status-header", Static).update(text)
+
     # ---- error banner -----------------------------------------------------
 
     def _show_error(self, message: str) -> None:
@@ -180,7 +201,7 @@ class MainScreen(Screen):
         self._filter = event.value.strip()
         self._render_table()
 
-    # ---- actions (wired fully in Task 6) -----------------------------------
+    # ---- actions ----------------------------------------------------------
 
     def action_refresh(self) -> None:
         self.refresh_data()
