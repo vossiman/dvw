@@ -1,1 +1,77 @@
-/* Nord theme — single source of styling. Filled in Task 5. */
+/* Nord theme — single source of styling. Palette mirrors lib/ui.sh. */
+
+$accent: #88c0d0;
+$subtle: #616e88;
+$green: #a3be8c;
+$red: #bf616a;
+$grey: #4c566a;
+$bg: #2e3440;
+$bg-panel: #3b4252;
+$fg: #d8dee9;
+
+Screen {
+    background: $bg;
+    color: $fg;
+}
+
+#error-banner {
+    display: none;
+    height: auto;
+    padding: 0 1;
+    background: $red 20%;
+    color: $red;
+    border: round $red;
+}
+
+#panes {
+    height: 1fr;
+}
+
+#panes.dimmed {
+    opacity: 40%;
+}
+
+#left {
+    width: 55%;
+    border: round $accent;
+    border-title-color: $accent;
+}
+
+#right {
+    width: 45%;
+    border: round $grey;
+    padding: 0 1;
+}
+
+#left-title, #right-title {
+    color: $accent;
+    text-style: bold;
+    height: 1;
+}
+
+#ws-table {
+    height: 1fr;
+    background: $bg;
+}
+
+#ws-table > .datatable--cursor {
+    background: $bg-panel;
+}
+
+#ws-table > .datatable--header {
+    background: $bg;
+    color: $subtle;
+}
+
+#filter-input {
+    display: none;
+    border: round $accent;
+}
+
+Footer {
+    background: $bg-panel;
+}
+
+Footer FooterKey .footer-key--key {
+    color: $accent;
+}

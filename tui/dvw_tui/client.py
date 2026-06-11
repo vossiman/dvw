@@ -69,9 +69,9 @@ class CatalogClient:
         try:
             resp = await self._client.get(path)
             resp.raise_for_status()
-        except httpx.HTTPError as exc:
+            return resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
             raise CatalogError(str(exc)) from exc
-        return resp.json()
 
     async def workspaces(self) -> list[Workspace]:
         return [Workspace.from_api(d) for d in await self._get("/workspaces")]
