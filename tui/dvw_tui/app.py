@@ -11,6 +11,7 @@ from textual.app import App
 from . import actions
 from .client import CatalogClient, Workspace
 from .screens.confirm import ConfirmScreen
+from .screens.doctor import DoctorScreen
 from .screens.main import MainScreen
 
 
@@ -19,6 +20,7 @@ class DvwApp(App):
 
     CSS_PATH = "theme.tcss"
     TITLE = "dvw"
+    SCREENS = {"doctor": DoctorScreen}
 
     def __init__(self, client: object | None = None) -> None:
         super().__init__()

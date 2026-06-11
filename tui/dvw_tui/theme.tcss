@@ -105,3 +105,16 @@ ConfirmScreen {
 #confirm-buttons Button {
     margin: 0 1;
 }
+
+#doctor-title {
+    color: $accent;
+    text-style: bold;
+    height: 1;
+    padding: 0 1;
+}
+
+#doctor-log {
+    border: round $grey;
+    background: $bg;
+    padding: 0 1;
+}
