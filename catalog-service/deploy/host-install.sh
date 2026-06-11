@@ -104,20 +104,21 @@ sudo systemctl enable --now dvw-catalog.service
 sudo systemctl enable --now dvw-catalog-backup.timer
 
 echo "==> 7/7 smoke test"
-# Retry briefly: the unit binds $SOCK at startup, so there's a small race
-# between `enable --now` returning and the socket being ready. On real failure,
-# point at the upstream diagnostics rather than letting curl's misleading
-# "connect to localhost port 80" message be the last word.
-for i in 1 2 3; do
-  curl -fsS --unix-socket "$SOCK" http://localhost/v1/health && break
-  if [ "$i" = 3 ]; then
-    echo >&2
-    echo "smoke test FAILED — service did not answer on $SOCK" >&2
-    echo "  sudo systemctl status dvw-catalog.service" >&2
-    echo "  journalctl -xeu dvw-catalog.service | tail -50" >&2
-    exit 1
+# Poll QUIETLY until the socket answers: the unit binds $SOCK ~1s after
+# `enable --now` returns, so the first attempt(s) fail by design. Suppress those
+# expected per-attempt curl errors (no misleading "connect to localhost port 80"
+# noise) and only surface diagnostics if the service genuinely never comes up.
+ok=0
+for _ in $(seq 1 10); do
+  if body=$(curl -fsS --unix-socket "$SOCK" http://localhost/v1/health 2>/dev/null); then
+    printf '%s\n' "$body"; ok=1; break
   fi
-  sleep 1
+  sleep 0.5
 done
-echo
+if [ "$ok" != 1 ]; then
+  echo "smoke test FAILED — service did not answer on $SOCK after ~5s" >&2
+  echo "  sudo systemctl status dvw-catalog.service" >&2
+  echo "  journalctl -xeu dvw-catalog.service | tail -50" >&2
+  exit 1
+fi
 echo "install ok — update later with: $SVC_DIR/deploy/host-update.sh"
