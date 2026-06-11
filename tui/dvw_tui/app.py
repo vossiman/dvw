@@ -35,22 +35,39 @@ class DvwApp(App):
 
     # ---- execution helpers --------------------------------------------------
 
-    def _run_suspended(self, argv: list[str], pause_on_fail: bool = True) -> None:
+    def _run_suspended(self, argv: list[str], pause_on_fail: bool = True) -> int:
         """Hand the real terminal to an interactive bash dvw command (gum
         confirms, progress output, ssh sessions). On failure, hold the
         terminal so the user can read the error before the alt screen
-        swallows it."""
+        swallows it.
+
+        Returns the subprocess exit code (127 = OSError, 130 = Ctrl-C).
+
+        IMPORTANT: no exception must escape the suspend() context manager —
+        an unhandled exception would leave the terminal unresumed and the TUI
+        in a broken state.
+        """
         with self.suspend():
             try:
                 rc = actions.run_interactive(argv)
+            except KeyboardInterrupt:
+                # Ctrl-C during the subprocess — treat as SIGINT exit code 130.
+                # Do NOT re-raise; fall through so suspend() exits cleanly and
+                # the TUI resumes with the terminal in a consistent state.
+                rc = 130
             except OSError as exc:
                 # e.g. DVW_BIN missing — don't let the TUI crash mid-suspend.
                 print(f"\n[dvw tui] failed to run `{' '.join(argv)}`: {exc}")
                 rc = 127
             if rc != 0 and pause_on_fail:
-                input(f"\n[dvw tui] `{' '.join(argv)}` exited {rc} — "
-                      "press enter to return ")
+                try:
+                    input(f"\n[dvw tui] `{' '.join(argv)}` exited {rc} — "
+                          "press enter to return ")
+                except KeyboardInterrupt:
+                    # Ctrl-C during the pause prompt — just continue back to TUI.
+                    pass
         self._refresh_main()
+        return rc
 
     def _refresh_main(self) -> None:
         for screen in self.screen_stack:
@@ -74,8 +91,15 @@ class DvwApp(App):
         if workspace is None:
             return
         builder = {"stop": actions.stop, "start": actions.start}[name]
-        self._run_suspended(builder(workspace.id))
-        self.notify(f"{name}: {workspace.id}", title="dvw")
+        rc = self._run_suspended(builder(workspace.id))
+        if rc == 0:
+            self.notify(f"{name}: {workspace.id}", title="dvw")
+        else:
+            self.notify(
+                f"{name} {workspace.id} failed (rc={rc}) — see output",
+                title="dvw",
+                severity="error",
+            )
 
     def do_confirmed_action(self, name: str, workspace: Workspace | None) -> None:
         if workspace is None:
