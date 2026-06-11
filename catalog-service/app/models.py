@@ -1,10 +1,8 @@
 """Pydantic v2 models.
 
-The on-disk catalog deliberately mirrors the legacy Dropbox `catalog.json`
-schema (version / defaults / workspaces[] / repos[], ISO-8601 UTC timestamps)
-so that:
-  * migration from the old file is a straight copy + validate, and
-  * the file stays hand-editable (a property the original design prized).
+The on-disk catalog is a deliberately simple shape (version / defaults /
+workspaces[] / repos[], ISO-8601 UTC timestamps) so the file stays
+hand-editable and trivial to copy between hosts by hand.
 
 `devpod_state` is an OPAQUE snapshot of devpod's own workspace.json. We never
 model its internals — devpod's schema is theirs to change.

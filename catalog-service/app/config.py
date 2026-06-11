@@ -16,8 +16,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CATALOG_", extra="ignore")
 
-    # Where the single JSON catalog lives. Same on-disk schema as the legacy
-    # Dropbox catalog.json, so migration is a copy and it stays hand-editable.
+    # Where the single JSON catalog lives. Plain, deliberately simple JSON so
+    # the file stays hand-editable and trivial to copy between hosts.
     data_dir: Path = Path("/var/lib/dvw-catalog")
     catalog_filename: str = "catalog.json"
     blueprint_filename: str = "ssh-blueprint.conf"

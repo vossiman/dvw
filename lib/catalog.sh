@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Service-backed implementation of dvw's catalog layer (was a Dropbox JSON file).
+# Service-backed implementation of dvw's catalog layer.
 #
-# Same function names, signatures, stdout, and return-code contract as the
-# original — but every workspace/repo/defaults operation goes to the
-# dvw-catalog service over HTTP instead of a Dropbox-synced JSON file. The rest
-# of dvw (connect.sh, commands.sh) sources this and is unchanged.
+# Every workspace/repo/defaults operation goes to the dvw-catalog service over
+# HTTP (reached via the transport in catalog-http-lib.sh). The rest of dvw
+# (connect.sh, commands.sh) sources this and is unchanged.
 #
 # Functions that are inherently client-local (devpod context + the path to
 # devpod's per-machine workspace.json) keep their original local behavior.

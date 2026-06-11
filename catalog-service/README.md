@@ -2,17 +2,17 @@
 
 Authoritative DevPod workspace **catalog + container resolver**, running on the
 Docker host (`vossisrv` in the reference deployment — the install adapts to
-whatever user/host you run it on). Replaces three Dropbox-coupled pieces of the
-`dvw` workflow with one small FastAPI service that has **local Docker access**:
+whatever user/host you run it on). One small FastAPI service with **local Docker
+access** that owns three things:
 
-1. the Dropbox-synced `catalog.json` (which workspaces exist),
-2. the Dropbox-synced `ssh-blueprint.conf`, and
-3. dvw's client-side, SSH-bound *canonical-container resolver* (id → container).
+1. the `catalog.json` (which workspaces exist),
+2. the shared `ssh-blueprint.conf`, and
+3. the *canonical-container resolver* (workspace id → container).
 
 Because the service lives **on the box with the Docker socket**, it answers
 "which container is workspace X, right now?" authoritatively and in
-milliseconds — no rclone FUSE mount, no 30 s poll, no `*conflicted copy*` files,
-no cross-machine write-races, no slug heuristics over SSH.
+milliseconds — no client-side polling, no cross-machine write-races, no slug
+heuristics over SSH.
 
 > Design rationale and the full dvw-integration plan live in the devMachine
 > repo under `docs/superpowers/specs/` and `docs/superpowers/plans/`.
@@ -25,7 +25,7 @@ laptop (Mint / WSL)                         vossisrv (Ubuntu 24.04)
 │ dvw (bash)     │ ──unix-socket curl────▶ │ dvw-catalog (FastAPI/uvicorn) │
 │  dvw lib/*.sh  │                         │  /run/dvw-catalog/catalog.sock │
 └────────────────┘                         │   ├─ catalog.json (atomic)     │
-   no Dropbox.                             │   ├─ ssh-blueprint.conf        │
+   no sync layer.                          │   ├─ ssh-blueprint.conf        │
    no open TCP port.                       │   └─ docker.sock ──▶ deep inspect
                                            └──────────────────────────────┘
 ```
@@ -47,7 +47,7 @@ auth + `0660 vossi:vossi` socket perms *is* the auth boundary.
 | **`GET /workspaces/{id}/inspect`** | **deep inspect**: state, health, mounts, cpu/mem, disk, liveness |
 | `GET /repos` · `GET /repos/by-url` · `POST` | repo MRU + per-repo last branch |
 | `GET /defaults` · `PUT /defaults` | global ide/provider defaults |
-| `GET /blueprint` · `PUT /blueprint` | ssh-blueprint (replaces the Dropbox file) |
+| `GET /blueprint` · `PUT /blueprint` | shared ssh-blueprint, served to all clients |
 | `GET /containers/status` | bulk liveness (alive/stale/stopped/absent) — replaces dvw's SSH probe |
 | `GET /containers/orphans` | devpod-labelled containers not in the catalog |
 
