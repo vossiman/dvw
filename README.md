@@ -48,9 +48,10 @@ git clone -b main https://github.com/vossiman/dvw.git /opt/dvw
 /opt/dvw/catalog-service/deploy/host-install.sh   # idempotent; installs+enables the systemd unit, smoke-tests /v1/health
 ```
 The catalog starts empty. To seed it from an existing `catalog.json` (and
-`ssh-blueprint.conf`), stop the service, copy the files into
-`/var/lib/dvw-catalog/`, then start it again — the service loads + validates
-them on startup.
+`ssh-blueprint.conf`), copy the files into `/var/lib/dvw-catalog/` and then
+`sudo systemctl restart dvw-catalog.service` — the service loads + validates
+them on startup. (`restart` is the passwordless verb from the sudoers drop-in;
+`stop`/`start` would prompt for a password.)
 
 Updates: `/opt/dvw/catalog-service/deploy/host-update.sh`. No TCP port — the service binds a unix socket; auth is SSH + `0660 vossi:vossi` socket perms. Full detail in [`catalog-service/README.md`](catalog-service/README.md). Verify:
 

@@ -107,16 +107,18 @@ and smoke-tests `/v1/health`.
 ```
 
 **Seeding the catalog** — the service starts with an empty catalog. To import an
-existing `catalog.json` (and `ssh-blueprint.conf`), copy them into the data dir
-while the service is stopped (so the running process can't overwrite them), then
-start it again — `catalog.json` is loaded and validated on startup:
+existing `catalog.json` (and `ssh-blueprint.conf`), copy them into the data dir,
+then `restart` — `catalog.json` is loaded and validated on startup. Use
+`restart` (not `stop`/`start`): it's the verb the install's sudoers drop-in
+whitelists passwordless, and on this single-writer box nothing mutates the
+catalog during the copy, so the on-disk file you just dropped in wins.
 
 ```bash
-sudo systemctl stop dvw-catalog
 # from wherever the files live, e.g. your dev box:
 scp catalog.json       vossi@vossisrv:/var/lib/dvw-catalog/catalog.json
 scp ssh-blueprint.conf vossi@vossisrv:/var/lib/dvw-catalog/ssh-blueprint.conf
-sudo systemctl start dvw-catalog
+# then on vossisrv (the .service suffix matches the passwordless sudoers rule):
+sudo systemctl restart dvw-catalog.service
 ```
 
 Alternative (no git on the box): `REMOTE=vossi@vossisrv ./deploy/deploy.sh`
