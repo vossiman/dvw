@@ -1,16 +1,16 @@
 """App entry point: wires client, screens, and shared action plumbing.
 
 Action methods live on the app (not the screen) because the context menu
-(Task 8) and the main screen both invoke them. Bodies that need confirm
-modals / suspend land in Task 6 — here they are minimal placeholders that
-only cover what's testable now.
+(Task 8) and the main screen both invoke them.
 """
 
 from __future__ import annotations
 
 from textual.app import App
 
+from . import actions
 from .client import CatalogClient, Workspace
+from .screens.confirm import ConfirmScreen
 from .screens.main import MainScreen
 
 
@@ -33,22 +33,73 @@ class DvwApp(App):
     async def on_unmount(self) -> None:
         await self.client.aclose()
 
-    # ---- action plumbing (full implementations in Task 6) ------------------
+    # ---- execution helpers --------------------------------------------------
+
+    def _run_suspended(self, argv: list[str], pause_on_fail: bool = True) -> None:
+        """Hand the real terminal to an interactive bash dvw command (gum
+        confirms, progress output, ssh sessions). On failure, hold the
+        terminal so the user can read the error before the alt screen
+        swallows it."""
+        with self.suspend():
+            try:
+                rc = actions.run_interactive(argv)
+            except OSError as exc:
+                # e.g. DVW_BIN missing — don't let the TUI crash mid-suspend.
+                print(f"\n[dvw tui] failed to run `{' '.join(argv)}`: {exc}")
+                rc = 127
+            if rc != 0 and pause_on_fail:
+                input(f"\n[dvw tui] `{' '.join(argv)}` exited {rc} — "
+                      "press enter to return ")
+        self._refresh_main()
+
+    def _refresh_main(self) -> None:
+        for screen in self.screen_stack:
+            if isinstance(screen, MainScreen):
+                screen.refresh_data()
+
+    # ---- actions ------------------------------------------------------------
 
     def do_connect(self, workspace: Workspace | None) -> None:
-        pass
+        if workspace is None:
+            return
+        argv = actions.connect(workspace.id)
+        if actions.connect_mode(workspace.ide) == "background":
+            actions.run_background(argv)
+            self.notify(f"connecting {workspace.id} ({workspace.ide})…",
+                        title="dvw")
+        else:
+            self._run_suspended(argv)
 
     def do_simple_action(self, name: str, workspace: Workspace | None) -> None:
-        pass
+        if workspace is None:
+            return
+        builder = {"stop": actions.stop, "start": actions.start}[name]
+        self._run_suspended(builder(workspace.id))
+        self.notify(f"{name}: {workspace.id}", title="dvw")
 
     def do_confirmed_action(self, name: str, workspace: Workspace | None) -> None:
-        pass
+        if workspace is None:
+            return
+        prompts = {
+            "rebuild": (f"Rebuild {workspace.id}? The container is recreated "
+                        "from the current devcontainer config.", False),
+            "remove": (f"Remove {workspace.id}? This deletes the workspace "
+                       "container.", True),
+        }
+        builders = {"rebuild": actions.rebuild, "remove": actions.remove}
+        message, danger = prompts[name]
+
+        def on_result(confirmed: bool | None) -> None:
+            if confirmed:
+                self._run_suspended(builders[name](workspace.id))
+
+        self.push_screen(ConfirmScreen(message, danger=danger), on_result)
 
     def do_new(self) -> None:
-        pass
+        self._run_suspended(actions.new())
 
     def open_context_menu(self) -> None:
-        pass
+        pass  # Task 8
 
 
 def main() -> None:

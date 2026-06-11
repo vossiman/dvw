@@ -75,3 +75,33 @@ Footer {
 Footer FooterKey .footer-key--key {
     color: $accent;
 }
+
+ConfirmScreen {
+    align: center middle;
+}
+
+#confirm-box {
+    width: auto;
+    max-width: 70;
+    height: auto;
+    padding: 1 2;
+    background: $bg-panel;
+    border: round $accent;
+}
+
+#confirm-box.danger {
+    border: round $red;
+}
+
+#confirm-message {
+    padding-bottom: 1;
+}
+
+#confirm-buttons {
+    height: auto;
+    align-horizontal: center;
+}
+
+#confirm-buttons Button {
+    margin: 0 1;
+}

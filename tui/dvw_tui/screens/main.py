@@ -167,8 +167,11 @@ class MainScreen(Screen):
         box.focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._filter = event.value.strip()
+        self._commit_filter()
+
+    def _commit_filter(self) -> None:
         box = self.query_one("#filter-input", Input)
+        self._filter = box.value.strip()
         box.display = False
         self.query_one(WorkspaceTable).focus()
         self._render_table()
@@ -183,6 +186,11 @@ class MainScreen(Screen):
         self.refresh_data()
 
     def action_connect(self) -> None:
+        # `enter` is a priority binding, so it fires even while the filter
+        # input has focus — commit the filter there instead of connecting.
+        if self.query_one("#filter-input", Input).has_focus:
+            self._commit_filter()
+            return
         self.app.do_connect(self.focused_workspace())
 
     def action_stop(self) -> None:
