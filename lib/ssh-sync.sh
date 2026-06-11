@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Service-backed implementation of dvw's ssh-blueprint sync (was a Dropbox file).
+# Service-backed implementation of dvw's ssh-blueprint sync.
 #
-# Same functions (ssh_sync_refresh / ssh_sync_init / ssh_sync_doctor /
-# ssh_sync_blueprint_path) and the same local-file behavior (~/.ssh/dvw.conf +
-# a top-of-file Include in ~/.ssh/config). The single source of truth is now
-# the service's GET/PUT /v1/blueprint instead of a Dropbox-synced file.
+# Functions (ssh_sync_refresh / ssh_sync_init / ssh_sync_doctor /
+# ssh_sync_blueprint_path) keep the local-file behavior (~/.ssh/dvw.conf + a
+# top-of-file Include in ~/.ssh/config); the single source of truth is the
+# service's GET/PUT /v1/blueprint.
 
 _SSH_SYNC_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=catalog-http-lib.sh

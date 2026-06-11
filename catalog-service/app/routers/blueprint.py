@@ -27,7 +27,7 @@ Host *.devpod
 class Blueprint(BaseModel):
     content: str
     # mtime epoch (int) — the client refreshes its local copy when this is
-    # newer than the local file's mtime, exactly like the old Dropbox model.
+    # newer than the local file's mtime.
     version: int
 
 

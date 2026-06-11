@@ -1,17 +1,18 @@
 # dvw-catalog
 
-Authoritative DevPod workspace **catalog + container resolver**, running on
-`vossisrv`. Replaces three Dropbox-coupled pieces of the `dvw` workflow with one
-small FastAPI service that has **local Docker access**:
+Authoritative DevPod workspace **catalog + container resolver**, running on the
+Docker host (`vossisrv` in the reference deployment — the install adapts to
+whatever user/host you run it on). One small FastAPI service with **local Docker
+access** that owns three things:
 
-1. the Dropbox-synced `catalog.json` (which workspaces exist),
-2. the Dropbox-synced `ssh-blueprint.conf`, and
-3. dvw's client-side, SSH-bound *canonical-container resolver* (id → container).
+1. the `catalog.json` (which workspaces exist),
+2. the shared `ssh-blueprint.conf`, and
+3. the *canonical-container resolver* (workspace id → container).
 
 Because the service lives **on the box with the Docker socket**, it answers
 "which container is workspace X, right now?" authoritatively and in
-milliseconds — no rclone FUSE mount, no 30 s poll, no `*conflicted copy*` files,
-no cross-machine write-races, no slug heuristics over SSH.
+milliseconds — no client-side polling, no cross-machine write-races, no slug
+heuristics over SSH.
 
 > Design rationale and the full dvw-integration plan live in the devMachine
 > repo under `docs/superpowers/specs/` and `docs/superpowers/plans/`.
@@ -24,7 +25,7 @@ laptop (Mint / WSL)                         vossisrv (Ubuntu 24.04)
 │ dvw (bash)     │ ──unix-socket curl────▶ │ dvw-catalog (FastAPI/uvicorn) │
 │  dvw lib/*.sh  │                         │  /run/dvw-catalog/catalog.sock │
 └────────────────┘                         │   ├─ catalog.json (atomic)     │
-   no Dropbox.                             │   ├─ ssh-blueprint.conf        │
+   no sync layer.                          │   ├─ ssh-blueprint.conf        │
    no open TCP port.                       │   └─ docker.sock ──▶ deep inspect
                                            └──────────────────────────────┘
 ```
@@ -46,7 +47,7 @@ auth + `0660 vossi:vossi` socket perms *is* the auth boundary.
 | **`GET /workspaces/{id}/inspect`** | **deep inspect**: state, health, mounts, cpu/mem, disk, liveness |
 | `GET /repos` · `GET /repos/by-url` · `POST` | repo MRU + per-repo last branch |
 | `GET /defaults` · `PUT /defaults` | global ide/provider defaults |
-| `GET /blueprint` · `PUT /blueprint` | ssh-blueprint (replaces the Dropbox file) |
+| `GET /blueprint` · `PUT /blueprint` | shared ssh-blueprint, served to all clients |
 | `GET /containers/status` | bulk liveness (alive/stale/stopped/absent) — replaces dvw's SSH probe |
 | `GET /containers/orphans` | devpod-labelled containers not in the catalog |
 
@@ -63,17 +64,16 @@ app/                FastAPI service
   docker_inspect.py local docker: resolver, deep inspect, bulk status, orphans
   deps.py           DI providers, auth, threadpool bridge, resolve TTL cache
   routers/          health, catalog, workspaces, repos, defaults, blueprint, containers
-  migrate.py        one-shot importer from the old Dropbox catalog
 clients/            pointer to the dvw bash shim (the shim itself lives in dvw/lib/)
-deploy/             systemd units, backup timer, deploy.sh, socket-proxy hardening
-tests/              pytest suite (CRUD, resolver tie-break parity, store, migration)
+deploy/             systemd units, backup timer, host-install.sh/host-update.sh, socket-proxy hardening
+tests/              pytest suite (CRUD, resolver tie-break parity, store)
 ```
 
 ## Develop
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-.venv/bin/python -m pytest -q          # 34 tests, no docker daemon required
+.venv/bin/python -m pytest -q          # 36 tests, no docker daemon required
 uv run uvicorn app.main:app --reload   # dev server on http://127.0.0.1:8000
 ```
 
@@ -83,15 +83,17 @@ against a fake docker client to pin dvw's exact semantics.
 
 ## Deploy
 
-Runs as a **systemd service on vossisrv**, deployed from a git checkout on the
-box (so updates are `git pull`, no laptop in the loop).
+Runs as a **systemd service on the Docker host** (the reference host is
+`vossisrv`), deployed from a git checkout on the box (so updates are `git pull`,
+no laptop in the loop). `host-install.sh` rewrites the units' `User=`/`Group=`
+to whoever runs it, so it isn't tied to `vossi`.
 
-**First time** — run as `vossi` on vossisrv:
+**First time** — run as your normal user on the host (reference: `vossi@vossisrv`):
 
 ```bash
-git clone -b main git@github.com:vossiman/dvw.git /opt/dvw
+sudo install -d -o "$USER" -g "$USER" /opt/dvw
+git clone -b main https://github.com/vossiman/dvw.git /opt/dvw
 /opt/dvw/catalog-service/deploy/host-install.sh
-# (until PR #9 merges: clone -b feat/catalog-service-client, or BRANCH=feat/catalog-service-client host-install.sh)
 ```
 
 `host-install.sh` is idempotent: it symlinks `/opt/dvw-catalog` → the checkout
@@ -106,17 +108,20 @@ and smoke-tests `/v1/health`.
 /opt/dvw/catalog-service/deploy/host-update.sh   # git pull + uv sync + restart
 ```
 
-**First-time cutover from the old Dropbox catalog:**
+**Seeding the catalog** — the service starts with an empty catalog. To import an
+existing `catalog.json` (and `ssh-blueprint.conf`), copy them into the data dir,
+then `restart` — `catalog.json` is loaded and validated on startup. Use
+`restart` (not `stop`/`start`): it's the verb the install's sudoers drop-in
+whitelists passwordless, and on this single-writer box nothing mutates the
+catalog during the copy, so the on-disk file you just dropped in wins.
 
 ```bash
-cd /opt/dvw-catalog && uv run dvw-catalog-migrate \
-    --from ~/Dropbox-remote/dvw/catalog.json \
-    --blueprint ~/Dropbox-remote/dvw/ssh-blueprint.conf
-sudo systemctl restart dvw-catalog
+# from wherever the files live, e.g. your dev box:
+scp catalog.json       vossi@vossisrv:/var/lib/dvw-catalog/catalog.json
+scp ssh-blueprint.conf vossi@vossisrv:/var/lib/dvw-catalog/ssh-blueprint.conf
+# then on vossisrv (the .service suffix matches the passwordless sudoers rule):
+sudo systemctl restart dvw-catalog.service
 ```
-
-Alternative (no git on the box): `REMOTE=vossi@vossisrv ./deploy/deploy.sh`
-rsyncs from a laptop instead.
 
 Hardening (recommended): front the Docker socket with a read-mostly proxy and
 drop the `docker` group — see `deploy/docker-socket-proxy.md`.

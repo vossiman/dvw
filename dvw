@@ -3,6 +3,11 @@
 set -euo pipefail
 
 DVW_ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+# Optional per-machine config (catalog host / provider). Loaded BEFORE the libs
+# so it can set DVW_* values the libs then fall back on. env > file > default.
+# shellcheck source=lib/config.sh
+. "$DVW_ROOT/lib/config.sh"
+dvw_load_config
 # shellcheck source=lib/catalog.sh
 . "$DVW_ROOT/lib/catalog.sh"
 # shellcheck source=lib/ssh-sync.sh
@@ -46,6 +51,12 @@ main() {
   # "behind main" nudge (suppressed for `dvw update` itself). Fail-open.
   dvw_update_refresh_if_stale
   dvw_update_maybe_nudge "${1:-}"
+
+  # `dvw config` must work even when the catalog is unreachable — it's how you
+  # fix a wrong host — so handle it before the reachability gate below.
+  if [[ "${1:-}" == config ]]; then
+    shift; cmd_config "$@"; return $?
+  fi
 
   ui_progress "checking catalog"        catalog_init_if_missing || exit 1
   ui_progress "syncing ssh blueprint"   ssh_sync_refresh

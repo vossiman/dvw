@@ -2,8 +2,8 @@
 #
 # Client-side tests for lib/catalog.sh against the dvw-catalog HTTP service.
 #
-# The catalog is no longer a Dropbox-synced JSON file; it's an HTTP service
-# reached over a unix socket (lib/catalog-http-lib.sh). These tests exercise the
+# The catalog is an HTTP service reached over a unix socket
+# (lib/catalog-http-lib.sh), not a local file. These tests exercise the
 # CLIENT half: the service URL it advertises, the request method/path it sends,
 # how it maps HTTP status to return codes, and the jq it runs on responses.
 #
@@ -76,6 +76,39 @@ teardown() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"unreachable"* ]]
   [[ "$output" == *"stub"* ]]
+}
+
+# --- transport: args must survive the remote shell re-parse (regressions) ----
+# `ssh host <cmd>` hands <cmd> to the remote login shell, which re-parses it.
+# The lib pre-quotes the command (printf %q); these pin that, since a raw arg
+# with whitespace silently broke the request (dvw doctor "service unreachable").
+
+@test "transport: -w newline status format survives the ssh remote re-parse" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/health") _stub_emit '{"status":"ok"}' 200 ;;
+      *)                _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
+  source "$DVW_ROOT/lib/catalog.sh"
+  run catalog_init_if_missing
+  [ "$status" -eq 0 ]
+}
+
+@test "transport: spaced 'Bearer <token>' auth header survives the ssh re-parse" {
+  export DVW_CATALOG_TOKEN='s3cr3t tok3n'   # space makes word-splitting visible
+  catalog_route() {   # METHOD PATH BODY AUTH — echo the auth header back as body
+    case "$1 $2" in
+      "GET /v1/health") _stub_emit "$4" 200 ;;
+      *)                _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
+  source "$DVW_ROOT/lib/catalog.sh"
+  run _catalog_get /v1/health
+  [ "$status" -eq 0 ]
+  [ "$output" = "authorization: Bearer s3cr3t tok3n" ]
 }
 
 # --- catalog_read: GET /v1/catalog ------------------------------------------

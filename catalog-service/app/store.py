@@ -1,13 +1,13 @@
 """Atomic, single-writer JSON catalog store.
 
-Durability model (replaces Dropbox's incidental redundancy):
+Durability model — the file is the single source of truth, with no sync layer
+or replication behind it, so durability is made explicit here:
   * Every mutation goes through `_save`: temp file in the same dir, flush,
-    fsync, then os.replace() — an atomic POSIX rename. No torn writes, no
-    conflicted-copy files.
+    fsync, then os.replace() — an atomic POSIX rename. No torn writes.
   * A single asyncio.Lock serializes every read-modify-write. This is correct
     *because* the service runs with `uvicorn --workers 1`; one process => one
-    writer => the cross-machine write-races that plagued the Dropbox catalog
-    are structurally impossible.
+    writer => concurrent-writer races on the catalog file are structurally
+    impossible.
 
 The in-memory `Catalog` is the working copy; the file is the durable log.
 """
@@ -76,7 +76,7 @@ class CatalogStore:
                 pass
             raise
         # fsync the directory so the rename itself is durable across a crash —
-        # this file is now the single source of truth, no Dropbox copy behind it.
+        # this file is the single source of truth, with no synced copy behind it.
         try:
             dfd = os.open(self._path.parent, os.O_RDONLY)
             try:

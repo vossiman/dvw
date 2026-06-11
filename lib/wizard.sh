@@ -166,7 +166,7 @@ cmd_new() {
   # 7. Update catalog
   local provider host
   provider=$(catalog_default provider)
-  provider="${provider:-vossisrv}"
+  provider="${provider:-${DVW_PROVIDER:-vossisrv}}"
   host=$(hostname -s)
   catalog_workspace_add "$name" "$repo" "$branch" "$ide" "$provider" "$host"
   catalog_repo_upsert "$repo" "$branch"
