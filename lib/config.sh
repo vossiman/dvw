@@ -36,3 +36,18 @@ dvw_load_config() {
     export "$key=$val"
   done < "$file"
 }
+
+# dvw_config_set KEY VALUE [FILE]
+# Persist KEY=VALUE into the config file, replacing any existing line for KEY.
+# Creates the file (and its directory) if needed; chmod 0600 since it may hold a
+# token. Atomic via temp-file + mv.
+dvw_config_set() {
+  local key="$1" val="$2" file="${3:-$DVW_CONFIG}" dir tmp
+  dir="$(dirname "$file")"
+  mkdir -p "$dir"
+  tmp="$(mktemp "$dir/.config.XXXXXX")"
+  [[ -f "$file" ]] && grep -vE "^[[:space:]]*${key}[[:space:]]*=" "$file" > "$tmp" || true
+  printf '%s=%s\n' "$key" "$val" >> "$tmp"
+  mv "$tmp" "$file"
+  chmod 0600 "$file"
+}

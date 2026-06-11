@@ -244,6 +244,12 @@ cmd_doctor() {
 
   ui_banner "dvw doctor" "health check across all dvw surfaces"
 
+  # Effective client wiring (env > config file > default) up front, so a wrong
+  # host is visible here instead of as a mysterious "unreachable" downstream.
+  ui_info "catalog endpoint: $(catalog_path)"
+  ui_info "default provider: ${DVW_PROVIDER:-vossisrv}"
+  [[ -r "$DVW_CONFIG" ]] && ui_info "config file: $DVW_CONFIG"
+
   # Provider probe — surfaced first because every cross-machine "container
   # not running" symptom traces back through this. Forces a probe load and
   # reports whether ssh to the provider host succeeded plus the resulting
@@ -743,4 +749,38 @@ _dvw_print_one_orphan_audit() {
     printf '    %s✓%s clean — no uncommitted/unpushed/stashed git state detected\n' \
       "$(_ansi "$DVW_GREEN" bold)" "$(ui_reset)"
   fi
+}
+
+# `dvw config` — view or persist the per-machine client config (lib/config.sh).
+#   dvw config                # show effective values + the file path
+#   dvw config set KEY VALUE   # write KEY into the config file
+# Runs without the catalog being reachable — it's how you fix a wrong host.
+cmd_config() {
+  local action="${1:-show}"
+  case "$action" in
+    show)
+      printf 'config file: %s%s\n' "$DVW_CONFIG" \
+        "$([[ -r "$DVW_CONFIG" ]] || printf ' (none yet)')"
+      printf 'effective values (env > file > default):\n'
+      printf '  DVW_CATALOG_HOST  = %s\n' "${DVW_CATALOG_HOST:-vossisrv}"
+      printf '  DVW_CATALOG_SOCK  = %s\n' "${DVW_CATALOG_SOCK:-/run/dvw-catalog/catalog.sock}"
+      printf '  DVW_PROVIDER      = %s\n' "${DVW_PROVIDER:-vossisrv}"
+      printf '  DVW_CATALOG_TOKEN = %s\n' "${DVW_CATALOG_TOKEN:+<set>}"
+      ;;
+    set)
+      shift
+      local key="${1:-}" val="${2:-}"
+      if [[ -z "$key" || $# -lt 2 ]]; then
+        ui_error "usage: dvw config set KEY VALUE"; return 1
+      fi
+      if [[ " $DVW_CONFIG_KEYS " != *" $key "* ]]; then
+        ui_error "unknown config key: $key (known: $DVW_CONFIG_KEYS)"; return 1
+      fi
+      dvw_config_set "$key" "$val"
+      ui_status_ok "set $key in $DVW_CONFIG"
+      ;;
+    *)
+      ui_error "usage: dvw config [show | set KEY VALUE]"; return 1
+      ;;
+  esac
 }

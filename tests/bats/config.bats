@@ -61,3 +61,25 @@ EOF
   [ "$status" -eq 0 ]
   [ -z "${DVW_CATALOG_HOST:-}" ]
 }
+
+@test "dvw_config_set: creates the file (and dir) with 0600 perms" {
+  local f="$TMPDIR/sub/dvw/config"
+  dvw_config_set DVW_CATALOG_HOST myserver "$f"
+  [ -f "$f" ]
+  [ "$(stat -c '%a' "$f")" = "600" ]
+  grep -qx 'DVW_CATALOG_HOST=myserver' "$f"
+}
+
+@test "dvw_config_set: replaces an existing key without duplicating it" {
+  dvw_config_set DVW_CATALOG_HOST first "$CFG"
+  dvw_config_set DVW_CATALOG_HOST second "$CFG"
+  [ "$(grep -c '^DVW_CATALOG_HOST=' "$CFG")" -eq 1 ]
+  grep -qx 'DVW_CATALOG_HOST=second' "$CFG"
+}
+
+@test "dvw_config_set then dvw_load_config round-trips" {
+  dvw_config_set DVW_PROVIDER prod "$CFG"
+  unset DVW_PROVIDER
+  dvw_load_config "$CFG"
+  [ "$DVW_PROVIDER" = "prod" ]
+}
