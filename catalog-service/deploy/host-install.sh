@@ -8,18 +8,24 @@
 # `sudo` itself only for the steps that touch system paths. You do NOT need to
 # pre-create any directories; in particular do not `mkdir /opt/dvw-catalog` — it
 # is a symlink this script manages (a real dir there breaks the service).
-#     git clone -b main git@github.com:vossiman/dvw.git /opt/dvw \
-#       && /opt/dvw/catalog-service/deploy/host-install.sh
+#
+# Bootstrap (copy-paste). `/opt` isn't writable by your user, so create the
+# checkout dir with correct ownership in one sudo — do NOT `chown -R` by hand:
+#     sudo install -d -o "$USER" -g "$USER" /opt/dvw
+#     git clone -b main https://github.com/vossiman/dvw.git /opt/dvw
+#     /opt/dvw/catalog-service/deploy/host-install.sh
 # (until PR #9 merges, clone -b feat/catalog-service-client, or pass BRANCH=…)
 # Re-run any time to reconfigure — it's idempotent.
 #
 # Overridable via env:
-#   REPO_URL   default git@github.com:vossiman/dvw.git
+#   REPO_URL   default https://github.com/vossiman/dvw.git  (HTTPS works with no
+#              SSH keys on the box; set REPO_URL=git@github.com:vossiman/dvw.git
+#              to use SSH, which needs a key configured on this host)
 #   BRANCH     default main          (use feat/catalog-service-client until PR #9 merges)
 #   CHECKOUT   default /opt/dvw
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-git@github.com:vossiman/dvw.git}"
+REPO_URL="${REPO_URL:-https://github.com/vossiman/dvw.git}"
 BRANCH="${BRANCH:-main}"
 CHECKOUT="${CHECKOUT:-/opt/dvw}"
 SVC_DIR="$CHECKOUT/catalog-service"
@@ -94,5 +100,20 @@ sudo systemctl enable --now dvw-catalog.service
 sudo systemctl enable --now dvw-catalog-backup.timer
 
 echo "==> 7/7 smoke test"
-curl -fsS --unix-socket "$SOCK" http://localhost/v1/health; echo
+# Retry briefly: the unit binds $SOCK at startup, so there's a small race
+# between `enable --now` returning and the socket being ready. On real failure,
+# point at the upstream diagnostics rather than letting curl's misleading
+# "connect to localhost port 80" message be the last word.
+for i in 1 2 3; do
+  curl -fsS --unix-socket "$SOCK" http://localhost/v1/health && break
+  if [ "$i" = 3 ]; then
+    echo >&2
+    echo "smoke test FAILED — service did not answer on $SOCK" >&2
+    echo "  sudo systemctl status dvw-catalog.service" >&2
+    echo "  journalctl -xeu dvw-catalog.service | tail -50" >&2
+    exit 1
+  fi
+  sleep 1
+done
+echo
 echo "install ok — update later with: $SVC_DIR/deploy/host-update.sh"
