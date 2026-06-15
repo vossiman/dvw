@@ -53,6 +53,7 @@ class PairScreen(Screen):
         worker = get_current_worker()
         log = self.query_one("#pair-log", RichLog)
         self.app.call_from_thread(log.clear)
+        self.app.call_from_thread(log.write, Text(f"connecting to {self._workspace_id}…"))
         result = actions.run_captured(actions.pair_paseo(self._workspace_id))
         if worker.is_cancelled:
             return
