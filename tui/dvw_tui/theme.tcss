@@ -136,6 +136,19 @@ ConfirmScreen {
     padding: 0 1;
 }
 
+#pair-title {
+    color: $accent;
+    text-style: bold;
+    height: 1;
+    padding: 0 1;
+}
+
+#pair-log {
+    border: round $grey;
+    background: $bg;
+    padding: 0 1;
+}
+
 #orphans-title {
     color: $red;
     text-style: bold;
