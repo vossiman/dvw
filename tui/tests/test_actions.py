@@ -22,6 +22,15 @@ def test_argv_builders(monkeypatch):
     assert actions.doctor() == ["dvw", "doctor"]
 
 
+def test_pair_paseo_builds_ssh_argv():
+    argv = actions.pair_paseo("alpha")
+    assert argv == [
+        "ssh",
+        "alpha.devpod",
+        "~/.local/bin/aicoding-paseo-daemon pair",
+    ]
+
+
 def test_connect_with_explicit_mode(monkeypatch):
     monkeypatch.setenv("DVW_BIN", "dvw")
     assert actions.connect("alpha", "ssh") == ["dvw", "alpha", "--ssh"]
