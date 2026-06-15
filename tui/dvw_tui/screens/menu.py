@@ -12,6 +12,7 @@ from textual.widgets.option_list import Option
 
 MENU_ITEMS = [
     ("connect", "enter  connect"),
+    ("pair_paseo", "p      pair remote (paseo)"),
     ("stop", "s      stop"),
     ("start", "S      start"),
     ("rebuild", "r      rebuild"),
