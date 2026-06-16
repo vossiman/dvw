@@ -107,6 +107,45 @@ EOF
   [ "$output" = "release/v1.2.3" ]
 }
 
+# _github_https_to_ssh: rewrites an HTTPS github.com URL to its SSH form so the
+# wizard can fall back to ssh-agent auth (added 2026-06-16 after `dvw new` with
+# an https://github.com/... URL aborted with the opaque "exited 128" — git
+# ls-remote over HTTPS has no credential helper in the devbox).
+
+@test "_github_https_to_ssh: rewrites https github url to ssh" {
+  run _github_https_to_ssh "https://github.com/vossiman/hackertyper.git"
+  [ "$status" -eq 0 ]
+  [ "$output" = "git@github.com:vossiman/hackertyper.git" ]
+}
+
+@test "_github_https_to_ssh: adds missing .git suffix" {
+  run _github_https_to_ssh "https://github.com/vossiman/hackertyper"
+  [ "$output" = "git@github.com:vossiman/hackertyper.git" ]
+}
+
+@test "_github_https_to_ssh: strips embedded token/userinfo" {
+  run _github_https_to_ssh "https://ghp_secret@github.com/vossiman/hackertyper.git"
+  [ "$output" = "git@github.com:vossiman/hackertyper.git" ]
+}
+
+@test "_github_https_to_ssh: leaves an already-ssh url unchanged" {
+  run _github_https_to_ssh "git@github.com:vossiman/hackertyper.git"
+  [ "$output" = "git@github.com:vossiman/hackertyper.git" ]
+}
+
+@test "_github_https_to_ssh: idempotent" {
+  run _github_https_to_ssh "https://github.com/vossiman/hackertyper.git"
+  local once="$output"
+  run _github_https_to_ssh "$once"
+  [ "$output" = "$once" ]
+}
+
+@test "_github_https_to_ssh: leaves non-github https hosts unchanged" {
+  # github.com only — other hosts may legitimately use HTTPS.
+  run _github_https_to_ssh "https://gitlab.com/group/proj.git"
+  [ "$output" = "https://gitlab.com/group/proj.git" ]
+}
+
 # _parse_devpod_ids: extracts workspace IDs from `devpod list --output json`.
 # Added 2026-06-01 after the wizard let a name that already existed in DevPod
 # (but not the catalog) through its duplicate check — `devpod up --id <name>`

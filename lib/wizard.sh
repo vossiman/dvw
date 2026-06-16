@@ -18,6 +18,36 @@ _parse_remote_branches() {
   sed -E 's#^[0-9a-f]+[[:space:]]+refs/heads/##' | LC_ALL=C sort
 }
 
+# Convert an HTTPS github.com URL to its SSH equivalent; echo anything else
+# unchanged. github.com only — in the devbox git authenticates github over the
+# forwarded ssh-agent, so an HTTPS clone has no credential helper and ls-remote
+# dies with "exit status 128". The transform drops any userinfo/token and
+# normalizes to a single .git suffix. Pure (no network) → unit-testable.
+_github_https_to_ssh() {
+  local url="$1"
+  case "$url" in
+    https://github.com/*|https://*@github.com/*)
+      url=$(printf '%s\n' "$url" \
+        | sed -E 's#^https://([^@/]+@)?github\.com/#git@github.com:#; s#(\.git)?$#.git#')
+      ;;
+  esac
+  printf '%s\n' "$url"
+}
+
+# Fetch + parse a repo's remote branch names; echo one branch per line, or
+# nothing on failure (auth/network/bad URL). The `|| raw=""` is load-bearing:
+# git ls-remote over an HTTPS URL with no credential helper exits 128, and
+# under the script's `set -e` an unguarded `raw=$(...)` assignment would abort
+# the whole wizard with that 128 BEFORE the caller's empty-result branch can
+# show a friendly message (or try the SSH fallback).
+_fetch_remote_branches() {
+  local repo="$1" raw
+  raw=$(GIT_TERMINAL_PROMPT=0 gum spin --spinner dot \
+          --title "fetching branches for $repo..." --show-output \
+          -- git ls-remote --heads "$repo" 2>/dev/null) || raw=""
+  printf '%s\n' "$raw" | _parse_remote_branches
+}
+
 # Print one workspace ID per line from `devpod list --output json` output read
 # on stdin. Pure (no devpod call) so the wizard's collision check is testable.
 _parse_devpod_ids() {
@@ -69,11 +99,21 @@ cmd_new() {
   # actually exists rules out stale catalog defaults and typo'd/deleted
   # branches, which `devpod up` would otherwise reject mid-clone with an
   # opaque "exit status 128".
-  local raw_branches branches branch
-  raw_branches=$(GIT_TERMINAL_PROMPT=0 gum spin --spinner dot \
-                   --title "fetching branches for $repo..." --show-output \
-                   -- git ls-remote --heads "$repo" 2>/dev/null)
-  branches=$(printf '%s\n' "$raw_branches" | _parse_remote_branches)
+  local branches branch
+  branches=$(_fetch_remote_branches "$repo")
+  if [[ -z "$branches" ]]; then
+    # An HTTPS github.com URL has no credential helper in the devbox (auth is
+    # the forwarded ssh-agent), so ls-remote dies with 128. Derive the SSH form
+    # and retry once before giving up; on success switch to it so the catalog
+    # records the URL that actually works here.
+    local ssh_repo
+    ssh_repo=$(_github_https_to_ssh "$repo")
+    if [[ "$ssh_repo" != "$repo" ]]; then
+      ui_info "HTTPS clone needs credentials we don't have here; retrying via SSH: $ssh_repo"
+      branches=$(_fetch_remote_branches "$ssh_repo")
+      [[ -n "$branches" ]] && repo="$ssh_repo"
+    fi
+  fi
   if [[ -z "$branches" ]]; then
     ui_error "couldn't list branches for $repo — check the URL, your network, or SSH auth"
     return 1
