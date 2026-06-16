@@ -146,6 +146,39 @@ EOF
   [ "$output" = "https://gitlab.com/group/proj.git" ]
 }
 
+# _init_empty_repo: seeds an empty remote with an initial commit so `dvw new`
+# can proceed (added 2026-06-16 after a freshly-created, commit-less repo made
+# the wizard dead-end on "couldn't list branches"). Tested against a local bare
+# repo — exercises the real init+commit+push path with no network.
+
+@test "_init_empty_repo: seeds an empty bare repo with a main branch" {
+  local bare="$BATS_TEST_TMPDIR/remote.git"
+  git init -q --bare -b main "$bare"
+  # Precondition: genuinely empty.
+  run git ls-remote --heads "$bare"
+  [ -z "$output" ]
+
+  run _init_empty_repo "$bare" main
+  [ "$status" -eq 0 ]
+
+  run git ls-remote --heads "$bare"
+  [[ "$output" == *"refs/heads/main"* ]]
+}
+
+@test "_init_empty_repo: defaults to main when no branch given" {
+  local bare="$BATS_TEST_TMPDIR/remote2.git"
+  git init -q --bare -b main "$bare"
+  run _init_empty_repo "$bare"
+  [ "$status" -eq 0 ]
+  run git ls-remote --heads "$bare"
+  [[ "$output" == *"refs/heads/main"* ]]
+}
+
+@test "_init_empty_repo: fails (non-zero) when the remote is unreachable" {
+  run _init_empty_repo "$BATS_TEST_TMPDIR/does-not-exist.git" main
+  [ "$status" -ne 0 ]
+}
+
 # _parse_devpod_ids: extracts workspace IDs from `devpod list --output json`.
 # Added 2026-06-01 after the wizard let a name that already existed in DevPod
 # (but not the catalog) through its duplicate check — `devpod up --id <name>`
