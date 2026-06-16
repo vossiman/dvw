@@ -78,6 +78,13 @@ cmd_update() {
     ui_error "git pull failed — resolve manually in $DVW_ROOT"; return 1
   fi
   bash "$DVW_ROOT/dvw-install.sh" || { ui_error "dvw-install.sh failed"; return 1; }
+  # Refresh the "behind main" cache now that HEAD is current. Without this the
+  # cached behind-count (written by the throttled background refresher before
+  # the pull) survives the 6h TTL, so `dvw doctor` and the startup nudge keep
+  # reporting the pre-update count. Fail-open; reuses the refresher's atomic write.
+  if command -v _dvw_update_do_refresh >/dev/null 2>&1; then
+    DVW_UPDATE_SYNC=1 _dvw_update_do_refresh || true
+  fi
   ui_info "dvw now at $(dvw_installed_version)"
 }
 
