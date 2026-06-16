@@ -98,6 +98,12 @@ class DvwApp(App):
 
         self.push_screen(ConnectScreen(workspace.id, workspace.ide), on_mode)
 
+    def do_pair_paseo(self, workspace: Workspace | None) -> None:
+        if workspace is None:
+            return
+        from .screens.pair import PairScreen
+        self.push_screen(PairScreen(workspace_id=workspace.id))
+
     def do_simple_action(self, name: str, workspace: Workspace | None) -> None:
         if workspace is None:
             return
@@ -149,6 +155,8 @@ class DvwApp(App):
                 return
             if action == "connect":
                 self.do_connect(workspace)
+            elif action == "pair_paseo":
+                self.do_pair_paseo(workspace)
             elif action in ("stop", "start"):
                 self.do_simple_action(action, workspace)
             elif action in ("rebuild", "remove"):

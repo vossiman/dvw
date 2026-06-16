@@ -318,6 +318,10 @@ falls back to the gum menu without it, or with `DVW_NO_TUI=1`).
 - right: inspect detail (health, mounts, cpu/mem, disk) for the focused workspace
 - `enter` connect · `s`/`S` stop/start · `r` rebuild · `X` remove · `n` new
 - `d` doctor · `o` orphans · `x` menu · `/` filter · `R` refresh · `q` quit
+- `x` → *pair remote (paseo)* — shows the pod's paseo pairing QR (remote
+  control of coding agents from the paseo apps; same QR pairs every device).
+  Pods get the daemon via aiCodingBaseSetup; manual fallback:
+  `dvw connect <id>`, then `paseo daemon pair`.
 
 GUI IDE connects (cursor/vscode/jetbrains) launch in the background and the TUI
 stays up; terminal connects (ssh) suspend the TUI and resume when the session
