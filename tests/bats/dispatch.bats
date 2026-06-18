@@ -27,6 +27,19 @@ setup() {
 
   # Record the argv cmd_connect receives, one arg per line.
   cmd_connect() { printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/connect-argv"; }
+  cmd_pair() { printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/pair-argv"; }
+}
+
+@test "dispatch: dvw pair <id> reaches cmd_pair with just the id" {
+  run main pair myws
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/pair-argv")" = "myws" ]
+}
+
+@test "dispatch: dvw pair <id> is not mistaken for connecting to a pod named 'pair'" {
+  run main pair myws
+  [ "$status" -eq 0 ]
+  [ ! -f "$BATS_TEST_TMPDIR/connect-argv" ]
 }
 
 @test "dispatch: dvw <id> reaches cmd_connect with just the id" {

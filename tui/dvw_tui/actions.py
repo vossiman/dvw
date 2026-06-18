@@ -51,13 +51,15 @@ def doctor() -> list[str]:
 
 
 def pair_paseo(workspace_id: str) -> list[str]:
-    """Print the pod's paseo pairing QR by ssh-ing into it.
+    """Print the pod's paseo pairing QR via `dvw pair <id>`.
 
-    Uses the <id>.devpod ssh alias (blueprint-managed) and the absolute
-    helper path because non-interactive ssh doesn't load ~/.bashrc.d (no
-    PASEO_HOME, no ~/.local/bin on PATH). The tilde expands pod-side.
+    Routes through bash rather than ssh-ing directly so the per-machine ssh
+    alias (and local devpod state) is auto-healed first — a pod that has never
+    been connected on this machine is still pairable. The bash side owns the
+    `<id>.devpod` ssh + the absolute paseo-daemon path (non-interactive ssh
+    doesn't load ~/.bashrc.d, so no PASEO_HOME / ~/.local/bin on PATH there).
     """
-    return ["ssh", f"{workspace_id}.devpod", "~/.local/bin/aicoding-paseo-daemon pair"]
+    return [dvw_bin(), "pair", workspace_id]
 
 
 def connect_mode(mode: str) -> str:

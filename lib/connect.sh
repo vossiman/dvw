@@ -56,6 +56,30 @@ cmd_connect() {
   esac
 }
 
+# Pair a remote device with the workspace's paseo daemon (prints its QR over
+# ssh). Like cmd_connect, it first auto-heals the per-machine prerequisites —
+# the local devpod state and the `<id>.devpod` ssh alias — so a workspace that
+# has only ever been connected from another machine (but is in the catalog) is
+# pairable here without a manual connect first. Both ensures are idempotent and
+# container-safe: neither starts a container or runs `devpod up`; they only make
+# `<id>.devpod` resolvable on this machine. If the pod is *stopped*, the ssh
+# below fails and the caller (PairScreen) surfaces its usual hint — starting the
+# pod stays Connect's job.
+#
+# Absolute paseo helper path + tilde: non-interactive ssh doesn't load
+# ~/.bashrc.d, so PASEO_HOME / ~/.local/bin aren't on PATH; the tilde expands
+# pod-side.
+cmd_pair() {
+  local id="${1:-}"
+  if [[ -z "$id" ]]; then
+    ui_error "usage: dvw pair <workspace-id>"
+    return 1
+  fi
+  _dvw_ensure_local_devpod_state "$id" || return 1
+  _dvw_ensure_ssh_alias "$id"          || return 1
+  exec ssh "${id}.devpod" "~/.local/bin/aicoding-paseo-daemon pair"
+}
+
 # Prompt SSH vs Cursor vs Both with the catalog's saved IDE pre-selected.
 # Echoes "ssh", "cursor", or "both" on stdout; empty on cancel.
 _connect_choose_mode() {

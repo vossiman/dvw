@@ -79,6 +79,8 @@ main() {
       shift; cmd_start "$@" ;;
     recreate|rebuild)
       shift; cmd_recreate "$@" ;;
+    pair)
+      shift; cmd_pair "$@" ;;
     status)
       cmd_status ;;
     doctor)
