@@ -41,11 +41,20 @@ _dvw_update_cache_stale() {
 # Synchronous refresh: fetch origin/main, record <epoch>\n<behind>. Fail-open —
 # any failure (offline, bad remote) returns 0 and leaves the cache untouched, so
 # the next run simply retries. Writes atomically via a temp file + mv.
+#
+# --no-write-fetch-head is load-bearing, not an optimisation: this fetch can run
+# detached in the background (see dvw_update_refresh_if_stale) at the same time
+# `dvw update` runs `git pull --ff-only origin main` in the foreground. Both
+# would otherwise append `main` to the same FETCH_HEAD non-atomically, leaving a
+# duplicate entry that makes the pull's merge abort with "Cannot fast-forward to
+# multiple branches." We only need origin/main updated for the rev-list below —
+# which --no-write-fetch-head still does — so skipping the FETCH_HEAD write
+# removes the shared file the two fetches were racing on.
 _dvw_update_do_refresh() {
   local cache behind now tmp
   cache=$(dvw_update_cache_path)
   mkdir -p "$(dirname "$cache")" 2>/dev/null || return 0
-  git -C "$DVW_ROOT" fetch -q origin main 2>/dev/null || return 0
+  git -C "$DVW_ROOT" fetch -q --no-write-fetch-head origin main 2>/dev/null || return 0
   behind=$(git -C "$DVW_ROOT" rev-list --count HEAD..origin/main 2>/dev/null)
   case "$behind" in ''|*[!0-9]*) behind=0 ;; esac
   now=$(date +%s)
