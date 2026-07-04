@@ -50,18 +50,6 @@ def doctor() -> list[str]:
     return [dvw_bin(), "doctor"]
 
 
-def pair_paseo(workspace_id: str) -> list[str]:
-    """Print the pod's paseo pairing QR via `dvw pair <id>`.
-
-    Routes through bash rather than ssh-ing directly so the per-machine ssh
-    alias (and local devpod state) is auto-healed first — a pod that has never
-    been connected on this machine is still pairable. The bash side owns the
-    `<id>.devpod` ssh + the absolute paseo-daemon path (non-interactive ssh
-    doesn't load ~/.bashrc.d, so no PASEO_HOME / ~/.local/bin on PATH there).
-    """
-    return [dvw_bin(), "pair", workspace_id]
-
-
 def connect_mode(mode: str) -> str:
     """Map a chosen connect MODE ("ssh"/"cursor"/"both") to an execution
     style: 'background' keeps the TUI up (cursor opens out-of-terminal);

@@ -34,7 +34,6 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw stop <id>` | `devpod stop` |
 | `dvw start <id>` | `devpod up` with the workspace's saved IDE |
 | `dvw recreate <id>` (alias `rebuild`) | rebuild the container (`devpod up --recreate`) — needed to pick up a changed `devcontainer.json` (mounts/hooks) |
-| `dvw pair <id>` | print the paseo pairing QR for a remote device; auto-registers the `<id>.devpod` ssh alias + local devpod state first, so it works on a machine that has never connected this pod (no `devpod up`) |
 | `dvw update` | Update dvw in place to latest main and refresh the version marker. dvw nudges you to run this (and `dvw doctor` reports it) when the checkout falls behind `origin/main`. |
 | `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
 | `dvw doctor` | health check: catalog endpoint + provider, provider probe, catalog service, ssh-sync, devpod, gum, per-orphan summary |
@@ -319,10 +318,6 @@ falls back to the gum menu without it, or with `DVW_NO_TUI=1`).
 - right: inspect detail (health, mounts, cpu/mem, disk) for the focused workspace
 - `enter` connect · `s`/`S` stop/start · `r` rebuild · `X` remove · `n` new
 - `d` doctor · `o` orphans · `x` menu · `/` filter · `R` refresh · `q` quit
-- `x` → *pair remote (paseo)* — shows the pod's paseo pairing QR (remote
-  control of coding agents from the paseo apps; same QR pairs every device).
-  Pods get the daemon via aiCodingBaseSetup; manual fallback:
-  `dvw connect <id>`, then `paseo daemon pair`.
 
 GUI IDE connects (cursor/vscode/jetbrains) launch in the background and the TUI
 stays up; terminal connects (ssh) suspend the TUI and resume when the session
