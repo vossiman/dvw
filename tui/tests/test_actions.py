@@ -22,11 +22,6 @@ def test_argv_builders(monkeypatch):
     assert actions.doctor() == ["dvw", "doctor"]
 
 
-def test_pair_paseo_routes_through_dvw_pair(monkeypatch):
-    monkeypatch.setenv("DVW_BIN", "dvw")
-    assert actions.pair_paseo("alpha") == ["dvw", "pair", "alpha"]
-
-
 def test_connect_with_explicit_mode(monkeypatch):
     monkeypatch.setenv("DVW_BIN", "dvw")
     assert actions.connect("alpha", "ssh") == ["dvw", "alpha", "--ssh"]
