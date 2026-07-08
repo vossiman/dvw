@@ -10,6 +10,19 @@
 setup() {
   # wizard.sh's helpers are pure shell — sourcing has no side effects.
   source "$DVW_ROOT/lib/wizard.sh"
+  # Point the blueprint devcontainer fetch at a file:// URL that doesn't
+  # exist: tests must never reach real GitHub, and _init_empty_repo tests
+  # that don't care about seeding should exercise the empty-commit fallback.
+  export DVW_BLUEPRINT_DEVCONTAINER_URL="file://$BATS_TEST_TMPDIR/absent-devcontainer.json"
+}
+
+# Write a minimal valid devcontainer.json fixture and point the fetch URL at
+# it. Sets DVW_TEST_FIXTURE to the fixture path. (Must NOT be called in a
+# $(...) substitution — the URL export would die with the subshell.)
+_use_devcontainer_fixture() {
+  DVW_TEST_FIXTURE="$BATS_TEST_TMPDIR/blueprint-devcontainer.json"
+  printf '{\n  "image": "mcr.microsoft.com/devcontainers/universal:6"\n}\n' > "$DVW_TEST_FIXTURE"
+  export DVW_BLUEPRINT_DEVCONTAINER_URL="file://$DVW_TEST_FIXTURE"
 }
 
 @test "DEVPOD_NAME_MAX matches DevPod's documented limit" {
@@ -177,6 +190,81 @@ EOF
 @test "_init_empty_repo: fails (non-zero) when the remote is unreachable" {
   run _init_empty_repo "$BATS_TEST_TMPDIR/does-not-exist.git" main
   [ "$status" -ne 0 ]
+}
+
+# _fetch_blueprint_devcontainer: pulls the canonical devcontainer.json from
+# the aiCodingBaseSetup blueprint so _init_empty_repo can seed new repos with
+# a working container config instead of a bare empty commit (2026-07-08).
+# file:// URLs keep these offline.
+
+@test "_fetch_blueprint_devcontainer: fetches a valid fixture intact" {
+  local dest="$BATS_TEST_TMPDIR/fetched.json"
+  _use_devcontainer_fixture
+  run _fetch_blueprint_devcontainer "$dest"
+  [ "$status" -eq 0 ]
+  cmp -s "$DVW_TEST_FIXTURE" "$dest"
+}
+
+@test "_fetch_blueprint_devcontainer: fails when the source is unreachable" {
+  # setup() already points the URL at a missing file.
+  run _fetch_blueprint_devcontainer "$BATS_TEST_TMPDIR/fetched.json"
+  [ "$status" -ne 0 ]
+}
+
+@test "_fetch_blueprint_devcontainer: rejects an HTML error page" {
+  local page="$BATS_TEST_TMPDIR/error.html"
+  printf '<html><body>503 Service Unavailable</body></html>\n' > "$page"
+  export DVW_BLUEPRINT_DEVCONTAINER_URL="file://$page"
+  run _fetch_blueprint_devcontainer "$BATS_TEST_TMPDIR/fetched.json"
+  [ "$status" -ne 0 ]
+}
+
+@test "_fetch_blueprint_devcontainer: rejects an empty response" {
+  local empty="$BATS_TEST_TMPDIR/empty.json"
+  : > "$empty"
+  export DVW_BLUEPRINT_DEVCONTAINER_URL="file://$empty"
+  run _fetch_blueprint_devcontainer "$BATS_TEST_TMPDIR/fetched.json"
+  [ "$status" -ne 0 ]
+}
+
+@test "_fetch_blueprint_devcontainer: tolerates leading blank lines before {" {
+  # The validator wants the first non-blank line to open a JSON object —
+  # leading whitespace must not trip it.
+  local fixture="$BATS_TEST_TMPDIR/padded.json"
+  printf '\n\n  {\n  "image": "x"\n}\n' > "$fixture"
+  export DVW_BLUEPRINT_DEVCONTAINER_URL="file://$fixture"
+  run _fetch_blueprint_devcontainer "$BATS_TEST_TMPDIR/fetched.json"
+  [ "$status" -eq 0 ]
+}
+
+@test "_init_empty_repo: seeds devcontainer.json when the blueprint fetch works" {
+  local bare="$BATS_TEST_TMPDIR/remote-seeded.git"
+  git init -q --bare -b main "$bare"
+  _use_devcontainer_fixture
+
+  run _init_empty_repo "$bare" main
+  [ "$status" -eq 0 ]
+
+  local clone="$BATS_TEST_TMPDIR/clone-seeded"
+  git clone -q "$bare" "$clone"
+  [ -f "$clone/devcontainer.json" ]
+  run git -C "$clone" log -1 --format=%s
+  [ "$output" = "init: blueprint devcontainer" ]
+}
+
+@test "_init_empty_repo: falls back to an empty commit when the fetch fails" {
+  # setup() points the URL at a missing file → fetch fails → old behavior.
+  local bare="$BATS_TEST_TMPDIR/remote-fallback.git"
+  git init -q --bare -b main "$bare"
+
+  run _init_empty_repo "$bare" main
+  [ "$status" -eq 0 ]
+
+  local clone="$BATS_TEST_TMPDIR/clone-fallback"
+  git clone -q "$bare" "$clone"
+  [ ! -e "$clone/devcontainer.json" ]
+  run git -C "$clone" log -1 --format=%s
+  [ "$output" = "init" ]
 }
 
 # _parse_devpod_ids: extracts workspace IDs from `devpod list --output json`.

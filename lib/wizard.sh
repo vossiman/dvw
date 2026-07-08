@@ -58,21 +58,52 @@ _fetch_remote_branches() {
   return "$rc"
 }
 
-# Seed an empty remote with an initial empty commit on <branch> (default main)
-# so the wizard has something to clone. Pushes over the URL as-is — callers pass
-# the SSH form for github so auth works. Uses the caller's git identity, falling
-# back to a generic one so the commit succeeds even where git user.* is unset.
-# Side-effecting (creates a commit, pushes); returns non-zero if init or push
-# fails. The work happens in a throwaway temp dir that is always cleaned up.
+# Canonical devcontainer.json of the aiCodingBaseSetup blueprint — the same
+# source of truth the blueprint's own postStartCommand pulls from. Overridable
+# so tests can point it at a local file:// fixture and stay off the network.
+DVW_BLUEPRINT_DEVCONTAINER_URL="${DVW_BLUEPRINT_DEVCONTAINER_URL:-https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json}"
+
+# Fetch the blueprint devcontainer.json to <dest>. Fails (non-zero) on missing
+# curl, network/HTTP errors, or a response that doesn't look like a JSON(C)
+# object — the first non-blank line must open with "{", which rejects
+# proxy/HTML error pages without outlawing future // comments in the blueprint.
+_fetch_blueprint_devcontainer() {
+  local dest="$1"
+  command -v curl >/dev/null || return 1
+  curl -fsSL --max-time 10 "$DVW_BLUEPRINT_DEVCONTAINER_URL" -o "$dest" 2>/dev/null || return 1
+  [[ -s "$dest" ]] || return 1
+  awk 'NF { print; exit }' "$dest" | grep -q '^[[:space:]]*{' || return 1
+}
+
+# Seed an empty remote with an initial commit on <branch> (default main) so the
+# wizard has something to clone. The commit carries the blueprint
+# devcontainer.json when it can be fetched — the `devpod up` that follows then
+# builds the real harness container instead of DevPod's bare default — and
+# degrades to an empty commit when it can't (sets DVW_INIT_SEEDED_DEVCONTAINER
+# to 1/0 so the caller can word its status line). Pushes over the URL as-is —
+# callers pass the SSH form for github so auth works. Uses the caller's git
+# identity, falling back to a generic one so the commit succeeds even where git
+# user.* is unset. Side-effecting (creates a commit, pushes); returns non-zero
+# if init or push fails. The work happens in a throwaway temp dir that is
+# always cleaned up.
 _init_empty_repo() {
-  local repo="$1" branch="${2:-main}" tmp rc name email
+  local repo="$1" branch="${2:-main}" tmp rc name email msg
   name=$(git config --get user.name 2>/dev/null || true);  [[ -n "$name" ]]  || name="dvw"
   email=$(git config --get user.email 2>/dev/null || true); [[ -n "$email" ]] || email="dvw@localhost"
   tmp=$(mktemp -d) || return 1
+  DVW_INIT_SEEDED_DEVCONTAINER=0
+  msg="init"
+  if _fetch_blueprint_devcontainer "$tmp/devcontainer.json"; then
+    DVW_INIT_SEEDED_DEVCONTAINER=1
+    msg="init: blueprint devcontainer"
+  else
+    rm -f "$tmp/devcontainer.json"
+  fi
   (
     cd "$tmp" \
       && git init -q -b "$branch" \
-      && git -c user.name="$name" -c user.email="$email" commit -q --allow-empty -m "init" \
+      && git add -A \
+      && git -c user.name="$name" -c user.email="$email" commit -q --allow-empty -m "$msg" \
       && git remote add origin "$repo" \
       && GIT_TERMINAL_PROMPT=0 git push -q -u origin "$branch"
   )
@@ -156,14 +187,18 @@ cmd_new() {
     # no commits). Offer to seed it with an initial commit so there's a branch
     # to clone, rather than dead-ending on "couldn't list branches".
     ui_status_warn "repo is empty — it has no branches yet: $repo"
-    gum confirm "Create an initial commit on 'main' and push?" \
+    gum confirm "Create an initial commit on 'main' (with the blueprint devcontainer.json) and push?" \
       || { ui_info "aborted: empty repo not initialized"; return 1; }
-    ui_action "initializing" "$repo (empty commit on main)"
+    ui_action "initializing" "$repo (initial commit on main)"
     if ! _init_empty_repo "$repo" main; then
       ui_error "failed to initialize empty repo: $repo — check your push access"
       return 1
     fi
-    ui_status_ok "initialized $repo with an empty commit on 'main'"
+    if [[ "${DVW_INIT_SEEDED_DEVCONTAINER:-0}" -eq 1 ]]; then
+      ui_status_ok "initialized $repo with the blueprint devcontainer.json on 'main'"
+    else
+      ui_status_warn "couldn't fetch the blueprint devcontainer.json — initialized $repo with a plain empty commit on 'main' (the container will come up bare)"
+    fi
     branch="main"
   else
     branch=$(printf '%s\n' "$branches" | gum filter --placeholder "pick a branch")
