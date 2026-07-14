@@ -3,6 +3,16 @@
 **Date:** 2026-07-08
 **Status:** approved
 
+> **Correction (2026-07-14):** the assumption below that "DevPod reads root
+> or `.devcontainer/`" is wrong — DevPod only probes
+> `.devcontainer/devcontainer.json`, `.devcontainer.json`, and
+> `.devcontainer/**/devcontainer.json` (pkg/devcontainer/config/parse.go).
+> A root-level `devcontainer.json` is silently ignored and the container
+> builds the bare fallback image. Fixed by
+> `2026-07-14-seed-devcontainer-existing-branches.md`, which moves the seed
+> to `.devcontainer/devcontainer.json` and extends seeding to non-empty
+> repos.
+
 ## Problem
 
 When `dvw new` is pointed at a freshly-created, commit-less repo, the wizard

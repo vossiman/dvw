@@ -237,7 +237,11 @@ EOF
   [ "$status" -eq 0 ]
 }
 
-@test "_init_empty_repo: seeds devcontainer.json when the blueprint fetch works" {
+@test "_init_empty_repo: seeds .devcontainer/devcontainer.json when the blueprint fetch works" {
+  # DevPod only looks at .devcontainer/devcontainer.json, .devcontainer.json,
+  # and .devcontainer/**/devcontainer.json (pkg/devcontainer/config/parse.go)
+  # — a root-level devcontainer.json is silently ignored and the container
+  # comes up on the bare fallback image (2026-07-14, obsidian-selfhost).
   local bare="$BATS_TEST_TMPDIR/remote-seeded.git"
   git init -q --bare -b main "$bare"
   _use_devcontainer_fixture
@@ -247,7 +251,8 @@ EOF
 
   local clone="$BATS_TEST_TMPDIR/clone-seeded"
   git clone -q "$bare" "$clone"
-  [ -f "$clone/devcontainer.json" ]
+  [ -f "$clone/.devcontainer/devcontainer.json" ]
+  [ ! -e "$clone/devcontainer.json" ]
   run git -C "$clone" log -1 --format=%s
   [ "$output" = "init: blueprint devcontainer" ]
 }
@@ -265,6 +270,139 @@ EOF
   [ ! -e "$clone/devcontainer.json" ]
   run git -C "$clone" log -1 --format=%s
   [ "$output" = "init" ]
+}
+
+# _branch_has_devcontainer / _seed_devcontainer_on_branch: extend the
+# blueprint seeding to repos that already have commits but no devcontainer
+# (2026-07-14: obsidian-selfhost came up on DevPod's bare ubuntu fallback —
+# no tmux, no toolchain, no git identity). Detection mirrors DevPod's own
+# lookup paths; seeding commits with the host's git identity and pushes so
+# the `devpod up` that follows clones a repo that builds the real harness.
+
+# Create a bare "remote" at $1 whose main branch carries the files named by
+# the remaining args (each created as a stub). Local-only, no network.
+_make_remote_with_files() {
+  local bare="$1"; shift
+  git init -q --bare -b main "$bare"
+  local work="$bare.work"
+  git clone -q "$bare" "$work" 2>/dev/null
+  local f
+  for f in "$@"; do
+    mkdir -p "$work/$(dirname "$f")"
+    printf '{"stub": true}\n' > "$work/$f"
+  done
+  ( cd "$work" \
+      && git add -A \
+      && git -c user.name=fixture -c user.email=fixture@test commit -q --allow-empty -m "fixture" \
+      && git push -q origin main )
+  rm -rf "$work"
+}
+
+@test "_branch_has_devcontainer: 0 for .devcontainer/devcontainer.json" {
+  local bare="$BATS_TEST_TMPDIR/has-dir.git"
+  _make_remote_with_files "$bare" README.md .devcontainer/devcontainer.json
+  run _branch_has_devcontainer "$bare" main
+  [ "$status" -eq 0 ]
+}
+
+@test "_branch_has_devcontainer: 0 for root .devcontainer.json" {
+  local bare="$BATS_TEST_TMPDIR/has-dot.git"
+  _make_remote_with_files "$bare" README.md .devcontainer.json
+  run _branch_has_devcontainer "$bare" main
+  [ "$status" -eq 0 ]
+}
+
+@test "_branch_has_devcontainer: 0 for nested .devcontainer/<sub>/devcontainer.json" {
+  local bare="$BATS_TEST_TMPDIR/has-nested.git"
+  _make_remote_with_files "$bare" README.md .devcontainer/gpu/devcontainer.json
+  run _branch_has_devcontainer "$bare" main
+  [ "$status" -eq 0 ]
+}
+
+@test "_branch_has_devcontainer: 1 when the branch has no devcontainer" {
+  local bare="$BATS_TEST_TMPDIR/has-none.git"
+  _make_remote_with_files "$bare" README.md src/app.py
+  run _branch_has_devcontainer "$bare" main
+  [ "$status" -eq 1 ]
+}
+
+@test "_branch_has_devcontainer: 1 for root devcontainer.json (devpod ignores it)" {
+  local bare="$BATS_TEST_TMPDIR/has-root-only.git"
+  _make_remote_with_files "$bare" README.md devcontainer.json
+  run _branch_has_devcontainer "$bare" main
+  [ "$status" -eq 1 ]
+}
+
+@test "_branch_has_devcontainer: 2 when the repo is unreachable" {
+  run _branch_has_devcontainer "$BATS_TEST_TMPDIR/does-not-exist.git" main
+  [ "$status" -eq 2 ]
+}
+
+@test "_seed_devcontainer_on_branch: commits + pushes the blueprint devcontainer" {
+  local bare="$BATS_TEST_TMPDIR/seed-target.git"
+  _make_remote_with_files "$bare" README.md src/app.py
+  _use_devcontainer_fixture
+
+  run _seed_devcontainer_on_branch "$bare" main
+  [ "$status" -eq 0 ]
+
+  local clone="$BATS_TEST_TMPDIR/seed-clone"
+  git clone -q "$bare" "$clone"
+  cmp -s "$DVW_TEST_FIXTURE" "$clone/.devcontainer/devcontainer.json"
+  # Existing history and files must survive — this is a commit on top, not
+  # a rewrite.
+  [ -f "$clone/README.md" ]
+  [ -f "$clone/src/app.py" ]
+  run git -C "$clone" rev-list --count main
+  [ "$output" = "2" ]
+}
+
+@test "_seed_devcontainer_on_branch: seed commit uses the host git identity" {
+  local bare="$BATS_TEST_TMPDIR/seed-ident.git"
+  _make_remote_with_files "$bare" README.md
+  _use_devcontainer_fixture
+  # Simulate the host's global git identity without touching the real one.
+  local cfg="$BATS_TEST_TMPDIR/gitconfig"
+  git config --file "$cfg" user.name "Host User"
+  git config --file "$cfg" user.email "host@example.com"
+
+  GIT_CONFIG_GLOBAL="$cfg" GIT_CONFIG_SYSTEM=/dev/null \
+    run _seed_devcontainer_on_branch "$bare" main
+  [ "$status" -eq 0 ]
+
+  run git --git-dir "$bare" log -1 --format='%an <%ae>' main
+  [ "$output" = "Host User <host@example.com>" ]
+}
+
+@test "_seed_devcontainer_on_branch: falls back to a generic identity when unset" {
+  local bare="$BATS_TEST_TMPDIR/seed-noident.git"
+  _make_remote_with_files "$bare" README.md
+  _use_devcontainer_fixture
+
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    run _seed_devcontainer_on_branch "$bare" main
+  [ "$status" -eq 0 ]
+
+  run git --git-dir "$bare" log -1 --format='%an <%ae>' main
+  [ "$output" = "dvw <dvw@localhost>" ]
+}
+
+@test "_seed_devcontainer_on_branch: fails without touching the remote when the fetch fails" {
+  # setup() points the blueprint URL at a missing file.
+  local bare="$BATS_TEST_TMPDIR/seed-nofetch.git"
+  _make_remote_with_files "$bare" README.md
+
+  run _seed_devcontainer_on_branch "$bare" main
+  [ "$status" -ne 0 ]
+
+  run git --git-dir "$bare" rev-list --count main
+  [ "$output" = "1" ]
+}
+
+@test "_seed_devcontainer_on_branch: fails when the remote is unreachable" {
+  _use_devcontainer_fixture
+  run _seed_devcontainer_on_branch "$BATS_TEST_TMPDIR/does-not-exist.git" main
+  [ "$status" -ne 0 ]
 }
 
 # _parse_devpod_ids: extracts workspace IDs from `devpod list --output json`.

@@ -93,11 +93,17 @@ _init_empty_repo() {
   tmp=$(mktemp -d) || return 1
   DVW_INIT_SEEDED_DEVCONTAINER=0
   msg="init"
-  if _fetch_blueprint_devcontainer "$tmp/devcontainer.json"; then
+  # .devcontainer/devcontainer.json, NOT root devcontainer.json — DevPod only
+  # probes .devcontainer/devcontainer.json, .devcontainer.json and
+  # .devcontainer/**/devcontainer.json (pkg/devcontainer/config/parse.go); a
+  # root-level file is silently ignored and the container builds the bare
+  # fallback image (2026-07-14, obsidian-selfhost).
+  if mkdir -p "$tmp/.devcontainer" \
+      && _fetch_blueprint_devcontainer "$tmp/.devcontainer/devcontainer.json"; then
     DVW_INIT_SEEDED_DEVCONTAINER=1
     msg="init: blueprint devcontainer"
   else
-    rm -f "$tmp/devcontainer.json"
+    rm -rf "$tmp/.devcontainer"
   fi
   (
     cd "$tmp" \
@@ -106,6 +112,67 @@ _init_empty_repo() {
       && git -c user.name="$name" -c user.email="$email" commit -q --allow-empty -m "$msg" \
       && git remote add origin "$repo" \
       && GIT_TERMINAL_PROMPT=0 git push -q -u origin "$branch"
+  )
+  rc=$?
+  rm -rf "$tmp"
+  return $rc
+}
+
+# Does <branch> of <repo> carry a devcontainer anywhere DevPod actually looks
+# (.devcontainer/devcontainer.json, .devcontainer.json, or
+# .devcontainer/**/devcontainer.json)? Returns 0 = present, 1 = missing,
+# 2 = couldn't inspect (unreachable repo/branch). Probes via a bare, shallow,
+# blobless clone in a throwaway dir — tree objects only, so it stays cheap
+# even for blob-heavy repos (the use case is Obsidian vaults); on transports
+# without filter support git degrades to a full fetch with a warning.
+_branch_has_devcontainer() {
+  local repo="$1" branch="$2" tmp rc
+  tmp=$(mktemp -d) || return 2
+  if ! git clone -q --bare --depth 1 --no-tags --single-branch --branch "$branch" \
+        --filter=blob:none "$repo" "$tmp/probe.git" 2>/dev/null; then
+    rm -rf "$tmp"
+    return 2
+  fi
+  if git --git-dir "$tmp/probe.git" ls-tree -r --name-only HEAD 2>/dev/null \
+      | grep -Eq '^\.devcontainer\.json$|^\.devcontainer/([^/]+/)*devcontainer\.json$'; then
+    rc=0
+  else
+    rc=1
+  fi
+  rm -rf "$tmp"
+  return $rc
+}
+
+# Commit the blueprint devcontainer.json as .devcontainer/devcontainer.json on
+# <branch> of <repo> and push, so the `devpod up` that follows clones a repo
+# that builds the real harness container. Same identity policy as
+# _init_empty_repo (host git user.*, generic fallback). Fails without touching
+# the remote when the blueprint fetch fails. The clone is shallow, blobless
+# and --no-checkout; --no-checkout leaves the index EMPTY (committing straight
+# away would produce a tree containing only the devcontainer and wipe the
+# branch), so read-tree HEAD first — index becomes HEAD's tree, we add the one
+# new file, and the commit is HEAD plus the devcontainer with no other blob
+# ever downloaded or rewritten.
+_seed_devcontainer_on_branch() {
+  local repo="$1" branch="$2" tmp rc name email
+  name=$(git config --get user.name 2>/dev/null || true);  [[ -n "$name" ]]  || name="dvw"
+  email=$(git config --get user.email 2>/dev/null || true); [[ -n "$email" ]] || email="dvw@localhost"
+  tmp=$(mktemp -d) || return 1
+  if ! _fetch_blueprint_devcontainer "$tmp/devcontainer.json"; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  (
+    cd "$tmp" \
+      && git clone -q --depth 1 --no-tags --single-branch --branch "$branch" \
+           --filter=blob:none --no-checkout "$repo" clone 2>/dev/null \
+      && cd clone \
+      && git read-tree HEAD \
+      && mkdir -p .devcontainer \
+      && mv ../devcontainer.json .devcontainer/devcontainer.json \
+      && git add .devcontainer/devcontainer.json \
+      && git -c user.name="$name" -c user.email="$email" commit -q -m "seed: blueprint devcontainer" \
+      && GIT_TERMINAL_PROMPT=0 git push -q origin "HEAD:$branch"
   )
   rc=$?
   rm -rf "$tmp"
@@ -163,7 +230,7 @@ cmd_new() {
   # actually exists rules out stale catalog defaults and typo'd/deleted
   # branches, which `devpod up` would otherwise reject mid-clone with an
   # opaque "exit status 128".
-  local branches branch rc=0
+  local branches branch rc=0 branch_needs_devcontainer_check=0
   if branches=$(_fetch_remote_branches "$repo"); then rc=0; else rc=$?; fi
   if [[ -z "$branches" && $rc -ne 0 ]]; then
     # An HTTPS github.com URL has no credential helper in the devbox (auth is
@@ -202,8 +269,35 @@ cmd_new() {
     branch="main"
   else
     branch=$(printf '%s\n' "$branches" | gum filter --placeholder "pick a branch")
+    branch_needs_devcontainer_check=1
   fi
   [[ -z "$branch" ]] && { ui_info "aborted: no branch"; return 1; }
+
+  # 2b. Devcontainer presence — skipped when _init_empty_repo just ran (it
+  # already seeded, or already reported the fetch failure). A branch without
+  # a devcontainer builds DevPod's bare fallback image: no tmux, no
+  # toolchain, no git identity (2026-07-14, obsidian-selfhost). Offer to
+  # seed the blueprint one — commit with the host's git identity + push —
+  # so the `devpod up` below clones a repo that builds the real harness.
+  if [[ "${branch_needs_devcontainer_check:-0}" -eq 1 ]]; then
+    local devc_rc=0
+    _branch_has_devcontainer "$repo" "$branch" || devc_rc=$?
+    if [[ $devc_rc -eq 1 ]]; then
+      ui_status_warn "no devcontainer.json on '$branch' — the container would come up bare (no tmux/toolchain)"
+      if gum confirm "Commit the blueprint devcontainer.json to '$branch' and push?"; then
+        ui_action "seeding" "blueprint devcontainer.json onto $branch"
+        if _seed_devcontainer_on_branch "$repo" "$branch"; then
+          ui_status_ok "seeded .devcontainer/devcontainer.json on '$branch'"
+        else
+          ui_error "seeding failed (blueprint fetch or push) — continuing; the container will come up bare"
+        fi
+      else
+        ui_info "continuing without a devcontainer — expect a bare container"
+      fi
+    elif [[ $devc_rc -eq 2 ]]; then
+      ui_status_warn "couldn't inspect '$branch' for a devcontainer.json — continuing"
+    fi
+  fi
 
   # 3. Workspace name (DevPod caps these at DEVPOD_NAME_MAX chars).
   local default_name name
