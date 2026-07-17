@@ -80,12 +80,25 @@ dvw_update_refresh_if_stale() {
   return 0
 }
 
+# True when $DVW_ROOT is a git submodule of another working tree (e.g. pinned
+# under devMachine). In that mode `dvw update` is the wrong CTA.
+dvw_is_submodule_checkout() {
+  local super
+  super=$(git -C "${DVW_ROOT:?}" rev-parse --show-superproject-working-tree 2>/dev/null || true)
+  [[ -n "$super" ]]
+}
+
 # Print the one-line startup nudge if behind. $1 = the subcommand being
 # dispatched; the nudge is suppressed for `update` (no point nagging mid-update)
 # and silent when up to date (0) or unknown (empty). Reads cached state only.
+# Submodule checkouts get a "bump parent pointer" CTA instead of `dvw update`.
 dvw_update_maybe_nudge() {
   [ "${1:-}" = "update" ] && return 0
   local behind; behind=$(dvw_update_behind_count)
   case "$behind" in ''|0) return 0 ;; esac
-  printf '⬆ dvw behind main — run: dvw update\n'
+  if dvw_is_submodule_checkout; then
+    printf '⬆ dvw behind main — bump parent submodule pointer (not: dvw update)\n'
+  else
+    printf '⬆ dvw behind main — run: dvw update\n'
+  fi
 }

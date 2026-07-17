@@ -34,7 +34,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw stop <id>` | `devpod stop` |
 | `dvw start <id>` | `devpod up` with the workspace's saved IDE |
 | `dvw recreate <id>` (alias `rebuild`) | rebuild the container (`devpod up --recreate`) — needed to pick up a changed `devcontainer.json` (mounts/hooks) |
-| `dvw update` | Update dvw in place to latest main and refresh the version marker. dvw nudges you to run this (and `dvw doctor` reports it) when the checkout falls behind `origin/main`. |
+| `dvw update` | Update a standalone dvw checkout to latest main and refresh the version marker. Refuses (with a clear CTA) when dvw is a git submodule — bump the parent pointer instead. Startup/`dvw doctor` nudge when behind `origin/main`. |
 | `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
 | `dvw doctor` | health check: catalog endpoint + provider, provider probe, catalog service, ssh-sync, devpod, gum, per-orphan summary |
 | `dvw config` / `dvw config set KEY VALUE` | show or persist the per-machine config (catalog host, provider — see [Configuration](#configuration-host-user-provider)); runs even when the service is unreachable |
@@ -219,13 +219,13 @@ A single user across multiple machines (e.g. laptop + WSL on a PC), one remote p
 - **Client workspace.json (per-machine)** — `~/.devpod/contexts/default/workspaces/<id>/workspace.json`. DevPod CLI's local record on each client. Layout: `{ "id": ..., "uid": ..., "provider": { "options": { "HOST": ... } }, ... }` (fields at top level).
 - **Agent workspace.json (on the provider)** — `~/.devpod/agent/contexts/default/workspaces/<id>/workspace.json` on `vossisrv`. DevPod agent's record. Layout: `{ "workspace": { "uid": ..., "provider": ... }, ... }` (fields nested under `.workspace`). **This is authoritative** — the agent uses *its own* workspace.json to pick which docker container to exec into, so any client uid that disagrees with the agent's is wrong from DevPod's perspective.
 
-`dvw` reconciles client→agent on every connect path (`_dvw_reconcile_uid` in `lib/connect.sh`): ssh to the provider, read the agent's `.workspace.uid`, rewrite the local `.uid` if it differs, push the new uid to the catalog. Drift heals automatically. The status probe (`_dvw_load_probe`) also does the id↔uid join *server-side*, so a fresh machine with no local devpod state still gets correct `dvw status` output on the first run.
+`dvw` aligns the local client uid on every connect path via `_dvw_resolve_canonical_container` (`lib/connect-resolver.sh` → catalog-service `GET /v1/workspaces/{id}/container`): the service picks the canonical container (bind-mount + tmux tie-break), the client rewrites local `.uid` if needed and pushes `devpod_state` to the catalog. Drift heals automatically. The status probe (`_dvw_load_probe` → `GET /v1/containers/status`) also joins id↔uid *server-side*, so a fresh machine with no local DevPod state still gets correct `dvw status` on the first run.
 
 For why this matters and what the failure mode looks like when it breaks, see the uid-drift entry in `KNOWN_ISSUES.md`.
 
 ## Provider probe (`dvw status` / `dvw doctor` ground truth)
 
-`dvw status`, `dvw doctor`, and the picker compute workspace state from a **single ssh round-trip to the provider** rather than per-workspace alias probes. The remote script enumerates `~/.devpod/agent/contexts/default/workspaces/`, reads each workspace's uid from its workspace.json, joins with `docker ps -a --filter label=dev.containers.id` labels, and returns `<id> <state>` lines plus per-orphan detail.
+`dvw status`, `dvw doctor`, and the picker compute workspace state from the **catalog service** on the provider (`GET /v1/containers/status` + `/orphans` via `lib/connect-resolver.sh`), not from client-side SSH docker fan-out. The service does one local docker pass, joins agent workspace dirs to container labels, and returns per-id liveness plus orphan detail.
 
 Five user-visible states:
 
@@ -235,7 +235,7 @@ Five user-visible states:
 | `⚠ stale` | Container running, but bind mount points at a deleted inode (Cursor will fatal — `dvw recreate <id>` to fix) |
 | `○ stopped` | Container exists on provider, not running (`dvw start <id>` to start) |
 | `✗ absent` | Catalog says the workspace exists, but no container on the provider has a matching uid (someone deleted it manually, or uid drift the reconciler hasn't fixed yet) |
-| `? unreachable` | The probe couldn't ssh to the provider from this machine. **Distinct from `○ stopped`** — it means "I can't ask," not "container is down." The captured ssh error appears in the `dvw status` / `dvw doctor` footer. |
+| `? unreachable` | The catalog service couldn't be reached from this machine. **Distinct from `○ stopped`** — it means "I can't ask," not "container is down." Detail appears in the `dvw status` / `dvw doctor` footer. |
 
 `dvw doctor` opens with a `[OK] provider probe: alive=N stale=N stopped=N absent=N` summary or fails noisily if the probe couldn't reach the provider.
 
@@ -329,7 +329,7 @@ ends. All mutations run through the same bash code paths as the CLI.
 ./tests/bats/run.sh
 ```
 
-Catalog logic is covered by bats. Wizard and TUI behavior is verified manually.
+Bash logic is covered by bats (`tests/bats/`, including wizard seed/probe and TUI launch). Catalog-service and TUI have their own pytest suites under `catalog-service/tests/` and `tui/tests/`.
 
 ## See also
 

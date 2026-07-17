@@ -71,8 +71,17 @@ cmd_stop() {
 
 # dvw update — manual, user-invoked in-place update. Pull latest main, re-run
 # the installer, refresh the version marker. NEVER called automatically.
+# Refuses when this checkout is a git submodule of a parent repo (e.g.
+# devMachine): bump the parent pointer instead so the pin stays authoritative.
 cmd_update() {
   . "$DVW_ROOT/lib/version.sh"
+  local super
+  super=$(git -C "$DVW_ROOT" rev-parse --show-superproject-working-tree 2>/dev/null || true)
+  if [[ -n "$super" ]]; then
+    ui_error "dvw is a git submodule of $super — refusing \`dvw update\`"
+    ui_info "bump the parent submodule pointer instead (e.g. \`bash scripts/update-submodules.sh && git push\`)"
+    return 1
+  fi
   ui_info "updating dvw in $DVW_ROOT"
   if ! git -C "$DVW_ROOT" pull --ff-only origin main; then
     ui_error "git pull failed — resolve manually in $DVW_ROOT"; return 1
@@ -426,7 +435,11 @@ cmd_doctor() {
     if [[ -z "$_dvw_behind" ]]; then
       ui_status_ok "dvw: version check pending (run again after network)"
     elif [[ "$_dvw_behind" -gt 0 ]]; then
-      ui_status_warn "dvw: $_dvw_behind commit(s) behind main — run: \`dvw update\`"
+      if command -v dvw_is_submodule_checkout >/dev/null 2>&1 && dvw_is_submodule_checkout; then
+        ui_status_warn "dvw: $_dvw_behind commit(s) behind main — bump parent submodule pointer (not \`dvw update\`)"
+      else
+        ui_status_warn "dvw: $_dvw_behind commit(s) behind main — run: \`dvw update\`"
+      fi
     else
       ui_status_ok "dvw: up to date with main"
     fi

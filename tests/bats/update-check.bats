@@ -130,6 +130,16 @@ _write_cache() { mkdir -p "$DVW_STATE_DIR"; printf '%s\n%s\n' "$1" "$2" > "$DVW_
   [[ "$output" == *"behind main — run: dvw update"* ]]
 }
 
+@test "maybe_nudge: submodule checkout gets parent-pointer CTA" {
+  _write_cache 123 2
+  # Predicate is pure; stub it so we don't fight git submodule fixtures.
+  dvw_is_submodule_checkout() { return 0; }
+  run dvw_update_maybe_nudge connect
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"bump parent submodule pointer"* ]]
+  [[ "$output" != *"run: dvw update"* ]]
+}
+
 @test "maybe_nudge: silent for the update subcommand even when behind" {
   _write_cache 123 2
   run dvw_update_maybe_nudge update
