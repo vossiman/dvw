@@ -125,3 +125,157 @@ _serve_catalog() {
   run _dvw_uid_claimed_by_other "alpha" ""
   [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# HTTP resolver (lib/connect-resolver.sh) — stubbed _catalog_req routes
+# ---------------------------------------------------------------------------
+
+_load_http_resolver() {
+  _load_resolver
+  source "$DVW_ROOT/lib/connect-resolver.sh"
+}
+
+_ws_json() {
+  local id="$1" uid="$2"
+  mkdir -p "$HOME/.devpod/contexts/default/workspaces/$id"
+  printf '{"id":"%s","uid":"%s"}\n' "$id" "$uid" \
+    > "$HOME/.devpod/contexts/default/workspaces/$id/workspace.json"
+}
+
+@test "http resolve: cold — no container_id leaves local uid unchanged" {
+  _ws_json coldws default-cold-aaaaa
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/workspaces/coldws/container")
+        _stub_emit '{"container_id":null,"devpod_uid":null,"ambiguous":false}' 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
+  _load_http_resolver
+  run _dvw_resolve_canonical_container coldws
+  [ "$status" -eq 0 ]
+  jq -e '.uid == "default-cold-aaaaa"' \
+    "$HOME/.devpod/contexts/default/workspaces/coldws/workspace.json" >/dev/null
+}
+
+@test "http resolve: align — rewrites local uid to service winner" {
+  _ws_json alignws default-old-bbbbb
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/workspaces/alignws/container")
+        _stub_emit '{"container_id":"c123","devpod_uid":"default-new-ccccc","ambiguous":false}' 200 ;;
+      "GET /v1/catalog")
+        _stub_emit '{ "version":1, "defaults":{}, "repos":[],
+          "workspaces":[{"id":"alignws","uid":"default-old-bbbbb"}] }' 200 ;;
+      "PATCH /v1/workspaces/alignws")
+        _stub_emit '{"ok":true}' 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
+  _load_http_resolver
+  run _dvw_resolve_canonical_container alignws
+  [ "$status" -eq 0 ]
+  jq -e '.uid == "default-new-ccccc"' \
+    "$HOME/.devpod/contexts/default/workspaces/alignws/workspace.json" >/dev/null
+}
+
+@test "http resolve: ambiguous — status 1, no uid rewrite" {
+  _ws_json ambigws default-amb-ddddd
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/workspaces/ambigws/container")
+        _stub_emit '{"container_id":null,"devpod_uid":null,"ambiguous":true}' 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
+  _load_http_resolver
+  run _dvw_resolve_canonical_container ambigws
+  [ "$status" -eq 1 ]
+  jq -e '.uid == "default-amb-ddddd"' \
+    "$HOME/.devpod/contexts/default/workspaces/ambigws/workspace.json" >/dev/null
+}
+
+@test "http resolve: claimed — refuses align when another workspace owns uid" {
+  _ws_json claimws default-claim-eeee
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/workspaces/claimws/container")
+        _stub_emit '{"container_id":"c999","devpod_uid":"default-taken-ffff","ambiguous":false}' 200 ;;
+      "GET /v1/catalog")
+        _stub_emit '{ "version":1, "defaults":{}, "repos":[],
+          "workspaces":[
+            {"id":"claimws","uid":"default-claim-eeee"},
+            {"id":"other","uid":"default-taken-ffff","devpod_state":{"uid":"default-taken-ffff"}}
+          ] }' 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
+  _load_http_resolver
+  run _dvw_resolve_canonical_container claimws
+  [ "$status" -eq 1 ]
+  jq -e '.uid == "default-claim-eeee"' \
+    "$HOME/.devpod/contexts/default/workspaces/claimws/workspace.json" >/dev/null
+}
+
+@test "http resolve: unreachable — status 0, keeps current uid" {
+  _ws_json unreach default-un-ggggg
+  catalog_route() { exit 1; }   # transport failure (curl rc != 0)
+  catalog_stub_install
+  _load_http_resolver
+  run _dvw_resolve_canonical_container unreach
+  [ "$status" -eq 0 ]
+  jq -e '.uid == "default-un-ggggg"' \
+    "$HOME/.devpod/contexts/default/workspaces/unreach/workspace.json" >/dev/null
+}
+
+@test "http provider_has_container: true when container_id present" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/workspaces/hasws/container")
+        _stub_emit '{"container_id":"abc","devpod_uid":"default-has","ambiguous":false}' 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
+  _load_http_resolver
+  run _dvw_provider_has_container hasws
+  [ "$status" -eq 0 ]
+}
+
+@test "http provider_has_container: false when cold / unreachable" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/workspaces/nows/container")
+        _stub_emit '{"container_id":null,"devpod_uid":null,"ambiguous":false}' 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
+  _load_http_resolver
+  run _dvw_provider_has_container nows
+  [ "$status" -ne 0 ]
+}
+
+@test "http load_probe: maps liveness from status endpoint" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/containers/status")
+        _stub_emit '[{"id":"a","liveness":"running"},{"id":"b","liveness":"stopped"}]' 200 ;;
+      "GET /v1/containers/orphans")
+        _stub_emit '[]' 200 ;;
+      "GET /v1/catalog")
+        _stub_emit '{ "version":1, "defaults":{}, "repos":[], "workspaces":[] }' 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
+  _load_http_resolver
+  unset DVW_PROBE_LOADED
+  _dvw_load_probe
+  [ "${DVW_PROBE_STATE[a]}" = "running" ]
+  [ "${DVW_PROBE_STATE[b]}" = "stopped" ]
+}

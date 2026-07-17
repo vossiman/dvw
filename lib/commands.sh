@@ -274,6 +274,7 @@ cmd_doctor() {
   # Effective client wiring (env > config file > default) up front, so a wrong
   # host is visible here instead of as a mysterious "unreachable" downstream.
   ui_info "catalog endpoint: $(catalog_path)"
+  ui_info "catalog transport: bash CLI = per-call SSH+curl socket; TUI may use ssh -L forward — mismatch explains TUI-only failures"
   ui_info "default provider: ${DVW_PROVIDER:-vossisrv}"
   [[ -r "$DVW_CONFIG" ]] && ui_info "config file: $DVW_CONFIG"
 

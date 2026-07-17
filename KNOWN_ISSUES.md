@@ -20,7 +20,7 @@ This was previously `universal:2` (Ubuntu 20.04 focal). Most workarounds below o
 
   **Fixed via three layers:**
   1. `containerEnv` overrides the container Config.Env with valid no-op function bodies, so the first bash devpod spawns inherits clean env.
-  2. `install.sh` re-execs itself via `env -u 'BASH_FUNC_nvs%%' -u 'BASH_FUNC_nvsudo%%' -u 'BASH_FUNC_nvm%%' bash "$0" "$@"` at the very top, guarded by `_AICODINGSETUP_NVS_STRIPPED=1`. `update.sh` (curled by `postStartCommand`) does the same self-reexec under `_NVS_STRIPPED=1`. This stops broken env from cascading into either script's children.
+  2. `install.sh` re-execs itself via `env -u 'BASH_FUNC_nvs%%' -u 'BASH_FUNC_nvsudo%%' -u 'BASH_FUNC_nvm%%' bash "$0" "$@"` at the very top, guarded by `_AICODINGSETUP_NVS_STRIPPED=1`. `on-start.sh` (curled by `postStartCommand`) does the same self-reexec under `_NVS_STRIPPED=1`. This stops broken env from cascading into either script's children.
   3. (Defense-in-depth) `install.sh` patches `/etc/profile` to `unset -f nvs nvsudo` and unset their `BASH_FUNC_*%%` exports after `nvs.sh` runs, so login shells that source `/etc/profile` after the import step still end up with clean env for their children.
 - 🟢 **MITIGATED — tmux 3.0a too old** — no `display-popup` (3.2+) or `allow-passthrough` (3.3+). `install.sh` builds tmux 3.5a from source. Noble ships ≥3.4, so the build step is probably superfluous on `:6`.
 - 🟢 **MITIGATED — `kitty-terminfo` not preinstalled** — `infocmp xterm-kitty` failed, tmux refused to start under kitty SSH. `install.sh` runs `apt install kitty-terminfo` if the terminfo file is missing.
@@ -142,3 +142,16 @@ This was previously `universal:2` (Ubuntu 20.04 focal). Most workarounds below o
 
 - Drop tmux-from-source build step if `:6` ships a recent enough tmux.
 - Drop yarn-source-cleanup, kitty-terminfo apt step if `:6` doesn't ship the broken yarn list and includes the terminfo.
+
+## Archived — host tmux clipboard / DA1 (from `tmux/ANALYSIS.md` + `FIX.md`)
+
+🟢 **RESOLVED (2026-02)** — host-side Kitty/SSH tmux clipboard and garbled DA1
+responses. Keepers only:
+
+- Do **not** put a single-param `Ms=\E]52;c;%p2%s\7` in `terminal-overrides`
+  (tmux #4081); let `terminal-features` `xterm*:clipboard` supply the correct
+  two-param Ms.
+- Prefer `allow-passthrough off` (or careful OSC handling) so DA1 replies from
+  inner programs don't leak as visible `^[[?61;…c` over slow SSH.
+- Working host config: `tmux/tmux-local.conf`. Container tmux is owned by
+  aicoding `configs/tmux/tmux.conf`.
