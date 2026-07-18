@@ -70,6 +70,13 @@ if ! command -v devpod >/dev/null; then
   sudo install -m 0755 /tmp/devpod /usr/local/bin/devpod
 fi
 
+step "disabling devpod docker credential injection"
+# The injected credsStore helper needs a live client tunnel (:12049); when the
+# tunnel is gone it breaks ALL docker pulls in the container, even public
+# images (loft-sh/devpod#1118). We pull public images only, so go anonymous.
+devpod context set-options default -o SSH_INJECT_DOCKER_CREDENTIALS=false \
+  || echo "WARNING: failed to set SSH_INJECT_DOCKER_CREDENTIALS=false — run manually: devpod context set-options default -o SSH_INJECT_DOCKER_CREDENTIALS=false"
+
 if is_wsl; then
   step "WSL detected: checking systemd"
   if [[ ! -f /etc/wsl.conf ]] || ! grep -q '^systemd=true' /etc/wsl.conf; then
