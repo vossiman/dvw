@@ -399,4 +399,5 @@ cmd_new() {
   printf '%s✓%s added to catalog: %s%s%s\n' \
     "$(_ansi "$DVW_GREEN" bold)" "$(ui_reset)" \
     "$(_ansi "$DVW_ACCENT" bold)" "$name" "$(ui_reset)"
+  ui_info "seed drops .devcontainer/ only — after first connect, run /scaffold-project inside the container"
 }

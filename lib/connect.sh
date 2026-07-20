@@ -276,283 +276,35 @@ _dvw_workspace_health() {
 }
 
 # ---------------------------------------------------------------------------
-# Provider-first probe
+# Provider status probe state (filled by lib/connect-resolver.sh).
 #
-# Single SSH round-trip per provider per dvw invocation. The remote script
-# enumerates the agent's own workspace directory list, reads each workspace's
-# uid from its workspace.json on disk, and joins with `docker ps -a` labels
-# server-side. The remote returns `<workspace-id> <state>` lines. The client
-# never needs to know any workspace's uid — the server has both halves of
-# the join and tells us the answer.
-#
-# Why provider-side-join (not client-side-with-cached-uid): the client's
-# notion of uid (in the catalog snapshot or in this machine's local devpod
-# state) can be stale or absent — especially on the "first dvw run on this
-# machine" case. The agent's workspace.json on the provider IS the source
-# of truth for the id→uid mapping. Asking the server for the join makes the
-# probe robust to every client-side missing-data case.
-#
-# Catalog convention used here: the per-workspace `.provider` field is the
-# provider NAME, which by dvw convention also matches the SSH host alias
-# (`dvw doctor` enforces this via `devpod provider add … --option HOST=$p`).
-# So `ssh <provider-name>` reaches the right host without any further name
-# resolution.
+# Implementations of _dvw_load_probe / _dvw_provider_has_container /
+# _dvw_resolve_canonical_container live in connect-resolver.sh (catalog-service
+# HTTP). The `dvw` entrypoint sources that file AFTER this one so those
+# definitions win. Do not reintroduce SSH fan-out copies here.
 #
 # State for each catalog entry lands in DVW_PROBE_STATE[id]:
 #   alive       container running, /proc/1/cwd is a live inode
 #   stale       container running, /proc/1/cwd shows (deleted)
 #   stopped     container exists on provider, not running
 #   absent      no container on provider for this workspace
-#   unreachable could not query the provider host (ssh failed). Captured
-#               stderr in DVW_PROBE_ERROR. Distinct from "stopped".
+#   unreachable could not query the provider (catalog unreachable). Captured
+#               detail in DVW_PROBE_ERROR. Distinct from "stopped".
 #   unknown     catalog entry has no provider name set at all. Should not
 #               happen for new workspaces; only legacy/corrupt entries.
 #
-# This is a READ-ONLY probe. The remote script does no docker mutations.
+# This is a READ-ONLY probe. The service does no docker mutations for status.
 # ---------------------------------------------------------------------------
 declare -gA DVW_PROBE_STATE=()
 DVW_PROBE_ERROR=""
 DVW_PROBE_LOADED=""
-# Orphan container detection: uids found in `docker ps -a` labels that are
-# not claimed by any agent workspace directory. Surfaced as warnings in
-# `dvw doctor`. Read-only; we never act on them.
+# Orphan container detection: uids found in docker that are not claimed by any
+# agent workspace directory. Surfaced as warnings in `dvw doctor`. Read-only.
 DVW_PROBE_ORPHAN_UIDS=""
 # Per-orphan details, keyed by uid. Value is a tab-separated record:
-#   "<name>\t<state>\t<mountstatus>\t<mountsrc>\t<workspace_id_inside_mount>"
-# Populated by _dvw_probe_one_host's server-side script.
+#   "<host>\t<name>\t<state>\t<mountstatus>\t<mountsrc>\t<workspace_id_inside_mount>"
+# Populated by connect-resolver.sh from GET /v1/containers/orphans.
 declare -gA DVW_PROBE_ORPHAN_INFO=()
-
-_dvw_load_probe() {
-  [[ -n "$DVW_PROBE_LOADED" ]] && return 0
-  DVW_PROBE_LOADED=1
-
-  local catalog
-  catalog=$(catalog_read 2>/dev/null) || return 0
-  [[ -z "$catalog" ]] && return 0
-
-  # Per-workspace (id, provider-name) from the catalog. Nothing else from
-  # the catalog is read — uid/HOST resolution happens server-side.
-  local rows
-  rows=$(jq -r '.workspaces[] | "\(.id)\t\(.provider // "")"' <<<"$catalog")
-  [[ -z "$rows" ]] && return 0
-
-  # Bucket workspaces by provider (== ssh host).
-  declare -A host_ids=()
-  local id provider
-  while IFS=$'\t' read -r id provider; do
-    [[ -z "$id" ]] && continue
-    if [[ -z "$provider" ]]; then
-      DVW_PROBE_STATE["$id"]="unknown"
-      continue
-    fi
-    host_ids["$provider"]+="$id"$'\n'
-  done <<<"$rows"
-
-  local host
-  for host in "${!host_ids[@]}"; do
-    _dvw_probe_one_host "$host" "${host_ids[$host]}"
-  done
-}
-
-# Probe a single provider host. Args:
-#   $1 = host alias (must resolve via ~/.ssh/config; by dvw convention this
-#        equals the catalog's provider NAME)
-#   $2 = newline-separated workspace ids on this host
-#
-# The remote script does the id→state join itself by reading every
-# ~/.devpod/agent/contexts/default/workspaces/*/workspace.json for the uid,
-# then matching against `docker ps -a` labels. It also emits orphan-marker
-# lines for any labeled container whose uid isn't claimed by a workspace dir.
-#
-# Output lines from remote:
-#   <id> alive|stale|stopped|absent
-#   __ORPHAN <uid>
-#
-# On ssh failure (timeout/auth/no-route/host-unknown): mark every id on
-# this host as `unreachable`, store stderr in DVW_PROBE_ERROR. Distinct
-# from "stopped" — reachability and aliveness are different questions.
-_dvw_probe_one_host() {
-  local host="$1" ids="$2"
-  local err_file out rc=0
-  err_file=$(mktemp)
-  # `|| rc=$?` keeps set -e from aborting on ssh failure; we need to record
-  # `unreachable` state for the host's workspaces, not abort the whole run.
-  #
-  # The remote script's safety: read-only on disk and on docker. No `docker
-  # run/stop/rm`, no `rm`/`mv`/`>`. Anything that could mutate is absent
-  # from the heredoc by design — that's invariant #3 (audit it on every
-  # edit).
-  out=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" 'bash -s' 2>"$err_file" <<'REMOTE'
-set +e
-ctx_dir="$HOME/.devpod/agent/contexts/default/workspaces"
-ps_tmp=$(mktemp)
-# Filter at the docker level to only see containers that carry the
-# `dev.containers.id` label. Containers without that label are not
-# devpod-managed and have no business in the orphan/state output.
-# This avoids the IFS-empty-field parsing trap (bash strips leading
-# IFS chars when IFS is whitespace-only, including TAB).
-docker ps -a --filter 'label=dev.containers.id' \
-  --format '{{.Label "dev.containers.id"}}	{{.State}}	{{.ID}}' 2>/dev/null > "$ps_tmp"
-
-# Track uids claimed by a workspace dir; remaining ps entries are orphans.
-claimed_tmp=$(mktemp)
-
-if [ -d "$ctx_dir" ]; then
-  for ws_dir in "$ctx_dir"/*/; do
-    [ -d "$ws_dir" ] || continue
-    ws_id=$(basename "$ws_dir")
-    ws_uid=$(jq -r '.workspace.uid // empty' "$ws_dir/workspace.json" 2>/dev/null)
-    if [ -z "$ws_uid" ]; then
-      echo "$ws_id absent"
-      continue
-    fi
-    echo "$ws_uid" >> "$claimed_tmp"
-    # awk -F'\t' so $1=label even when label is empty (gives "")
-    match=$(awk -F'\t' -v u="$ws_uid" '$1==u {print; exit}' "$ps_tmp")
-    if [ -z "$match" ]; then
-      echo "$ws_id absent"
-      continue
-    fi
-    state=$(awk -F'\t' '{print $2}' <<<"$match")
-    cid=$(awk -F'\t' '{print $3}' <<<"$match")
-    if [ "$state" = "running" ]; then
-      pid=$(docker inspect --format '{{.State.Pid}}' "$cid" 2>/dev/null)
-      cwd=""
-      if [ -n "$pid" ] && [ "$pid" != "0" ]; then
-        cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null)
-      fi
-      case "$cwd" in
-        *'(deleted)'*) echo "$ws_id stale"  ;;
-        *)             echo "$ws_id alive"  ;;
-      esac
-    else
-      echo "$ws_id stopped"
-    fi
-  done
-fi
-
-# Orphans: labelled containers whose uid is not claimed by any workspace dir.
-# For each one, emit a tab-separated detail line so the client can show enough
-# in `dvw doctor` to decide whether to investigate further.
-#
-# Output format (TAB-separated):
-#   __ORPHAN<TAB>uid<TAB>name<TAB>state<TAB>mountstatus<TAB>mountsrc<TAB>ws_dest_id
-#
-# mountstatus:
-#   alive    — bind mount source path exists; for running containers, PID 1
-#              cwd doesn't show the (deleted) inode marker
-#   deleted  — source path missing on host (or running container's PID 1 cwd
-#              shows (deleted) — the wipe-footgun fingerprint)
-#   nomount  — container has no /workspaces/* bind mount (rare; non-standard)
-while IFS=$'\t' read -r o_uid o_state o_cid; do
-  [ -z "$o_uid" ] && continue
-  if grep -qFx "$o_uid" "$claimed_tmp" 2>/dev/null; then
-    continue
-  fi
-  o_name=$(docker inspect --format '{{.Name}}' "$o_cid" 2>/dev/null | sed 's:^/::')
-  # Find /workspaces/* bind mount. Emit as "dest|source", grep for /workspaces,
-  # then split — avoids depending on Sprig template funcs which aren't in all
-  # Docker versions.
-  mount_line=$(docker inspect --format '{{range .Mounts}}{{.Destination}}|{{.Source}}{{println}}{{end}}' "$o_cid" 2>/dev/null | grep '^/workspaces/' | head -1)
-  if [ -z "$mount_line" ]; then
-    o_mount_status="nomount"
-    o_mount_src=""
-    o_ws_dest_id=""
-  else
-    o_ws_dest_id=$(echo "$mount_line" | awk -F'|' '{print $1}' | sed 's:^/workspaces/::')
-    o_mount_src=$(echo "$mount_line" | awk -F'|' '{print $2}')
-    o_mount_status="alive"
-    if [ "$o_state" = "running" ]; then
-      o_pid=$(docker inspect --format '{{.State.Pid}}' "$o_cid" 2>/dev/null)
-      if [ -n "$o_pid" ] && [ "$o_pid" != "0" ]; then
-        o_cwd=$(readlink "/proc/$o_pid/cwd" 2>/dev/null)
-        case "$o_cwd" in
-          *'(deleted)'*) o_mount_status="deleted" ;;
-        esac
-      fi
-      [ "$o_mount_status" = "alive" ] && [ ! -d "$o_mount_src" ] && o_mount_status="deleted"
-    else
-      [ ! -d "$o_mount_src" ] && o_mount_status="deleted"
-    fi
-  fi
-  printf '__ORPHAN\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$o_uid" "$o_name" "$o_state" "$o_mount_status" "$o_mount_src" "$o_ws_dest_id"
-done < "$ps_tmp"
-
-rm -f "$ps_tmp" "$claimed_tmp"
-REMOTE
-) || rc=$?
-
-  if (( rc != 0 )); then
-    DVW_PROBE_ERROR=$(<"$err_file")
-    rm -f "$err_file"
-    local id
-    while IFS= read -r id; do
-      [[ -z "$id" ]] && continue
-      DVW_PROBE_STATE["$id"]="unreachable"
-    done <<<"$ids"
-    return 0
-  fi
-  rm -f "$err_file"
-
-  # Parse the response. id→state lines (space-separated) set DVW_PROBE_STATE;
-  # __ORPHAN lines (TAB-separated, multi-field) populate DVW_PROBE_ORPHAN_INFO.
-  local orphans=()
-  local line
-  while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    if [[ "$line" == "__ORPHAN"$'\t'* ]]; then
-      local _marker o_uid o_name o_state o_mstatus o_msrc o_wsdest
-      IFS=$'\t' read -r _marker o_uid o_name o_state o_mstatus o_msrc o_wsdest <<<"$line"
-      [[ -z "$o_uid" ]] && continue
-      # Record format: host \t name \t state \t mountstatus \t mountsrc \t wsdest
-      # host is prepended client-side (the server doesn't know its own alias).
-      DVW_PROBE_ORPHAN_INFO["$o_uid"]="${host}"$'\t'"${o_name}"$'\t'"${o_state}"$'\t'"${o_mstatus}"$'\t'"${o_msrc}"$'\t'"${o_wsdest}"
-      orphans+=("$o_uid")
-    else
-      local rid rstate
-      rid=$(awk '{print $1}' <<<"$line")
-      rstate=$(awk '{print $2}' <<<"$line")
-      [[ -n "$rid" && -n "$rstate" ]] && DVW_PROBE_STATE["$rid"]="$rstate"
-    fi
-  done <<<"$out"
-
-  # For ids the host didn't mention at all (no workspace dir AND no
-  # container), fall back to `absent`.
-  local id
-  while IFS= read -r id; do
-    [[ -z "$id" ]] && continue
-    [[ -z "${DVW_PROBE_STATE[$id]:-}" ]] && DVW_PROBE_STATE["$id"]="absent"
-  done <<<"$ids"
-
-  if (( ${#orphans[@]} > 0 )); then
-    DVW_PROBE_ORPHAN_UIDS=$(printf '%s\n' "${orphans[@]}")
-  fi
-}
-
-# Container-safety invariant: this is the ONLY place dvw decides whether
-# a container exists at the moment of a destructive call. It MUST be a
-# fresh SSH probe — never read from the cached _dvw_load_probe table.
-# Reason: there's an unbounded gap between when the bulk probe ran (top
-# of the invocation, used for status display) and when a code path is
-# about to call `devpod up`. Within that gap a container could have been
-# created (e.g. user `devpod up` from another shell). Running `devpod up`
-# against a now-existing container is the wipe footgun. So always ask
-# fresh, right before the decision.
-#
-# Costs one local `devpod list` + one short SSH to the provider. Cheap.
-_dvw_provider_has_container() {
-  local id="$1" host uid info
-  info=$(devpod list --output json 2>/dev/null \
-    | jq -c --arg id "$id" '.[] | select(.id == $id)')
-  [[ -n "$info" ]] || return 1
-  uid=$(jq  -r '.uid // empty'                          <<<"$info" 2>/dev/null)
-  host=$(jq -r '.provider.options.HOST.value // empty'  <<<"$info" 2>/dev/null)
-  [[ -n "$host" && -n "$uid" ]] || return 1
-  ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" \
-    "docker ps -a --filter label=dev.containers.id=$uid -q 2>/dev/null | head -1 | grep -q ." \
-    >/dev/null 2>&1
-}
 
 # Wrapper for `devpod up <id> [args...]` with a safety check.
 #
@@ -565,10 +317,11 @@ _dvw_provider_has_container() {
 # re-synthesizes content/ on the agent and leaves the container with a
 # stale bind mount. Lost work.
 #
-# So before each `devpod up`, ask the provider host directly: do you have
-# a container for this workspace? If yes, refuse without explicit
-# confirmation. cmd_recreate doesn't go through this — recreate is
-# destructive by design and the user typed it on purpose.
+# So before each `devpod up`, ask the catalog service: does a container
+# currently exist for this workspace? (`_dvw_provider_has_container` from
+# connect-resolver.sh). If yes, refuse without explicit confirmation.
+# cmd_recreate doesn't go through this — recreate is destructive by design
+# and the user typed it on purpose.
 _dvw_safe_devpod_up() {
   local id="$1"
   shift
@@ -884,104 +637,10 @@ _dvw_pick_canonical_uid() {
   return 0
 }
 
-# Resolve which container is canonical for <id> by direct observation of the
-# provider host. Writes the resolved uid into the local workspace.json (#1)
-# and pushes to the catalog service (#3). The agent's workspace.json (#2)
-# is intentionally NOT consulted or written for uid purposes.
-#
-# Authority: a container is canonical iff its bind-mount destination is
-# /workspaces/<id> AND (when ≥2 candidates exist) it has a live tmux session
-# named `work`. Rationale: the uid in workspace.json files is bookkeeping
-# that gets re-written by whichever devpod client connects last via
-# --workspace-info; the running tmux session inside the container is the
-# user's actual valuable state and the only signal that's stable across
-# stale-client-write races.
-#
-# Replaces an earlier `_dvw_reconcile_uid` that trusted the agent file as
-# authoritative. That model failed when stale ssh tunnels carrying old
-# --workspace-info blobs silently overwrote the agent file, causing
-# routing to flap between sibling containers.
-#
-# Return codes:
-#   0 — local file #1 reflects the canonical uid (no-op if already correct,
-#       or written atomically + catalog updated if it had to change). Also
-#       returned when no candidate containers exist yet — caller falls
-#       through to the existing cold-start (`_dvw_safe_devpod_up`) path.
-#   1 — pathological state (≥2 candidate containers, none with a `work`
-#       tmux session, cannot disambiguate). Caller should stop.
-#
-# No container is ever touched by this function.
-_dvw_resolve_canonical_container() {
-  local id="$1" path host current_uid probe chosen
-  path=$(catalog_devpod_workspace_json_path "$id")
-  [[ -f "$path" ]] || return 0
-  current_uid=$(jq -r '.uid // empty' "$path" 2>/dev/null)
-  host=$(jq -r '.provider.options.HOST.value // empty' "$path" 2>/dev/null)
-  if [[ -z "$host" ]]; then
-    ui_status_warn "resolve: no provider HOST in $id's workspace.json — skipping"
-    return 0
-  fi
-  # Single SSH round-trip. Scope candidates to *this* workspace by the bind-mount
-  # destination /workspaces/<id> (baked at create, immutable, contains the exact
-  # id) rather than a 2-char name-slug prefix, which collided across workspaces
-  # sharing a prefix (devmachine-git vs devmachine-new-dvw). For each matching
-  # container, probe whether a tmux session named `work` exists; emit
-  # `<uid>\t<work_session_activity>` (or `<uid>\t-1` if no such session).
-  probe=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" "
-    target='/workspaces/${id}'
-    for cid in \$(docker ps --filter 'label=dev.containers.id' --format '{{.ID}}' 2>/dev/null); do
-      hit=\$(docker inspect -f '{{range .Mounts}}{{.Destination}}{{\"\\n\"}}{{end}}' \"\$cid\" 2>/dev/null \
-            | awk -v t=\"\$target\" '\$0 == t { print; exit }')
-      [[ -z \"\$hit\" ]] && continue
-      uid=\$(docker inspect -f '{{index .Config.Labels \"dev.containers.id\"}}' \"\$cid\" 2>/dev/null)
-      [[ -z \"\$uid\" ]] && continue
-      act=\$(docker exec \"\$cid\" tmux list-sessions \
-              -F '#{session_name} #{session_activity}' 2>/dev/null \
-            | awk '\$1 == \"work\" { print \$2; exit }')
-      [[ -z \"\$act\" ]] && act=-1
-      printf '%s\\t%s\\n' \"\$uid\" \"\$act\"
-    done
-  " 2>/dev/null) || {
-    ui_status_warn "resolve: ssh to $host failed — proceeding with current local uid"
-    return 0
-  }
-
-  chosen=$(_dvw_pick_canonical_uid "$id" "$probe") || return 1
-  [[ -z "$chosen" ]] && return 0
-
-  if [[ "$chosen" != "$current_uid" ]]; then
-    if _dvw_uid_claimed_by_other "$id" "$chosen"; then
-      ui_status_warn "$id: refusing to align to uid=$chosen — it is already claimed by another workspace in the catalog"
-      ui_info "  run \`dvw doctor\` to inspect; this prevents cross-workspace identity theft"
-      return 1
-    fi
-    ui_status_warn "$id: canonical uid=$chosen (was=${current_uid:-unset}) — aligning local & catalog"
-    _dvw_rewrite_local_uid "$id" "$chosen" || return 1
-    catalog_workspace_set_devpod_state "$id" >/dev/null 2>&1 || {
-      ui_status_warn "could not push uid=$chosen to catalog (will retry next time)"
-    }
-    ui_status_ok "$id: uid aligned to $chosen"
-  fi
-  return 0
-}
-
-# Single SSH round-trip to the provider host. Returns JSON with remote_uid,
-# has_content, volumes (array of dind volume names with the devpod prefix).
-_dvw_probe_remote_uid() {
-  local host="$1" id="$2"
-  ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" "
-    set +e
-    ws_dir=\$HOME/.devpod/agent/contexts/default/workspaces/$id
-    remote_uid=\$(jq -r '.workspace.uid // empty' \"\$ws_dir/workspace.json\" 2>/dev/null)
-    has_content=false
-    [[ -d \"\$ws_dir/content\" ]] && has_content=true
-    vols=\$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep '^dind-var-lib-docker-' || true)
-    jq -cn --arg uid \"\$remote_uid\" --arg hc \"\$has_content\" --arg vols \"\$vols\" '
-      { remote_uid: \$uid,
-        has_content: (\$hc == \"true\"),
-        volumes: (\$vols | split(\"\n\") | map(select(. != \"\"))) }'
-  "
-}
+# Canonical-container resolve (_dvw_resolve_canonical_container) is implemented
+# in lib/connect-resolver.sh via GET /v1/workspaces/{id}/container. Keep
+# _dvw_pick_canonical_uid above for unit tests and any offline tooling that
+# still reasons over a probe blob; production no longer SSH-probes for resolve.
 
 # Tear down a stale SSH ControlMaster whose remote TCP connection is dead.
 # End-to-end probe through the multiplex socket with a tight outer timeout;

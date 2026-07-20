@@ -7,8 +7,9 @@ Counterpart to `aiCodingBaseSetup/configs/tmux/tmux.conf` (deployed automaticall
 - **`tmux-local.conf`** — laptop/desktop config. Uses `Ctrl+a` prefix (same as container — we don't nest tmux).
 - **`tmux-diag.sh`** — diagnostic script for clipboard/escape-sequence issues.
 - **`clipboard-test.sh`** — dedicated clipboard-flow tester (OSC 52, xsel, xclip).
-- **`ANALYSIS.md`** — investigation notes from when these were tuned.
-- **`FIX.md`** — concrete fixes applied (escape-time tweaks, OSC 10/11 handling, etc.).
+
+Clipboard / DA1 investigation notes were archived into `KNOWN_ISSUES.md`
+(“Archived — host tmux clipboard / DA1”).
 
 ## Activation
 

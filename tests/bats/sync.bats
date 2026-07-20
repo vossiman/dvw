@@ -112,7 +112,5 @@ _serve_workspace_with_snapshot() {
   jq -e . "$ws_path" >/dev/null
 }
 
-# TODO: canonical-container resolver tests (_dvw_resolve_canonical_container,
-# now lib/connect-resolver.sh → GET /v1/workspaces/{id}/container). Feed the
-# stub container responses for: no container (cold), single container align,
-# ambiguous (status 1), uid-claimed-by-other refusal, service unreachable.
+# HTTP resolver cold/align/ambiguous/claimed/unreachable coverage lives in
+# resolver.bats (lib/connect-resolver.sh).

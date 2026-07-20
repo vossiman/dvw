@@ -62,3 +62,19 @@ _write_cache() { mkdir -p "$DVW_STATE_DIR"; printf '%s\n%s\n' "$1" "$2" > "$DVW_
   run jobs -p
   [ -z "$output" ]
 }
+
+@test "cmd_update: refuses when checkout is a git submodule" {
+  PARENT="$TMP/super"
+  git init -q "$PARENT"
+  git -C "$PARENT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m super
+  git -C "$REMOTE" symbolic-ref HEAD refs/heads/main
+  git -C "$PARENT" -c protocol.file.allow=always submodule add -q -b main "$REMOTE" sub
+  export DVW_ROOT="$PARENT/sub"
+  mkdir -p "$DVW_ROOT/lib"
+  cp "$REAL_ROOT/lib/version.sh" "$DVW_ROOT/lib/version.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$DVW_ROOT/dvw-install.sh"
+  chmod +x "$DVW_ROOT/dvw-install.sh"
+  run cmd_update
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"submodule"* ]]
+}
