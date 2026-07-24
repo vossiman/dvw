@@ -35,8 +35,8 @@ def remove(workspace_id: str) -> list[str]:
 
 
 def connect(workspace_id: str, mode: str | None = None) -> list[str]:
-    """Connect argv. With an explicit mode ("ssh"/"cursor"/"both") the bash
-    side skips its gum chooser (--ssh/--cursor/--both)."""
+    """Connect argv. Bare id (mode=None) and mode=\"ssh\" both SSH; pass
+    \"cursor\" / \"both\" for the other modes."""
     if mode is None:
         return [dvw_bin(), workspace_id]
     return [dvw_bin(), workspace_id, f"--{mode}"]

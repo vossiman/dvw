@@ -7,6 +7,18 @@ Counterpart to `aiCodingBaseSetup/configs/tmux/tmux.conf` (deployed automaticall
 - **`tmux-local.conf`** — laptop/desktop config. Uses `Ctrl+a` prefix (same as container — we don't nest tmux).
 - **`tmux-diag.sh`** — diagnostic script for clipboard/escape-sequence issues.
 - **`clipboard-test.sh`** — dedicated clipboard-flow tester (OSC 52, xsel, xclip).
+- **`codex-scroll-test.sh`** — repeatable Codex/tmux rendering test. Prompts for a free-text environment label, runs a fixed 180-line Codex response, records whether scrolling repaired the display, and appends diagnostics plus tmux's internal capture to a log.
+
+Run the scroll test from each environment you want to compare:
+
+```bash
+bash devpod/dvw/tmux/codex-scroll-test.sh
+```
+
+Results default to `~/.local/state/codex-scroll-test/results.log`. To collect
+multiple machines into a shared or repository-external file, pass
+`--log /path/to/results.log` or set `CODEX_SCROLL_TEST_LOG`. Use
+`--collect-only` to record an already-observed session without launching Codex.
 
 Clipboard / DA1 investigation notes were archived into `KNOWN_ISSUES.md`
 (“Archived — host tmux clipboard / DA1”).

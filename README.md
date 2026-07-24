@@ -24,10 +24,10 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | Command | Effect |
 |--|--|
 | `dvw` | top-level menu (Connect/New/Status/Stop/Start/Remove/Doctor) |
-| `dvw <id>` | connect to workspace; prompts SSH (terminal + tmux) or Cursor (GUI), pre-selecting the catalog's saved IDE |
-| `dvw <id> --ssh` | skip the prompt; ssh + attach `work` tmux session |
-| `dvw <id> --cursor` | skip the prompt; open in Cursor via `devpod up --ide cursor` |
-| `dvw <id> --both` | skip the prompt; open in Cursor, then ssh + attach `work` tmux session |
+| `dvw <id>` | connect via SSH (terminal + tmux `work` session) |
+| `dvw <id> --ssh` | same as bare connect (explicit) |
+| `dvw <id> --cursor` | open in Cursor via `devpod up --ide cursor` |
+| `dvw <id> --both` | open in Cursor, then ssh + attach `work` tmux session |
 | `dvw -l` | list workspaces (MRU order) |
 | `dvw new` | wizard: create a new workspace, append to catalog |
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
@@ -316,12 +316,13 @@ falls back to the gum menu without it, or with `DVW_NO_TUI=1`).
 
 - left: workspaces with live state (● running / ⚠ stale / ○ stopped / ✗ absent)
 - right: inspect detail (health, mounts, cpu/mem, disk) for the focused workspace
-- `enter` connect · `s`/`S` stop/start · `r` rebuild · `X` remove · `n` new
-- `d` doctor · `o` orphans · `x` menu · `/` filter · `R` refresh · `q` quit
+- `enter` / double-click → ssh · `x` menu (ssh / cursor / both + lifecycle)
+- `s`/`S` stop/start · `r` rebuild · `X` remove · `n` new
+- `d` doctor · `o` orphans · `/` filter · `R` refresh · `q` quit
 
-GUI IDE connects (cursor/vscode/jetbrains) launch in the background and the TUI
-stays up; terminal connects (ssh) suspend the TUI and resume when the session
-ends. All mutations run through the same bash code paths as the CLI.
+SSH connects suspend the TUI and resume when the session ends. Cursor (via the
+`x` menu or `dvw <id> --cursor`) launches in the background and the TUI stays
+up. All mutations run through the same bash code paths as the CLI.
 
 ## Tests
 

@@ -11,7 +11,9 @@ from textual.widgets.option_list import Option
 
 
 MENU_ITEMS = [
-    ("connect", "enter  connect"),
+    ("ssh", "enter  ssh"),
+    ("cursor", "      cursor"),
+    ("both", "      both"),
     ("stop", "s      stop"),
     ("start", "S      start"),
     ("rebuild", "r      rebuild"),

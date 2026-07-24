@@ -8,28 +8,12 @@ from textual.widgets import OptionList
 from dvw_tui import actions
 from dvw_tui.app import DvwApp
 from dvw_tui.screens.confirm import ConfirmScreen
-from dvw_tui.screens.connect import ConnectScreen
+from dvw_tui.screens.main import WorkspaceTable
+from dvw_tui.screens.menu import MenuScreen
 
 
-async def test_connect_gui_runs_background(fake_client, monkeypatch):
-    calls = {}
-    monkeypatch.setattr(actions, "run_background", lambda argv: calls.setdefault("bg", argv))
-    monkeypatch.setenv("DVW_BIN", "dvw")
-    app = DvwApp(client=fake_client)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("enter")          # alpha -> ConnectScreen
-        await pilot.pause()
-        assert isinstance(app.screen, ConnectScreen)
-        option_list = app.screen.query_one("#connect-list", OptionList)
-        # alpha's catalog ide is cursor -> cursor preselected
-        assert option_list.get_option_at_index(option_list.highlighted).id == "cursor"
-        await pilot.press("enter")          # cursor -> background
-        await pilot.pause()
-        assert calls["bg"] == ["dvw", "alpha", "--cursor"]
-
-
-async def test_connect_terminal_suspends(fake_client, monkeypatch):
+async def test_enter_sshs_immediately(fake_client, monkeypatch):
+    """Enter skips any chooser and suspends with --ssh."""
     calls = {}
     monkeypatch.setattr(
         DvwApp, "_run_suspended", lambda self, argv, pause_on_fail=True:
@@ -38,16 +22,74 @@ async def test_connect_terminal_suspends(fake_client, monkeypatch):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("down")           # focus beta, ide=ssh
+        await pilot.press("enter")
         await pilot.pause()
-        await pilot.press("enter")          # -> ConnectScreen
+        assert calls["suspended"] == ["dvw", "alpha", "--ssh"]
+
+
+async def test_double_click_sshs(fake_client, monkeypatch):
+    calls = {}
+    monkeypatch.setattr(
+        DvwApp, "_run_suspended", lambda self, argv, pause_on_fail=True:
+            calls.setdefault("suspended", argv))
+    monkeypatch.setenv("DVW_BIN", "dvw")
+    app = DvwApp(client=fake_client)
+    async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        assert isinstance(app.screen, ConnectScreen)
-        option_list = app.screen.query_one("#connect-list", OptionList)
-        assert option_list.get_option_at_index(option_list.highlighted).id == "ssh"
-        await pilot.press("enter")          # ssh -> suspend
+        # offset (2, 1): under the header row so style.meta has row=0
+        await pilot.click(WorkspaceTable, offset=(2, 1), times=2)
         await pilot.pause()
-        assert calls["suspended"] == ["dvw", "beta", "--ssh"]
+        assert calls["suspended"] == ["dvw", "alpha", "--ssh"]
+
+
+async def test_single_click_does_not_ssh(fake_client, monkeypatch):
+    calls = {}
+    monkeypatch.setattr(
+        DvwApp, "_run_suspended", lambda self, argv, pause_on_fail=True:
+            calls.setdefault("suspended", argv))
+    monkeypatch.setenv("DVW_BIN", "dvw")
+    app = DvwApp(client=fake_client)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.click(WorkspaceTable, offset=(2, 1), times=1)
+        await pilot.pause()
+        assert "suspended" not in calls
+
+
+async def test_menu_cursor_runs_background(fake_client, monkeypatch):
+    calls = {}
+    monkeypatch.setattr(actions, "run_background", lambda argv: calls.setdefault("bg", argv))
+    monkeypatch.setenv("DVW_BIN", "dvw")
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+        assert isinstance(app.screen, MenuScreen)
+        option_list = app.screen.query_one("#menu-list", OptionList)
+        # ssh (0) -> cursor (1)
+        option_list.highlighted = 1
+        await pilot.press("enter")
+        await pilot.pause()
+        assert calls["bg"] == ["dvw", "alpha", "--cursor"]
+
+
+async def test_menu_both_suspends(fake_client, monkeypatch):
+    calls = {}
+    monkeypatch.setattr(
+        DvwApp, "_run_suspended", lambda self, argv, pause_on_fail=True:
+            calls.setdefault("suspended", argv))
+    monkeypatch.setenv("DVW_BIN", "dvw")
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+        option_list = app.screen.query_one("#menu-list", OptionList)
+        option_list.highlighted = 2  # both
+        await pilot.press("enter")
+        await pilot.pause()
+        assert calls["suspended"] == ["dvw", "alpha", "--both"]
 
 
 async def test_stop_runs_suspended(fake_client, monkeypatch):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 from rich.text import Text
-from textual import work
+from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -20,12 +20,52 @@ _CATALOG_HOST = os.environ.get("DVW_CATALOG_HOST", "vossisrv")
 
 
 class WorkspaceTable(DataTable):
-    """Left panel — one row per workspace, MRU order from the API."""
+    """Left panel — one row per workspace, MRU order from the API.
+
+    Single-click focuses a row. Double-click SSHs. Enter (MainScreen) also SSHs.
+
+    Overrides DataTable._on_click so a second slow click on the already-focused
+    row does *not* count as select — only event.chain == 2 (double-click).
+    """
+
+    async def _on_click(self, event: events.Click) -> None:
+        from textual.coordinate import Coordinate
+
+        self._set_hover_cursor(True)
+        meta = event.style.meta
+        if "row" not in meta or "column" not in meta:
+            return
+        row_index = meta["row"]
+        column_index = meta["column"]
+        if self.show_header and row_index == -1:
+            # Preserve header-click behaviour from DataTable.
+            await super()._on_click(event)
+            return
+        if self.show_row_labels and column_index == -1:
+            await super()._on_click(event)
+            return
+        if not (self.show_cursor and self.cursor_type != "none"):
+            return
+        if self.cursor_type != "row" and meta.get("out_of_bounds", False):
+            return
+
+        self.cursor_coordinate = Coordinate(row_index, column_index)
+        self._scroll_cursor_into_view(animate=True)
+        event.stop()
+
+        if event.chain != 2:
+            return
+        screen = self.screen
+        if not isinstance(screen, MainScreen):
+            return
+        workspace = screen.focused_workspace()
+        if workspace is not None:
+            self.app.do_connect(workspace, "ssh")
 
 
 class MainScreen(Screen):
     BINDINGS = [
-        Binding("enter", "connect", "connect", priority=True),
+        Binding("enter", "connect", "ssh", priority=True),
         Binding("s", "stop", "stop"),
         Binding("S", "start", "start"),
         Binding("r", "rebuild", "rebuild"),
@@ -257,7 +297,7 @@ class MainScreen(Screen):
         if self.query_one("#filter-input", Input).has_focus:
             self._commit_filter()
             return
-        self.app.do_connect(self.focused_workspace())
+        self.app.do_connect(self.focused_workspace(), "ssh")
 
     def action_stop(self) -> None:
         self.app.do_simple_action("stop", self.focused_workspace())

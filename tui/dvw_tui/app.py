@@ -11,7 +11,6 @@ from textual.app import App
 from . import actions
 from .client import CatalogClient, Workspace
 from .screens.confirm import ConfirmScreen
-from .screens.connect import ConnectScreen
 from .screens.doctor import DoctorScreen
 from .screens.main import MainScreen
 from .screens.menu import MenuScreen
@@ -81,22 +80,20 @@ class DvwApp(App):
 
     # ---- actions ------------------------------------------------------------
 
-    def do_connect(self, workspace: Workspace | None) -> None:
+    def do_connect(self, workspace: Workspace | None, mode: str) -> None:
+        """Connect immediately in the given mode (ssh / cursor / both).
+
+        Enter and double-click always pass mode=\"ssh\". Cursor and both are
+        only offered via the context menu (or CLI flags).
+        """
         if workspace is None:
             return
-
-        def on_mode(mode: str | None) -> None:
-            if mode is None:
-                return
-            argv = actions.connect(workspace.id, mode)
-            if actions.connect_mode(mode) == "background":
-                actions.run_background(argv)
-                self.notify(f"connecting {workspace.id} (cursor)…",
-                            title="dvw")
-            else:
-                self._run_suspended(argv)
-
-        self.push_screen(ConnectScreen(workspace.id, workspace.ide), on_mode)
+        argv = actions.connect(workspace.id, mode)
+        if actions.connect_mode(mode) == "background":
+            actions.run_background(argv)
+            self.notify(f"connecting {workspace.id} (cursor)…", title="dvw")
+        else:
+            self._run_suspended(argv)
 
     def do_simple_action(self, name: str, workspace: Workspace | None) -> None:
         if workspace is None:
@@ -147,8 +144,8 @@ class DvwApp(App):
         def on_result(action: str | None) -> None:
             if action is None:
                 return
-            if action == "connect":
-                self.do_connect(workspace)
+            if action in ("ssh", "cursor", "both"):
+                self.do_connect(workspace, action)
             elif action in ("stop", "start"):
                 self.do_simple_action(action, workspace)
             elif action in ("rebuild", "remove"):

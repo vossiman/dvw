@@ -15,24 +15,18 @@ cmd_connect() {
     return 1
   fi
 
-  # Optional flags to skip the chooser for non-interactive use:
-  #   dvw <id> --ssh     — go straight to ssh+tmux
-  #   dvw <id> --cursor  — go straight to Cursor (devpod up --ide cursor)
+  # Connect mode: bare `dvw <id>` defaults to SSH. Optional flags:
+  #   dvw <id> --ssh     — ssh + attach `work` tmux session (same as default)
+  #   dvw <id> --cursor  — open in Cursor (devpod up --ide cursor)
   #   dvw <id> --both    — Cursor first, then exec into ssh+tmux
-  local forced_mode=""
+  local mode="ssh"
   case "${1:-}" in
-    --ssh)    forced_mode="ssh" ;;
-    --cursor) forced_mode="cursor" ;;
-    --both)   forced_mode="both" ;;
+    --ssh)    mode="ssh" ;;
+    --cursor) mode="cursor" ;;
+    --both)   mode="both" ;;
     "")       : ;;
     *) ui_error "unknown flag: $1 (expected --ssh, --cursor, or --both)"; return 1 ;;
   esac
-
-  # Catalog's ide field is the default highlighted option; user can override.
-  local default_ide="ssh" ws_json
-  if ws_json=$(catalog_workspace_get "$ws" 2>/dev/null); then
-    default_ide=$(echo "$ws_json" | jq -r '.ide // "ssh"')
-  fi
 
   # Materialize devpod local state from the catalog snapshot if missing,
   # then resolve which container is canonical by direct observation of the
@@ -42,48 +36,11 @@ cmd_connect() {
   _dvw_resolve_canonical_container "$ws" || return 1
   _dvw_reap_stale_masters "$ws"
 
-  local mode="$forced_mode"
-  if [[ -z "$mode" ]]; then
-    mode=$(_connect_choose_mode "$ws" "$default_ide")
-    [[ -z "$mode" ]] && return 1
-  fi
-
   case "$mode" in
     ssh)    _connect_ssh "$ws" ;;
     cursor) _connect_cursor "$ws" ;;
     both)   _connect_cursor "$ws" && _connect_ssh "$ws" ;;
     *)      ui_error "unknown connect mode: $mode"; return 1 ;;
-  esac
-}
-
-# Prompt SSH vs Cursor vs Both with the catalog's saved IDE pre-selected.
-# Echoes "ssh", "cursor", or "both" on stdout; empty on cancel.
-_connect_choose_mode() {
-  local ws="$1" default_ide="$2"
-  if ! command -v gum >/dev/null; then
-    echo "ssh"
-    return 0
-  fi
-  local ssh_label="SSH (terminal + tmux)"
-  local cursor_label="Cursor (GUI)"
-  local both_label="Both (Cursor + SSH/tmux)"
-  local selected="$ssh_label"
-  [[ "$default_ide" == "cursor" ]] && selected="$cursor_label"
-
-  local choice
-  choice=$(gum choose \
-    --header="connect to $ws via" \
-    --selected="$selected" \
-    --cursor "❯ " \
-    --cursor.foreground "$DVW_ACCENT" \
-    --selected.foreground "$DVW_ACCENT" \
-    "$ssh_label" "$cursor_label" "$both_label")
-
-  case "$choice" in
-    "$ssh_label")    echo "ssh" ;;
-    "$cursor_label") echo "cursor" ;;
-    "$both_label")   echo "both" ;;
-    *)               echo "" ;;
   esac
 }
 
