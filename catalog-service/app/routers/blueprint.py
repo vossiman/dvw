@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable
+from typing import TypeVar
+
 from fastapi import APIRouter, Header, HTTPException, Response
 from pydantic import BaseModel
 
-from ..blueprint_store import (
-    BlueprintConflictError,
-    BlueprintSnapshot,
-    BlueprintStore,
-    FutureBlueprintVersionError,
-)
-from ..deps import SettingsDep
+from ..blueprint_store import BlueprintConflictError, FutureBlueprintVersionError
+from ..deps import BlueprintStoreDep
 from ..models import BlueprintUpdate
 
 router = APIRouter(prefix="/blueprint", tags=["blueprint"])
+
+T = TypeVar("T")
 
 
 class Blueprint(BaseModel):
@@ -30,18 +30,9 @@ class BlueprintCustom(BaseModel):
     revision: str
 
 
-def _store(settings: SettingsDep) -> BlueprintStore:
-    return BlueprintStore(
-        effective_path=settings.blueprint_path,
-        custom_path=settings.blueprint_custom_path,
-        meta_path=settings.blueprint_meta_path,
-        legacy_backup_path=settings.blueprint_legacy_backup_path,
-    )
-
-
-def _read(store: BlueprintStore) -> BlueprintSnapshot:
+async def _guarded(awaitable: Awaitable[T]) -> T:
     try:
-        return store.read()
+        return await awaitable
     except (BlueprintConflictError, FutureBlueprintVersionError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -51,8 +42,9 @@ def _etag(response: Response, revision: str) -> None:
 
 
 @router.get("", response_model=Blueprint)
-async def get_blueprint(settings: SettingsDep, response: Response) -> Blueprint:
-    snapshot = _read(_store(settings))
+async def get_blueprint(store: BlueprintStoreDep, response: Response) -> Blueprint:
+    """Read the effective blueprint. Note this migrates/rematerializes on disk."""
+    snapshot = await _guarded(store.aread())
     _etag(response, snapshot.revision)
     return Blueprint(
         content=snapshot.content,
@@ -66,17 +58,14 @@ async def get_blueprint(settings: SettingsDep, response: Response) -> Blueprint:
 @router.put("", response_model=Blueprint)
 async def put_blueprint(
     body: BlueprintUpdate,
-    settings: SettingsDep,
+    store: BlueprintStoreDep,
     response: Response,
     if_match: str | None = Header(default=None, alias="If-Match"),
 ) -> Blueprint:
     """Compatibility whole-document PUT; managed markers remain read-only."""
-    try:
-        snapshot = _store(settings).write_effective_compat(
-            body.content, expected_revision=if_match
-        )
-    except (BlueprintConflictError, FutureBlueprintVersionError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    snapshot = await _guarded(
+        store.awrite_effective_compat(body.content, expected_revision=if_match)
+    )
     _etag(response, snapshot.revision)
     return Blueprint(
         content=snapshot.content,
@@ -89,9 +78,9 @@ async def put_blueprint(
 
 @router.get("/custom", response_model=BlueprintCustom)
 async def get_blueprint_custom(
-    settings: SettingsDep, response: Response
+    store: BlueprintStoreDep, response: Response
 ) -> BlueprintCustom:
-    snapshot = _read(_store(settings))
+    snapshot = await _guarded(store.aread())
     _etag(response, snapshot.revision)
     return BlueprintCustom(
         content=snapshot.custom_content,
@@ -103,16 +92,13 @@ async def get_blueprint_custom(
 @router.put("/custom", response_model=BlueprintCustom)
 async def put_blueprint_custom(
     body: BlueprintUpdate,
-    settings: SettingsDep,
+    store: BlueprintStoreDep,
     response: Response,
     if_match: str | None = Header(default=None, alias="If-Match"),
 ) -> BlueprintCustom:
-    try:
-        snapshot = _store(settings).write_custom(
-            body.content, expected_revision=if_match
-        )
-    except (BlueprintConflictError, FutureBlueprintVersionError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    snapshot = await _guarded(
+        store.awrite_custom(body.content, expected_revision=if_match)
+    )
     _etag(response, snapshot.revision)
     return BlueprintCustom(
         content=snapshot.custom_content,

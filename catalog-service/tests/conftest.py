@@ -3,8 +3,15 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from app.blueprint_store import BlueprintStore
 from app.config import Settings
-from app.deps import get_inspector, get_settings, get_store, invalidate_resolve_cache
+from app.deps import (
+    get_blueprint_store,
+    get_inspector,
+    get_settings,
+    get_store,
+    invalidate_resolve_cache,
+)
 from app.main import create_app
 from app.models import CanonicalContainer, ContainerInspect, Orphan, WorkspaceStatus
 from app.store import CatalogStore
@@ -49,16 +56,27 @@ def store(settings):
 
 
 @pytest.fixture
+def blueprint_store(settings):
+    return BlueprintStore(
+        effective_path=settings.blueprint_path,
+        custom_path=settings.blueprint_custom_path,
+        meta_path=settings.blueprint_meta_path,
+        legacy_backup_path=settings.blueprint_legacy_backup_path,
+    )
+
+
+@pytest.fixture
 def inspector():
     return FakeInspector()
 
 
 @pytest.fixture
-def client(settings, store, inspector):
+def client(settings, store, blueprint_store, inspector):
     invalidate_resolve_cache()
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_store] = lambda: store
+    app.dependency_overrides[get_blueprint_store] = lambda: blueprint_store
     app.dependency_overrides[get_inspector] = lambda: inspector
     # No context manager => lifespan is skipped => no real DockerInspector is
     # constructed. Routers use the overridden deps above.

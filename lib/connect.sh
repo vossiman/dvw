@@ -92,12 +92,27 @@ _dvw_ssh_reconnect_delay() {
 # status is read-only: it only reopens the same alias and tmux session. Clean
 # tmux detach/logout returns 0 and all other remote-command statuses propagate.
 #
+# Retrying is bounded twice over, because 255 is not only "the network blipped":
+# it is also a bad host key, a refused auth, and a container that stopped while
+# attached. Neither of those improves by reconnecting.
+#
+#   1. Only a session that actually ran (>= DVW_SSH_MIN_SESSION_SECS) counts as
+#      established. A 255 that comes back faster than that never connected, so
+#      it propagates immediately and leaves ssh's own error on screen instead of
+#      burying it under retry chatter.
+#   2. Consecutive failures are capped (DVW_SSH_RECONNECT_MAX_ATTEMPTS, ~1min of
+#      backoff — enough for a wifi handover or a short VPN drop). Each session
+#      that runs resets the budget, so an all-day session that drops twice gets
+#      a full allowance both times.
+#
 # This loop deliberately contains no `devpod up` path. A transient network
 # failure must never be reinterpreted as a stopped container after the initial
 # provider check, because that is the stale-bind-mount/wipe footgun guarded by
 # _dvw_safe_devpod_up.
 _dvw_ssh_session() {
-  local ws="$1" rc=0 attempt=0 delay
+  local ws="$1" rc=0 attempt=0 delay start elapsed established=0
+  local max_attempts="${DVW_SSH_RECONNECT_MAX_ATTEMPTS:-12}"
+  local min_session="${DVW_SSH_MIN_SESSION_SECS:-5}"
   # Expanded by the remote login shell, not by this client-side assignment.
   # shellcheck disable=SC2016
   local remote_command='
@@ -121,25 +136,42 @@ _dvw_ssh_session() {
     # wins; the session itself keeps running across viewer changes. Plain
     # `docker exec` shells (Cursor remote-ssh, non-tmux ssh) are unaffected —
     # exclusivity is scoped to the tmux path only.
+    start=$SECONDS
     ssh -t "${ws}.devpod" "$remote_command" || rc=$?
+    elapsed=$((SECONDS - start))
 
     case "$rc" in
-      0)
-        return 0
-        ;;
-      255)
-        _dvw_reap_stale_masters "$ws"
-        delay=$(_dvw_ssh_reconnect_delay "$attempt")
-        attempt=$((attempt + 1))
-        ui_status_warn "$ws: ssh transport lost — reconnecting in ${delay}s (Ctrl-C to stop)"
-        # An interrupt during the delay is an explicit request to leave the
-        # reconnect loop. Returning 130 matches conventional SIGINT status.
-        sleep "$delay" || return 130
-        ;;
-      *)
-        return "$rc"
-        ;;
+      0)   return 0 ;;
+      255) ;;
+      *)   return "$rc" ;;
     esac
+
+    if (( elapsed >= min_session )); then
+      established=1
+      # Only a session that measurably ran refills the budget. Without the
+      # `elapsed > 0` guard, min_session=0 would reset the counter on every
+      # instant failure and the loop could never reach its cap.
+      (( elapsed > 0 )) && attempt=0
+    fi
+
+    if (( ! established )); then
+      ui_error "$ws: ssh could not connect — see the error above (not a dropped transport)"
+      return "$rc"
+    fi
+
+    if (( attempt >= max_attempts )); then
+      ui_error "$ws: still unreachable after $max_attempts reconnect attempts — giving up"
+      ui_info "  the tmux 'work' session is untouched; reconnect with: dvw $ws"
+      return "$rc"
+    fi
+
+    _dvw_reap_stale_masters "$ws"
+    delay=$(_dvw_ssh_reconnect_delay "$attempt")
+    attempt=$((attempt + 1))
+    ui_status_warn "$ws: ssh transport lost — reconnecting in ${delay}s (attempt $attempt/$max_attempts, Ctrl-C to stop)"
+    # An interrupt during the delay is an explicit request to leave the
+    # reconnect loop. Returning 130 matches conventional SIGINT status.
+    sleep "$delay" || return 130
   done
 }
 

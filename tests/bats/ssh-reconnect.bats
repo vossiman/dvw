@@ -3,6 +3,12 @@
 # Interactive SSH retry behavior. The initial workspace/provider safety checks
 # live in _connect_ssh; these tests isolate the post-check session runner so a
 # reconnect can never accidentally enter a devpod-up path.
+#
+# SSH_RESULTS drives the ssh stub, one `rc[:seconds]` per attempt. The duration
+# matters: the session runner only reconnects a session that actually ran, so a
+# test that wants "established, then dropped" has to make the stub take at least
+# DVW_SSH_MIN_SESSION_SECS. That threshold is lowered to 1s here to keep the
+# sleeps short.
 
 setup() {
   TMPDIR=$(mktemp -d)
@@ -20,6 +26,7 @@ setup() {
   : > "$REAP_CALLS"
   : > "$DEVPOD_UP_CALLS"
   export DVW_SSH_RECONNECT_DELAY=0
+  export DVW_SSH_MIN_SESSION_SECS=1
 
   cat > "$STUB_BIN/ssh" <<'EOF'
 #!/usr/bin/env bash
@@ -28,13 +35,17 @@ count=$((count + 1))
 printf '%s\n' "$count" > "$SSH_COUNT"
 printf '%q ' "$@" >> "$SSH_CALLS"
 printf '\n' >> "$SSH_CALLS"
-result=$(sed -n "${count}p" "$SSH_RESULTS")
-exit "${result:-0}"
+spec=$(sed -n "${count}p" "$SSH_RESULTS")
+[[ -n "$spec" ]] || spec=0
+[[ "${spec#*:}" != "$spec" ]] && sleep "${spec#*:}"
+exit "${spec%%:*}"
 EOF
   chmod +x "$STUB_BIN/ssh"
 
   ui_status_warn() { printf 'WARN: %s\n' "$*"; }
-  export -f ui_status_warn
+  ui_error() { printf 'ERROR: %s\n' "$*"; }
+  ui_info() { printf 'INFO: %s\n' "$*"; }
+  export -f ui_status_warn ui_error ui_info
 
   source "$DVW_ROOT/lib/connect.sh"
 
@@ -49,7 +60,7 @@ EOF
 teardown() { rm -rf "$TMPDIR"; }
 
 @test "ssh session reconnects after transport loss and then returns cleanly" {
-  printf '255\n0\n' > "$SSH_RESULTS"
+  printf '255:1\n0\n' > "$SSH_RESULTS"
 
   run _dvw_ssh_session myws
 
@@ -79,6 +90,50 @@ teardown() { rm -rf "$TMPDIR"; }
   [ "$status" -eq 42 ]
   [ "$(<"$SSH_COUNT")" -eq 1 ]
   [ ! -s "$REAP_CALLS" ]
+}
+
+@test "ssh session does not retry a connection that never established" {
+  # An instant 255 is an auth/host-key/refused failure, not a dropped
+  # transport. Reconnecting cannot fix it and would bury ssh's own error.
+  printf '255\n255\n255\n' > "$SSH_RESULTS"
+
+  run _dvw_ssh_session myws
+
+  [ "$status" -eq 255 ]
+  [ "$(<"$SSH_COUNT")" -eq 1 ]
+  [ ! -s "$REAP_CALLS" ]
+  [ ! -s "$DEVPOD_UP_CALLS" ]
+  [[ "$output" == *"could not connect"* ]]
+  [[ "$output" != *"reconnecting in"* ]]
+}
+
+@test "ssh session gives up after the reconnect budget instead of spinning" {
+  # Established, then gone for good: a stopped container or a host that went
+  # away. The loop must stop, not warn forever.
+  printf '255:1\n255\n255\n255\n255\n' > "$SSH_RESULTS"
+  export DVW_SSH_RECONNECT_MAX_ATTEMPTS=3
+
+  run _dvw_ssh_session myws
+
+  [ "$status" -eq 255 ]
+  [ "$(<"$SSH_COUNT")" -eq 4 ]  # first session + 3 reconnect attempts
+  [[ "$output" == *"still unreachable after 3 reconnect attempts"* ]]
+  [[ "$output" == *"reconnect with: dvw myws"* ]]
+  [ ! -s "$DEVPOD_UP_CALLS" ]
+}
+
+@test "each established session gets a fresh reconnect budget" {
+  # drop, one failed retry, then a session that runs, then another drop: the
+  # second drop must not inherit the first one's spent attempts.
+  printf '255:1\n255\n255:1\n0\n' > "$SSH_RESULTS"
+  export DVW_SSH_RECONNECT_MAX_ATTEMPTS=2
+
+  run _dvw_ssh_session myws
+
+  [ "$status" -eq 0 ]
+  [ "$(<"$SSH_COUNT")" -eq 4 ]
+  [[ "$output" != *"giving up"* ]]
+  [[ "$output" != *"still unreachable"* ]]
 }
 
 @test "ssh session uses workspace alias and tmux work command" {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import pytest
+
 from app.blueprint_store import (
     MANAGED_BLOCK,
     MANAGED_VERSION,
@@ -177,6 +178,49 @@ def test_effective_round_trip_extracts_custom_and_rejects_managed_edit(tmp_path)
     modified = effective.replace("ControlPersist 10m", "ControlPersist 1h")
     with pytest.raises(BlueprintConflictError, match="cannot be edited"):
         extract_custom_content(modified)
+
+
+def test_effective_round_trip_tolerates_trailing_newline_changes(tmp_path):
+    """A shell `$(...)` capture strips the final newline; that is not an edit."""
+    store = _store(tmp_path)
+    custom = "Host buildbox\n  User builder\n"
+    effective = store.write_custom(custom).content
+
+    assert extract_custom_content(effective.rstrip("\n")) == custom
+    assert extract_custom_content(effective + "\n\n") == custom
+
+
+def test_seeded_effective_copy_without_trailing_newline_does_not_wedge(tmp_path):
+    """The documented `scp ssh-blueprint.conf` seeding path must stay readable.
+
+    The client writes its local copy with `printf '%s'`, so a copy taken from a
+    machine and dropped into the data dir has lost the final newline. Treating
+    that as custom data used to persist managed markers into the custom file and
+    make every later read fail.
+    """
+    store = _store(tmp_path)
+    custom = "Host buildbox\n  User builder\n"
+    store.effective_path.write_text((custom + "\n" + MANAGED_BLOCK).rstrip("\n"))
+
+    snapshot = store.read()
+
+    assert snapshot.migration_status == "managed_materialization_recovered"
+    assert snapshot.custom_content == custom
+    assert snapshot.content == custom + "\n" + MANAGED_BLOCK
+    assert store.read().content == snapshot.content  # still readable, not wedged
+
+
+def test_managed_markers_in_the_custom_file_are_repaired_on_read(tmp_path):
+    store = _store(tmp_path)
+    store.custom_path.write_text("Host buildbox\n  User builder\n\n" + MANAGED_BLOCK)
+
+    snapshot = store.read()
+
+    assert snapshot.migration_status == "custom_sanitized"
+    assert snapshot.custom_content == "Host buildbox\n  User builder\n"
+    assert store.custom_path.read_text() == "Host buildbox\n  User builder\n"
+    assert snapshot.content.count("ControlPersist 10m") == 1
+    assert store.read().migration_status == "current"
 
 
 def test_future_schema_or_managed_version_is_never_downgraded(tmp_path):

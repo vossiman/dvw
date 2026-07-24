@@ -263,12 +263,27 @@ the installer prepends at the top of the file.
 The seeded blueprint contains a `Host *.devpod` block with `ControlMaster auto`
 for SSH multiplexing — first connect to a workspace takes ~2s, every subsequent
 ssh to the same host within 10 minutes is near-instant (~5ms; verified: 400×
-speedup on second connect). Protocol keepalives detect a dead underlying
-transport after roughly 15 seconds. When an interactive `dvw <id>` SSH session
-loses that transport, dvw clears any stale multiplex master and automatically
-reattaches the same `work` tmux session with a 1s/2s/5s retry backoff. Clean
-tmux detach or logout still returns immediately; press Ctrl-C during a reconnect
-delay to stop retrying.
+speedup on second connect). `ServerAliveInterval 5` + `ServerAliveCountMax 3`
+detect a dead underlying transport after roughly 15 seconds. When an interactive
+`dvw <id>` SSH session loses that transport, dvw clears any stale multiplex
+master and automatically reattaches the same `work` tmux session with a 1s/2s/5s
+retry backoff. Clean tmux detach or logout still returns immediately; press
+Ctrl-C during a reconnect delay to stop retrying.
+
+Reconnecting is deliberately bounded. A session has to have run for at least
+`DVW_SSH_MIN_SESSION_SECS` (5s) before dvw treats its loss as a dropped
+transport — ssh also exits 255 on a bad host key or a refused auth, and those
+never improve by retrying, so they surface ssh's own error instead. Once
+reconnecting, dvw gives up after `DVW_SSH_RECONNECT_MAX_ATTEMPTS` (12, ≈1
+minute) and tells you to rerun `dvw <id>`; the remote `work` session is
+untouched either way. Every session that runs earns a fresh budget, so a
+long-lived connection that drops twice gets the full allowance both times.
+
+The 15s detection window is a deliberate trade: it also means a network blip
+longer than 15s tears down an *idle* multiplex master and costs the next connect
+its ~400× speedup. Raise it for your fleet by putting `ServerAliveInterval` in
+the custom overrides (`PUT /v1/blueprint/custom`) — custom directives render
+above the managed block and OpenSSH takes the first value it sees.
 
 The catalog service generates the managed part of the blueprint. Deploying a
 newer service version therefore updates managed defaults, including reconnect
