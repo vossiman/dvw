@@ -37,7 +37,10 @@ def test_repos_upsert_list_mru(client):
 
 def test_blueprint_seed_then_update(client):
     r = client.get("/v1/blueprint")
-    assert "Host *.devpod" in r.json()["content"]
+    content = r.json()["content"]
+    assert "Host *.devpod" in content
+    assert "ServerAliveInterval 5" in content
+    assert "ServerAliveCountMax 3" in content
     assert r.json()["version"] == 0  # seed, no file yet
 
     client.put("/v1/blueprint", json={"content": "Host foo\n  User bar\n"})

@@ -263,11 +263,18 @@ the installer prepends at the top of the file.
 The seeded blueprint contains a `Host *.devpod` block with `ControlMaster auto`
 for SSH multiplexing — first connect to a workspace takes ~2s, every subsequent
 ssh to the same host within 10 minutes is near-instant (~5ms; verified: 400×
-speedup on second connect).
+speedup on second connect). Protocol keepalives detect a dead underlying
+transport after roughly 15 seconds. When an interactive `dvw <id>` SSH session
+loses that transport, dvw clears any stale multiplex master and automatically
+reattaches the same `work` tmux session with a 1s/2s/5s retry backoff. Clean
+tmux detach or logout still returns immediately; press Ctrl-C during a reconnect
+delay to stop retrying.
 
 To roll out a config change to all machines, update the blueprint in the service
 (`PUT /v1/blueprint`). The next `dvw` call on each machine refreshes its local
-copy.
+copy. Changing the seed in dvw does not overwrite an existing durable
+`/var/lib/dvw-catalog/ssh-blueprint.conf`; existing installations must add the
+`ServerAliveInterval 5` and `ServerAliveCountMax 3` lines once through that API.
 
 **Why the Include sits at the top of `~/.ssh/config`:** OpenSSH
 propagates the enclosing Host block's `activep` flag into `Include`

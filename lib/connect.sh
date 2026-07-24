@@ -47,9 +47,9 @@ cmd_connect() {
 # SSH path: probe-up if needed, then ssh -t into a tmux `work` session.
 #
 # Cold-branch policy (container-safety invariant): if the alias probe fails
-# but a container exists on the provider, treat it as alive and `exec ssh`
+# but a container exists on the provider, treat it as alive and open ssh
 # directly. NEVER run `devpod up` against a confirmed-existing container
-# from this code path — that's the wipe footgun. The actual `exec ssh -t`
+# from this code path — that's the wipe footgun. The actual `ssh -t`
 # below uses default (long) ssh timeouts and no BatchMode, so it retries
 # on its own where the 5s BatchMode probe gave up.
 _connect_ssh() {
@@ -67,14 +67,40 @@ _connect_ssh() {
     fi
   fi
   catalog_workspace_touch "$ws" 2>/dev/null || true
-  # Single ssh call: probe tmux inside the same login shell that will host
-  # the session, so we don't pay for two TCP+auth+`bash -l` round-trips.
-  # tmux exclusivity: `-A -D` together mean "create if missing, otherwise
-  # attach with -d (detach any other client of this session)". Last attach
-  # wins; the session itself keeps running across viewer changes. Plain
-  # `docker exec` shells (Cursor remote-ssh, non-tmux ssh) are unaffected —
-  # exclusivity is scoped to the tmux path only.
-  exec ssh -t "${ws}.devpod" '
+  _dvw_ssh_session "$ws"
+}
+
+# Delay before reconnect attempt N (zero-based). DVW_SSH_RECONNECT_DELAY is an
+# internal/test override; normal sessions back off quickly and then hold at 5s.
+_dvw_ssh_reconnect_delay() {
+  local attempt="$1"
+  if [[ -n "${DVW_SSH_RECONNECT_DELAY:-}" ]]; then
+    printf '%s\n' "$DVW_SSH_RECONNECT_DELAY"
+    return 0
+  fi
+  case "$attempt" in
+    0) printf '1\n' ;;
+    1) printf '2\n' ;;
+    *) printf '5\n' ;;
+  esac
+}
+
+# Run the interactive SSH/tmux session and reattach after transport loss.
+#
+# ssh uses 255 for connection/auth/protocol failures. Once the outer connect
+# path has resolved the workspace and performed its safety checks, retrying that
+# status is read-only: it only reopens the same alias and tmux session. Clean
+# tmux detach/logout returns 0 and all other remote-command statuses propagate.
+#
+# This loop deliberately contains no `devpod up` path. A transient network
+# failure must never be reinterpreted as a stopped container after the initial
+# provider check, because that is the stale-bind-mount/wipe footgun guarded by
+# _dvw_safe_devpod_up.
+_dvw_ssh_session() {
+  local ws="$1" rc=0 attempt=0 delay
+  # Expanded by the remote login shell, not by this client-side assignment.
+  # shellcheck disable=SC2016
+  local remote_command='
     infocmp -1 "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color
     if command -v tmux >/dev/null 2>&1; then
       exec bash -lc "tmux new -A -D -s work"
@@ -84,6 +110,37 @@ _connect_ssh() {
     echo "  git clone https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh" >&2
     exec bash -l
   '
+
+  while true; do
+    rc=0
+    # Single ssh call: probe tmux inside the same login shell that will host
+    # the session, so we don't pay for two TCP+auth+`bash -l` round-trips.
+    #
+    # tmux exclusivity: `-A -D` together mean "create if missing, otherwise
+    # attach with -d (detach any other client of this session)". Last attach
+    # wins; the session itself keeps running across viewer changes. Plain
+    # `docker exec` shells (Cursor remote-ssh, non-tmux ssh) are unaffected —
+    # exclusivity is scoped to the tmux path only.
+    ssh -t "${ws}.devpod" "$remote_command" || rc=$?
+
+    case "$rc" in
+      0)
+        return 0
+        ;;
+      255)
+        _dvw_reap_stale_masters "$ws"
+        delay=$(_dvw_ssh_reconnect_delay "$attempt")
+        attempt=$((attempt + 1))
+        ui_status_warn "$ws: ssh transport lost — reconnecting in ${delay}s (Ctrl-C to stop)"
+        # An interrupt during the delay is an explicit request to leave the
+        # reconnect loop. Returning 130 matches conventional SIGINT status.
+        sleep "$delay" || return 130
+        ;;
+      *)
+        return "$rc"
+        ;;
+    esac
+  done
 }
 
 # Cursor path: probe before calling `devpod up`.

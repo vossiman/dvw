@@ -21,6 +21,8 @@ Host *.devpod
   ControlMaster auto
   ControlPath ~/.ssh/cm-%r@%h:%p
   ControlPersist 10m
+  ServerAliveInterval 5
+  ServerAliveCountMax 3
 """
 
 
