@@ -148,11 +148,11 @@ ConfirmScreen {
     background: $bg;
 }
 
-MenuScreen, ConnectScreen {
+MenuScreen {
     align: center middle;
 }
 
-#menu-box, #connect-box {
+#menu-box {
     width: 40;
     height: auto;
     background: $bg-panel;
@@ -160,12 +160,12 @@ MenuScreen, ConnectScreen {
     padding: 1;
 }
 
-#menu-title, #connect-title {
+#menu-title {
     color: $accent;
     text-style: bold;
 }
 
-#menu-list, #connect-list {
+#menu-list {
     width: 100%;
     height: auto;
     background: $bg-panel;
@@ -174,20 +174,17 @@ MenuScreen, ConnectScreen {
     background-tint: $fg 0%;
 }
 
-#menu-list > .option-list--option,
-#connect-list > .option-list--option {
+#menu-list > .option-list--option {
     padding: 0 1;
 }
 
-#menu-list > .option-list--option-highlighted,
-#connect-list > .option-list--option-highlighted {
+#menu-list > .option-list--option-highlighted {
     background: $bg-panel;
     color: $accent;
     text-style: bold;
 }
 
-#menu-list:focus > .option-list--option-highlighted,
-#connect-list:focus > .option-list--option-highlighted {
+#menu-list:focus > .option-list--option-highlighted {
     background: $bg-panel;
     color: $accent;
     text-style: bold;

@@ -14,8 +14,8 @@ async def test_menu_opens_and_lists_actions(fake_client):
         # The menu is driven by MENU_ITEMS: every action word appears in
         # its labels and the OptionList carries exactly those options.
         joined = " ".join(label for _action, label in MENU_ITEMS)
-        for word in ("connect", "stop", "start", "rebuild", "remove",
-                     "new", "doctor", "orphans"):
+        for word in ("ssh", "cursor", "both", "stop", "start", "rebuild",
+                     "remove", "new", "doctor", "orphans"):
             assert word in joined
         option_list = app.screen.query_one("#menu-list", OptionList)
         assert option_list.option_count == len(MENU_ITEMS)
@@ -42,7 +42,10 @@ async def test_menu_select_dispatches(fake_client, monkeypatch):
         await pilot.pause()
         await pilot.press("x")
         await pilot.pause()
-        await pilot.press("down")        # connect -> stop
+        # ssh(0) -> cursor(1) -> both(2) -> stop(3)
+        await pilot.press("down")
+        await pilot.press("down")
+        await pilot.press("down")
         await pilot.press("enter")
         await pilot.pause()
         assert calls["action"] == ("stop", "alpha")

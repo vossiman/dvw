@@ -1,10 +1,8 @@
 #!/usr/bin/env bats
 #
 # Top-level argv dispatch in the `dvw` entry script. Regression coverage for
-# the TUI double-prompt bug (2026-06-11): the TUI's connect modal hands off
-# `dvw <id> --ssh|--cursor|--both` so the bash side skips its gum chooser,
-# but the dispatcher dropped everything after $1, so cmd_connect never saw
-# the flag and prompted again.
+# connect-mode flag forwarding: the TUI hands off
+# `dvw <id> --ssh|--cursor|--both` so the bash side uses that mode directly.
 #
 # The entry script is sourceable (main() runs only when executed directly),
 # so we source it, stub the pre-dispatch machinery and the cmd_* layer, and
