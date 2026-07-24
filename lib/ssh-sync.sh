@@ -83,8 +83,14 @@ _ssh_sync_ensure_include_at_top() {
 
 # Three [OK]/[WARN] lines for `dvw doctor`. Returns 0 always.
 ssh_sync_doctor() {
-  if _catalog_req GET /v1/blueprint >/dev/null 2>&1; then
-    ui_status_ok "ssh blueprint: served by catalog ($(ssh_sync_blueprint_path))"
+  local body managed migration endpoint detail=""
+  if body=$(_catalog_req GET /v1/blueprint 2>/dev/null); then
+    managed=$(jq -r '.managed_version // empty' <<< "$body" 2>/dev/null || true)
+    migration=$(jq -r '.migration_status // empty' <<< "$body" 2>/dev/null || true)
+    endpoint=$(ssh_sync_blueprint_path)
+    [[ -n "$managed" ]] && detail="; managed defaults v$managed"
+    [[ -n "$migration" && "$migration" != "current" ]] && detail+="; $migration"
+    ui_status_ok "ssh blueprint: served by catalog ($endpoint$detail)"
   else
     ui_status_warn "ssh blueprint: catalog service unreachable"
   fi

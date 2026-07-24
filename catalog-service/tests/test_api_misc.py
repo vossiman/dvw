@@ -37,16 +37,57 @@ def test_repos_upsert_list_mru(client):
 
 def test_blueprint_seed_then_update(client):
     r = client.get("/v1/blueprint")
+    assert r.status_code == 200
     content = r.json()["content"]
     assert "Host *.devpod" in content
     assert "ServerAliveInterval 5" in content
     assert "ServerAliveCountMax 3" in content
-    assert r.json()["version"] == 0  # seed, no file yet
+    assert r.json()["managed_version"] == 2
+    assert r.json()["migration_status"] == "fresh_initialized"
+    assert r.json()["revision"].startswith("sha256:")
+    assert r.headers["etag"] == f'"{r.json()["revision"]}"'
+    assert r.json()["version"] > 0
 
     client.put("/v1/blueprint", json={"content": "Host foo\n  User bar\n"})
     r = client.get("/v1/blueprint")
-    assert r.json()["content"] == "Host foo\n  User bar\n"
+    assert r.json()["content"].startswith("Host foo\n  User bar\n\n")
+    assert "# BEGIN DVW MANAGED DEFAULTS version=2" in r.json()["content"]
     assert r.json()["version"] > 0
+
+
+def test_blueprint_custom_endpoint_and_revision_guard(client):
+    original = client.get("/v1/blueprint").json()
+    custom = "Host *.devpod\n  ServerAliveInterval 10\n"
+    r = client.put(
+        "/v1/blueprint/custom",
+        headers={"If-Match": f'"{original["revision"]}"'},
+        json={"content": custom},
+    )
+    assert r.status_code == 200
+    assert r.json()["content"] == custom
+    assert r.json()["revision"] != original["revision"]
+
+    effective = client.get("/v1/blueprint").json()["content"]
+    assert effective.startswith(custom)
+    assert effective.index("ServerAliveInterval 10") < effective.index(
+        "ServerAliveInterval 5"
+    )
+
+    stale = client.put(
+        "/v1/blueprint/custom",
+        headers={"If-Match": f'"{original["revision"]}"'},
+        json={"content": "Host stale\n"},
+    )
+    assert stale.status_code == 409
+    assert "revision changed" in stale.json()["error"]["message"]
+
+
+def test_blueprint_rejects_modified_managed_section(client):
+    effective = client.get("/v1/blueprint").json()["content"]
+    modified = effective.replace("ControlPersist 10m", "ControlPersist 1h")
+    r = client.put("/v1/blueprint", json={"content": modified})
+    assert r.status_code == 409
+    assert "managed SSH section cannot be edited" in r.json()["error"]["message"]
 
 
 def test_resolve_endpoint(client, inspector):

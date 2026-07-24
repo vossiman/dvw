@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     data_dir: Path = Path("/var/lib/dvw-catalog")
     catalog_filename: str = "catalog.json"
     blueprint_filename: str = "ssh-blueprint.conf"
+    blueprint_custom_filename: str = "ssh-blueprint.custom.conf"
+    blueprint_meta_filename: str = "ssh-blueprint.meta.json"
+    blueprint_legacy_backup_filename: str = "ssh-blueprint.legacy.bak"
 
     # Optional shared secret. When unset (the default), the service relies on
     # the unix-socket + SSH-key auth boundary and does NOT require a token.
@@ -53,6 +56,18 @@ class Settings(BaseSettings):
     @property
     def blueprint_path(self) -> Path:
         return self.data_dir / self.blueprint_filename
+
+    @property
+    def blueprint_custom_path(self) -> Path:
+        return self.data_dir / self.blueprint_custom_filename
+
+    @property
+    def blueprint_meta_path(self) -> Path:
+        return self.data_dir / self.blueprint_meta_filename
+
+    @property
+    def blueprint_legacy_backup_path(self) -> Path:
+        return self.data_dir / self.blueprint_legacy_backup_filename
 
 
 @lru_cache

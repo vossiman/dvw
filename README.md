@@ -270,11 +270,14 @@ reattaches the same `work` tmux session with a 1s/2s/5s retry backoff. Clean
 tmux detach or logout still returns immediately; press Ctrl-C during a reconnect
 delay to stop retrying.
 
-To roll out a config change to all machines, update the blueprint in the service
-(`PUT /v1/blueprint`). The next `dvw` call on each machine refreshes its local
-copy. Changing the seed in dvw does not overwrite an existing durable
-`/var/lib/dvw-catalog/ssh-blueprint.conf`; existing installations must add the
-`ServerAliveInterval 5` and `ServerAliveCountMax 3` lines once through that API.
+The catalog service generates the managed part of the blueprint. Deploying a
+newer service version therefore updates managed defaults, including reconnect
+keepalives, without a one-time API edit on every installation. On first access
+after an upgrade, the service backs up a legacy `ssh-blueprint.conf`, removes
+recognized old defaults, preserves everything else as custom overrides, and
+atomically rematerializes the effective file. Custom directives come first so
+OpenSSH's first-value-wins rules keep local policy authoritative. `dvw doctor`
+reports the active managed-defaults version.
 
 **Why the Include sits at the top of `~/.ssh/config`:** OpenSSH
 propagates the enclosing Host block's `activep` flag into `Include`
