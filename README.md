@@ -270,14 +270,16 @@ master and automatically reattaches the same `work` tmux session with a 1s/2s/5s
 retry backoff. Clean tmux detach or logout still returns immediately; press
 Ctrl-C during a reconnect delay to stop retrying.
 
-Reconnecting is deliberately bounded. A session has to have run for at least
-`DVW_SSH_MIN_SESSION_SECS` (5s) before dvw treats its loss as a dropped
-transport — ssh also exits 255 on a bad host key or a refused auth, and those
-never improve by retrying, so they surface ssh's own error instead. Once
-reconnecting, dvw gives up after `DVW_SSH_RECONNECT_MAX_ATTEMPTS` (12, ≈1
-minute) and tells you to rerun `dvw <id>`; the remote `work` session is
-untouched either way. Every session that runs earns a fresh budget, so a
-long-lived connection that drops twice gets the full allowance both times.
+Reconnecting is deliberately bounded, because ssh exits 255 for a dropped
+transport *and* for a bad host key or a refused auth. dvw classifies ssh's own
+stderr rather than guessing from how long the attempt took: a fatal auth/config
+error returns immediately with ssh's message intact, and only a reported
+disconnect ("connection closed by remote host", "broken pipe") earns a fresh
+retry budget. Retrying stops at `DVW_SSH_RECONNECT_MAX_ATTEMPTS` (12) or
+`DVW_SSH_RECONNECT_MAX_SECONDS` (120) of wall clock, whichever comes first —
+the time bound matters because attempts that each block on a TCP timeout blow
+the clock long before the attempt count. dvw then tells you to rerun
+`dvw <id>`; the remote `work` session is untouched either way.
 
 The 15s detection window is a deliberate trade: it also means a network blip
 longer than 15s tears down an *idle* multiplex master and costs the next connect

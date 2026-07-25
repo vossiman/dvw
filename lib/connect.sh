@@ -85,6 +85,40 @@ _dvw_ssh_reconnect_delay() {
   esac
 }
 
+# ssh client diagnostics that no amount of retrying will fix. Everything else —
+# timeouts, refused, reset, broken pipe, and names that stop resolving while the
+# network is down — is treated as a transport problem and retried.
+#
+# Deliberately matched against ssh's own stderr rather than inferred from how
+# long the session lasted. Duration is not a proxy for "the transport worked": a
+# connect to an unreachable host blocks in TCP for far longer than a session
+# that was established and then dropped, so a slow failure reads as a long,
+# successful session under any threshold.
+_dvw_ssh_error_is_fatal() {
+  local errfile="$1"
+  [[ -s "$errfile" ]] || return 1
+  grep -qiE \
+    'host key verification failed|remote host identification has changed|permission denied|too many authentication failures|no supported authentication methods|bad configuration option|unknown (option|cipher|key type)|bad owner or permissions' \
+    "$errfile"
+}
+
+# True when ssh reports losing a connection it had already established, as
+# opposed to failing to make one. Only this refills the reconnect budget.
+#
+# Deliberately a positive test on ssh's own wording rather than "the attempt
+# lasted a while". A connect to an unreachable host blocks in TCP for longer
+# than plenty of real sessions, so a duration threshold reads a slow failure as
+# a long successful session — and refills the budget on every one, which leaves
+# the loop unbounded exactly when the host is never coming back. An
+# unrecognized error refills nothing, so the budget always drains.
+_dvw_ssh_error_is_disconnect() {
+  local errfile="$1"
+  [[ -s "$errfile" ]] || return 1
+  grep -qiE \
+    'client_loop: send disconnect|connection to .* closed by remote host|connection reset by peer|packet_write_wait|timeout, server .* not responding|broken pipe' \
+    "$errfile"
+}
+
 # Run the interactive SSH/tmux session and reattach after transport loss.
 #
 # ssh uses 255 for connection/auth/protocol failures. Once the outer connect
@@ -92,27 +126,34 @@ _dvw_ssh_reconnect_delay() {
 # status is read-only: it only reopens the same alias and tmux session. Clean
 # tmux detach/logout returns 0 and all other remote-command statuses propagate.
 #
-# Retrying is bounded twice over, because 255 is not only "the network blipped":
-# it is also a bad host key, a refused auth, and a container that stopped while
-# attached. Neither of those improves by reconnecting.
+# 255 is not only "the network blipped" — it is also a bad host key and a
+# refused auth, so retrying is gated and bounded three ways:
 #
-#   1. Only a session that actually ran (>= DVW_SSH_MIN_SESSION_SECS) counts as
-#      established. A 255 that comes back faster than that never connected, so
-#      it propagates immediately and leaves ssh's own error on screen instead of
-#      burying it under retry chatter.
-#   2. Consecutive failures are capped (DVW_SSH_RECONNECT_MAX_ATTEMPTS, ~1min of
-#      backoff — enough for a wifi handover or a short VPN drop). Each session
-#      that runs resets the budget, so an all-day session that drops twice gets
-#      a full allowance both times.
+#   1. ssh's stderr is classified. A fatal auth/config error returns straight
+#      away with ssh's own message instead of retry chatter (see above; stderr
+#      is captured to a file and replayed, because `-t` puts remote output on
+#      the pty, so only client diagnostics land there).
+#   2. Consecutive attempts stop at DVW_SSH_RECONNECT_MAX_ATTEMPTS (12).
+#   3. A retry streak also stops at DVW_SSH_RECONNECT_MAX_SECONDS (120) of wall
+#      clock. The attempt cap alone is not a bound: attempts that each block for
+#      a TCP timeout make 12 tries take many minutes.
+#
+# A reported disconnect — ssh saying it lost a connection it had — starts a
+# fresh streak, so an all-day connection that drops twice gets the full
+# allowance both times. Only that refills the budget; a failure to connect never
+# does, so no run of failures can hold the loop open indefinitely.
 #
 # This loop deliberately contains no `devpod up` path. A transient network
 # failure must never be reinterpreted as a stopped container after the initial
 # provider check, because that is the stale-bind-mount/wipe footgun guarded by
 # _dvw_safe_devpod_up.
 _dvw_ssh_session() {
-  local ws="$1" rc=0 attempt=0 delay start elapsed established=0
+  local ws="$1" rc=0 attempt=0 delay errfile streak_start=$SECONDS
   local max_attempts="${DVW_SSH_RECONNECT_MAX_ATTEMPTS:-12}"
-  local min_session="${DVW_SSH_MIN_SESSION_SECS:-5}"
+  local max_seconds="${DVW_SSH_RECONNECT_MAX_SECONDS:-120}"
+  errfile=$(mktemp "${TMPDIR:-/tmp}/dvw-ssh-err.XXXXXX") || return 1
+  # Fires on every return path below, including the Ctrl-C one.
+  trap 'rm -f "$errfile"' RETURN
   # Expanded by the remote login shell, not by this client-side assignment.
   # shellcheck disable=SC2016
   local remote_command='
@@ -136,9 +177,8 @@ _dvw_ssh_session() {
     # wins; the session itself keeps running across viewer changes. Plain
     # `docker exec` shells (Cursor remote-ssh, non-tmux ssh) are unaffected —
     # exclusivity is scoped to the tmux path only.
-    start=$SECONDS
-    ssh -t "${ws}.devpod" "$remote_command" || rc=$?
-    elapsed=$((SECONDS - start))
+    ssh -t "${ws}.devpod" "$remote_command" 2>"$errfile" || rc=$?
+    cat "$errfile" >&2 || true
 
     case "$rc" in
       0)   return 0 ;;
@@ -146,21 +186,19 @@ _dvw_ssh_session() {
       *)   return "$rc" ;;
     esac
 
-    if (( elapsed >= min_session )); then
-      established=1
-      # Only a session that measurably ran refills the budget. Without the
-      # `elapsed > 0` guard, min_session=0 would reset the counter on every
-      # instant failure and the loop could never reach its cap.
-      (( elapsed > 0 )) && attempt=0
-    fi
-
-    if (( ! established )); then
-      ui_error "$ws: ssh could not connect — see the error above (not a dropped transport)"
+    if _dvw_ssh_error_is_fatal "$errfile"; then
+      ui_error "$ws: ssh failed for a reason reconnecting cannot fix (see above)"
       return "$rc"
     fi
 
-    if (( attempt >= max_attempts )); then
-      ui_error "$ws: still unreachable after $max_attempts reconnect attempts — giving up"
+    # A connection that was up and dropped earns a fresh streak.
+    if _dvw_ssh_error_is_disconnect "$errfile"; then
+      attempt=0
+      streak_start=$SECONDS
+    fi
+
+    if (( attempt >= max_attempts || SECONDS - streak_start >= max_seconds )); then
+      ui_error "$ws: still unreachable after $((SECONDS - streak_start))s and $attempt reconnect attempts — giving up"
       ui_info "  the tmux 'work' session is untouched; reconnect with: dvw $ws"
       return "$rc"
     fi

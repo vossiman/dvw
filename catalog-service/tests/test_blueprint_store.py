@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import json
+import time
 
 import pytest
 
@@ -238,6 +240,92 @@ def test_future_schema_or_managed_version_is_never_downgraded(tmp_path):
     )
     with pytest.raises(FutureBlueprintVersionError, match="newer"):
         store.read()
+
+
+def test_future_managed_block_is_refused_rather_than_downgraded(tmp_path):
+    """Recognizing every version must not become a silent downgrade path.
+
+    A v3 effective file dropped in without its metadata (the documented `scp`
+    seeding path copies one file) would otherwise be stripped and re-emitted as
+    v2 defaults, rolling back the SSH config of every client that syncs next.
+    """
+    store = _store(tmp_path)
+    future = (
+        "# BEGIN DVW MANAGED DEFAULTS version=99\n"
+        "Host *.devpod\n  SomeFutureDirective yes\n"
+        "# END DVW MANAGED DEFAULTS\n"
+    )
+    store.effective_path.write_text("Host buildbox\n  User builder\n\n" + future)
+
+    with pytest.raises(FutureBlueprintVersionError, match="v99"):
+        store.read()
+
+    # Nothing was persisted from the refused read, so rolling the newer service
+    # forward again finds its own state intact.
+    assert not store.custom_path.exists()
+    assert not store.meta_path.exists()
+    assert store.effective_path.read_text().endswith(future)
+
+
+def test_future_managed_block_is_refused_on_the_compat_put(tmp_path):
+    future = (
+        "# BEGIN DVW MANAGED DEFAULTS version=99\n"
+        "Host *.devpod\n# END DVW MANAGED DEFAULTS\n"
+    )
+    with pytest.raises(FutureBlueprintVersionError, match="v99"):
+        extract_custom_content("Host buildbox\n\n" + future)
+
+
+def test_a_cancelled_request_cannot_interleave_with_the_next_one(tmp_path):
+    """The lock has to be held by the thread doing the work.
+
+    Starlette cancels the handler task when a client disconnects. That cannot
+    stop the worker thread, so a lock released by the awaiting coroutine would
+    let the next request write the same files concurrently.
+    """
+    import asyncio
+    import threading
+
+    from app import blueprint_store as bs
+
+    store = _store(tmp_path)
+    store.read()
+
+    active = 0
+    overlapped = False
+    seen_lock = threading.Lock()
+    original = bs._atomic_write
+
+    def slow_write(path, content):
+        nonlocal active, overlapped
+        if path.name.endswith(".custom.conf"):
+            with seen_lock:
+                active += 1
+                if active > 1:
+                    overlapped = True
+            time.sleep(0.3)
+            original(path, content)
+            with seen_lock:
+                active -= 1
+        else:
+            original(path, content)
+
+    async def scenario():
+        first = asyncio.create_task(store.awrite_custom("Host first\n"))
+        await asyncio.sleep(0.1)  # first is inside the thread by now
+        first.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await first
+        await store.awrite_custom("Host second\n")
+
+    bs._atomic_write = slow_write
+    try:
+        asyncio.run(scenario())
+    finally:
+        bs._atomic_write = original
+
+    assert not overlapped
+    assert store.custom_path.read_text() == "Host second\n"
 
 
 def test_older_metadata_schema_is_upgraded(tmp_path):

@@ -21,6 +21,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,9 +58,11 @@ MANAGED_BLOCK = _MANAGED_BLOCKS[MANAGED_VERSION]
 # client writes its local copy with `printf '%s'`) must still be recognized as
 # generated content rather than preserved as custom data.
 _MANAGED_BLOCK_RE = re.compile(
-    rf"^{re.escape(MANAGED_BEGIN_PREFIX)}.*?^{re.escape(MANAGED_END)}[^\n]*\n?",
+    rf"^{re.escape(MANAGED_BEGIN_PREFIX)}(?P<attrs>[^\n]*)\n"
+    rf".*?^{re.escape(MANAGED_END)}[^\n]*\n?",
     re.DOTALL | re.MULTILINE,
 )
+_MANAGED_VERSION_RE = re.compile(r"version=(\d+)")
 
 _LEGACY_PREAMBLE = """\
 # dvw blueprint — served by dvw-catalog (GET /v1/blueprint).
@@ -121,69 +124,71 @@ class BlueprintStore:
         self.custom_path = custom_path
         self.meta_path = meta_path
         self.legacy_backup_path = legacy_backup_path
-        self._lock = asyncio.Lock()
+        # A threading lock, not an asyncio one, because the work runs in a
+        # worker thread. Cancelling the awaiting coroutine (a disconnected
+        # client, which Starlette turns into task cancellation) cannot stop that
+        # thread — an asyncio.Lock would be released while its thread was still
+        # mid-write, and the next request would interleave with it. Holding the
+        # lock inside the thread ties it to the work instead of to the waiter.
+        # RLock because write_custom() re-enters through read().
+        self._lock = threading.RLock()
 
     # ---- async service API ------------------------------------------------
-    # Every entry point is a read-modify-write across four files, so one lock
-    # serializes them (same discipline as CatalogStore) and the blocking I/O
-    # runs in a thread so an fsync can't stall the event loop. The sync methods
-    # below are the implementation and stay directly callable in tests.
+    # Blocking file I/O hops to a thread so an fsync can't stall the event loop.
 
     async def aread(self) -> BlueprintSnapshot:
-        async with self._lock:
-            return await asyncio.to_thread(self.read)
+        return await asyncio.to_thread(self.read)
 
     async def awrite_custom(
         self, content: str, expected_revision: str | None = None
     ) -> BlueprintSnapshot:
-        async with self._lock:
-            return await asyncio.to_thread(
-                self.write_custom, content, expected_revision
-            )
+        return await asyncio.to_thread(self.write_custom, content, expected_revision)
 
     async def awrite_effective_compat(
         self, content: str, expected_revision: str | None = None
     ) -> BlueprintSnapshot:
-        async with self._lock:
-            return await asyncio.to_thread(
-                self.write_effective_compat, content, expected_revision
-            )
+        return await asyncio.to_thread(
+            self.write_effective_compat, content, expected_revision
+        )
 
     # ---- implementation ---------------------------------------------------
 
     def read(self) -> BlueprintSnapshot:
-        status = self._ensure_state()
-        custom = self.custom_path.read_text()
-        sanitized = _strip_managed_blocks(custom)
-        if sanitized != custom:
-            # Generated content must never be authoritative custom data. Repair
-            # it here instead of raising: a rejected read has no recovery path
-            # through the API, so it would wedge every future GET on state the
-            # operator cannot see or reach.
-            _atomic_write(self.custom_path, sanitized)
-            custom = sanitized
-            status = "custom_sanitized"
-        effective = render_effective(custom)
-        self._materialize(effective)
-        return self._snapshot(custom, effective, status)
+        with self._lock:
+            status = self._ensure_state()
+            custom = self.custom_path.read_text()
+            sanitized = _strip_managed_blocks(custom)
+            if sanitized != custom:
+                # Generated content must never be authoritative custom data.
+                # Repair it here instead of raising: a rejected read has no
+                # recovery path through the API, so it would wedge every future
+                # GET on state the operator cannot see or reach.
+                _atomic_write(self.custom_path, sanitized)
+                custom = sanitized
+                status = "custom_sanitized"
+            effective = render_effective(custom)
+            self._materialize(effective)
+            return self._snapshot(custom, effective, status)
 
     def write_custom(
         self, content: str, expected_revision: str | None = None
     ) -> BlueprintSnapshot:
-        current = self.read()
-        self._check_revision(current.revision, expected_revision)
-        _reject_managed_markers(content)
-        _atomic_write(self.custom_path, content)
-        effective = render_effective(content)
-        self._materialize(effective)
-        return self._snapshot(content, effective, "custom_updated")
+        with self._lock:
+            current = self.read()
+            self._check_revision(current.revision, expected_revision)
+            _reject_managed_markers(content)
+            _atomic_write(self.custom_path, content)
+            effective = render_effective(content)
+            self._materialize(effective)
+            return self._snapshot(content, effective, "custom_updated")
 
     def write_effective_compat(
         self, content: str, expected_revision: str | None = None
     ) -> BlueprintSnapshot:
         """Compatibility PUT for clients that still submit the whole blueprint."""
-        custom = extract_custom_content(content)
-        return self.write_custom(custom, expected_revision)
+        with self._lock:
+            custom = extract_custom_content(content)
+            return self.write_custom(custom, expected_revision)
 
     def _snapshot(
         self, custom: str, effective: str, migration_status: str
@@ -311,6 +316,7 @@ def extract_custom_content(content: str) -> str:
     """
     if MANAGED_BEGIN_PREFIX not in content and MANAGED_END not in content:
         return content
+    _guard_future_managed_version(content)
     normalized = content.rstrip("\n") + "\n"
     if (
         normalized.count(MANAGED_BEGIN_PREFIX) == 1
@@ -333,8 +339,26 @@ def _reject_managed_markers(content: str) -> None:
         )
 
 
+def _guard_future_managed_version(content: str) -> None:
+    """Refuse to strip a block generated by a newer service.
+
+    Recognizing every version is what stops a stray newline from wedging a
+    read, but it must not become a downgrade path: stripping a v3 block and
+    re-emitting v2 defaults would silently roll back the SSH config of every
+    client that syncs afterwards. Read the version out of the marker and stop.
+    """
+    for match in _MANAGED_BLOCK_RE.finditer(content):
+        found = _MANAGED_VERSION_RE.search(match.group("attrs"))
+        if found and int(found.group(1)) > MANAGED_VERSION:
+            raise FutureBlueprintVersionError(
+                f"SSH managed defaults v{found.group(1)} are newer than this "
+                f"service supports (v{MANAGED_VERSION})"
+            )
+
+
 def _strip_managed_blocks(content: str) -> str:
     """Drop every generated block, leaving only operator-authored content."""
+    _guard_future_managed_version(content)
     stripped = _MANAGED_BLOCK_RE.sub("", content)
     if stripped == content:
         return content
