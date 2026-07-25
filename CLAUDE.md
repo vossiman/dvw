@@ -29,8 +29,14 @@ branches.
 ## Updates
 
 - Standalone checkout: `dvw update` (pull main + reinstall).
-- Submodule under a parent (e.g. `devMachine`): **refuse** `dvw update`; bump
-  the parent submodule pointer instead.
+- Submodule under a parent (e.g. `devMachine`): `dvw update` **follows the
+  parent's pins** — ff the parent to its `origin/main`, check submodules out at
+  the pinned commits, reinstall. It never commits or pushes; moving the pins
+  forward is the parent's job (`scripts/update-submodules.sh` in devMachine).
+  It refuses when the parent is off `main`, dirty (including dirty submodule
+  contents), or can't fast-forward. See `lib/update-super.sh`.
+- The "behind main" nudge measures the **parent** in submodule mode, so the
+  count is exactly what `dvw update` resolves (`lib/update-check.sh`).
 
 ## Tests
 
