@@ -216,3 +216,65 @@ teardown() { rm -rf "$TMPDIR"; }
   after=$(find /tmp -maxdepth 1 -name 'dvw-ssh.*' 2>/dev/null | wc -l)
   [ "$before" -eq "$after" ]
 }
+
+@test "returning from the ssh session leaves no armed RETURN trap in the caller" {
+  # Regression: bash keeps a `trap ... RETURN` set inside a function armed after
+  # that function returns, so it fired a second time when the *caller* returned
+  # — in a scope where $markdir no longer exists. Under `set -u` (which `dvw`
+  # sets) that killed the process with "markdir: unbound variable" right after a
+  # clean tmux exit, turning status 0 into 1.
+  printf '0|connected\n' > "$SSH_RESULTS"
+
+  run bash -euo pipefail -c '
+    source "$DVW_ROOT/lib/connect.sh"
+    _dvw_reap_stale_masters() { :; }
+    _dvw_ssh_master_alive() { return 1; }
+    catalog_workspace_touch() { :; }
+    outer() { local ws="$1"; _dvw_ssh_session "$ws"; }
+    outer myws
+    echo CALLER_RETURNED_OK
+  '
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"unbound variable"* ]]
+  [[ "$output" == *CALLER_RETURNED_OK* ]]
+}
+
+@test "marker cleanup removes only a dir we created" {
+  local victim="$TMPDIR/precious"
+  mkdir -p "$victim/data" && : > "$victim/data/keep"
+  local mine="$TMPDIR/dvw-ssh.XYZ"
+  mkdir -p "$mine" && : > "$mine/connected"
+
+  _dvw_rm_marker_dir "$mine"
+  [ ! -e "$mine" ]
+
+  # Anything we did not name is refused, loudly, without touching it.
+  run _dvw_rm_marker_dir "$victim"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"refusing to remove unexpected ssh marker dir"* ]]
+  [ -f "$victim/data/keep" ]
+}
+
+@test "marker cleanup is a no-op on empty, missing, root, and symlink paths" {
+  run _dvw_rm_marker_dir ""
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  run _dvw_rm_marker_dir "/"
+  [ "$status" -eq 0 ]
+  [ -d / ]
+
+  # Absent dir with our own naming: silent success, no error output.
+  run _dvw_rm_marker_dir "$TMPDIR/dvw-ssh.gone"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  # A symlink is never followed out of TMPDIR, even when named like ours.
+  local target="$TMPDIR/target"
+  mkdir -p "$target" && : > "$target/keep"
+  ln -s "$target" "$TMPDIR/dvw-ssh.link"
+  run _dvw_rm_marker_dir "$TMPDIR/dvw-ssh.link"
+  [ "$status" -eq 0 ]
+  [ -f "$target/keep" ]
+}
