@@ -144,8 +144,12 @@ _dvw_ssh_session() {
   local -a retry_opts=()
   markdir=$(mktemp -d "${TMPDIR:-/tmp}/dvw-ssh.XXXXXX") || return 1
   marker="$markdir/connected"
-  # Fires on every return path below, including the Ctrl-C one.
-  trap 'rm -rf "$markdir"' RETURN
+  # Fires on every return path below, including the Ctrl-C one. It disarms
+  # itself first: bash leaves a RETURN trap armed after the function that set
+  # it returns, so without `trap - RETURN` it fires a second time when the
+  # *caller* returns — a scope where $markdir is gone, which under `set -u`
+  # aborts dvw with "markdir: unbound variable" after an otherwise clean exit.
+  trap 'trap - RETURN; rm -rf "$markdir"' RETURN
   # Expanded by the remote login shell, not by this client-side assignment.
   # shellcheck disable=SC2016
   local remote_command='

@@ -216,3 +216,26 @@ teardown() { rm -rf "$TMPDIR"; }
   after=$(find /tmp -maxdepth 1 -name 'dvw-ssh.*' 2>/dev/null | wc -l)
   [ "$before" -eq "$after" ]
 }
+
+@test "returning from the ssh session leaves no armed RETURN trap in the caller" {
+  # Regression: bash keeps a `trap ... RETURN` set inside a function armed after
+  # that function returns, so it fired a second time when the *caller* returned
+  # — in a scope where $markdir no longer exists. Under `set -u` (which `dvw`
+  # sets) that killed the process with "markdir: unbound variable" right after a
+  # clean tmux exit, turning status 0 into 1.
+  printf '0|connected\n' > "$SSH_RESULTS"
+
+  run bash -euo pipefail -c '
+    source "$DVW_ROOT/lib/connect.sh"
+    _dvw_reap_stale_masters() { :; }
+    _dvw_ssh_master_alive() { return 1; }
+    catalog_workspace_touch() { :; }
+    outer() { local ws="$1"; _dvw_ssh_session "$ws"; }
+    outer myws
+    echo CALLER_RETURNED_OK
+  '
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"unbound variable"* ]]
+  [[ "$output" == *CALLER_RETURNED_OK* ]]
+}
