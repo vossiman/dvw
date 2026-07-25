@@ -239,3 +239,42 @@ teardown() { rm -rf "$TMPDIR"; }
   [[ "$output" != *"unbound variable"* ]]
   [[ "$output" == *CALLER_RETURNED_OK* ]]
 }
+
+@test "marker cleanup removes only a dir we created" {
+  local victim="$TMPDIR/precious"
+  mkdir -p "$victim/data" && : > "$victim/data/keep"
+  local mine="$TMPDIR/dvw-ssh.XYZ"
+  mkdir -p "$mine" && : > "$mine/connected"
+
+  _dvw_rm_marker_dir "$mine"
+  [ ! -e "$mine" ]
+
+  # Anything we did not name is refused, loudly, without touching it.
+  run _dvw_rm_marker_dir "$victim"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"refusing to remove unexpected ssh marker dir"* ]]
+  [ -f "$victim/data/keep" ]
+}
+
+@test "marker cleanup is a no-op on empty, missing, root, and symlink paths" {
+  run _dvw_rm_marker_dir ""
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  run _dvw_rm_marker_dir "/"
+  [ "$status" -eq 0 ]
+  [ -d / ]
+
+  # Absent dir with our own naming: silent success, no error output.
+  run _dvw_rm_marker_dir "$TMPDIR/dvw-ssh.gone"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  # A symlink is never followed out of TMPDIR, even when named like ours.
+  local target="$TMPDIR/target"
+  mkdir -p "$target" && : > "$target/keep"
+  ln -s "$target" "$TMPDIR/dvw-ssh.link"
+  run _dvw_rm_marker_dir "$TMPDIR/dvw-ssh.link"
+  [ "$status" -eq 0 ]
+  [ -f "$target/keep" ]
+}

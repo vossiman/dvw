@@ -137,6 +137,32 @@ _dvw_ssh_master_alive() {
 # failure must never be reinterpreted as a stopped container after the initial
 # provider check, because that is the stale-bind-mount/wipe footgun guarded by
 # _dvw_safe_devpod_up.
+# Remove a marker dir made by _dvw_ssh_session — and nothing else. This is the
+# one `rm -rf` in the connect path, it runs from a trap, and it runs after a
+# session that may have ended in any state, so it is written to be impossible
+# to misfire rather than merely correct:
+#
+#   - empty/unset path       → no-op (never `rm -rf ""`, never `rm -rf /`)
+#   - basename not dvw-ssh.* → refuse loudly; we did not create it
+#   - not a directory        → no-op (already gone, or something else's inode)
+#   - symlink                → no-op (never follow one out of TMPDIR)
+#   - `--` before the path   → a name starting with `-` can't become a flag
+#
+# Always returns 0: it is a cleanup, and a trap that fails must not change the
+# status the function was returning.
+_dvw_rm_marker_dir() {
+  local dir="${1:-}"
+  [[ -n "$dir" ]] || return 0
+  if [[ "${dir##*/}" != dvw-ssh.* ]]; then
+    ui_error "refusing to remove unexpected ssh marker dir: $dir"
+    return 0
+  fi
+  [[ -L "$dir" ]] && return 0
+  [[ -d "$dir" ]] || return 0
+  rm -rf -- "$dir"
+  return 0
+}
+
 _dvw_ssh_session() {
   local ws="$1" rc=0 total=0 delay markdir marker established=0
   local max_total="${DVW_SSH_RECONNECT_TOTAL_MAX:-50}"
@@ -149,7 +175,10 @@ _dvw_ssh_session() {
   # it returns, so without `trap - RETURN` it fires a second time when the
   # *caller* returns — a scope where $markdir is gone, which under `set -u`
   # aborts dvw with "markdir: unbound variable" after an otherwise clean exit.
-  trap 'trap - RETURN; rm -rf "$markdir"' RETURN
+  # `${markdir:-}` is deliberate belt-and-braces: even if the disarm above ever
+  # fails to hold, an unset var reaches the helper as empty (a no-op) instead of
+  # aborting dvw under `set -u`.
+  trap 'trap - RETURN; _dvw_rm_marker_dir "${markdir:-}"' RETURN
   # Expanded by the remote login shell, not by this client-side assignment.
   # shellcheck disable=SC2016
   local remote_command='
