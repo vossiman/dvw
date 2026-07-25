@@ -1,6 +1,8 @@
-# dvw update notifier — is the dvw checkout behind origin/main? Throttled,
-# fail-open, never blocks. The startup nudge (in `dvw`) and `dvw doctor` read
-# the cached result; a detached `git fetch` refreshes it past the TTL.
+# dvw update notifier — is the tracked repo behind origin/main? That is the dvw
+# checkout when standalone, and the SUPERPROJECT that pins it when dvw is a
+# submodule (see dvw_update_target_repo). Throttled, fail-open, never blocks.
+# The startup nudge (in `dvw`) and `dvw doctor` read the cached result; a
+# detached `git fetch` refreshes it past the TTL.
 #
 # Cache file: two lines — <last-fetch-epoch>\n<behind-count>\n — in the same
 # state dir as the version marker. dvw owns it; nothing else writes here.
@@ -51,11 +53,12 @@ _dvw_update_cache_stale() {
 # which --no-write-fetch-head still does — so skipping the FETCH_HEAD write
 # removes the shared file the two fetches were racing on.
 _dvw_update_do_refresh() {
-  local cache behind now tmp
+  local cache behind now tmp repo
   cache=$(dvw_update_cache_path)
+  repo=$(dvw_update_target_repo)
   mkdir -p "$(dirname "$cache")" 2>/dev/null || return 0
-  git -C "$DVW_ROOT" fetch -q --no-write-fetch-head origin main 2>/dev/null || return 0
-  behind=$(git -C "$DVW_ROOT" rev-list --count HEAD..origin/main 2>/dev/null)
+  git -C "$repo" fetch -q --no-write-fetch-head origin main 2>/dev/null || return 0
+  behind=$(git -C "$repo" rev-list --count HEAD..origin/main 2>/dev/null)
   case "$behind" in ''|*[!0-9]*) behind=0 ;; esac
   now=$(date +%s)
   tmp="${cache}.tmp.$$"
@@ -68,7 +71,7 @@ _dvw_update_do_refresh() {
 # CURRENT cached state). Set DVW_UPDATE_SYNC=1 to run it inline (tests).
 dvw_update_refresh_if_stale() {
   _dvw_update_cache_stale || return 0
-  git -C "$DVW_ROOT" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  git -C "$(dvw_update_target_repo)" rev-parse --git-dir >/dev/null 2>&1 || return 0
   if [ -n "${DVW_UPDATE_SYNC:-}" ]; then
     _dvw_update_do_refresh
     return 0
@@ -80,25 +83,38 @@ dvw_update_refresh_if_stale() {
   return 0
 }
 
-# True when $DVW_ROOT is a git submodule of another working tree (e.g. pinned
-# under devMachine). In that mode `dvw update` is the wrong CTA.
+# Echo the working tree of the superproject that pins $DVW_ROOT as a submodule
+# (e.g. devMachine), or nothing when this is a standalone checkout. Always 0.
+dvw_superproject_root() {
+  git -C "${DVW_ROOT:?}" rev-parse --show-superproject-working-tree 2>/dev/null || true
+}
+
+# True when $DVW_ROOT is a git submodule of another working tree.
 dvw_is_submodule_checkout() {
-  local super
-  super=$(git -C "${DVW_ROOT:?}" rev-parse --show-superproject-working-tree 2>/dev/null || true)
-  [[ -n "$super" ]]
+  [[ -n "$(dvw_superproject_root)" ]]
+}
+
+# Which repo's staleness is worth reporting? Under a superproject it is the
+# PARENT's: dvw sits at whatever commit the parent pins, so dvw's own main is
+# routinely ahead of it and would nag forever. The parent's distance from its
+# main is exactly what `dvw update` resolves.
+dvw_update_target_repo() {
+  local super; super=$(dvw_superproject_root)
+  printf '%s' "${super:-${DVW_ROOT:?}}"
+}
+
+# Display name for that repo: the superproject's directory name, else "dvw".
+dvw_update_target_name() {
+  local super; super=$(dvw_superproject_root)
+  if [[ -n "$super" ]]; then printf '%s' "$(basename "$super")"; else printf 'dvw'; fi
 }
 
 # Print the one-line startup nudge if behind. $1 = the subcommand being
 # dispatched; the nudge is suppressed for `update` (no point nagging mid-update)
 # and silent when up to date (0) or unknown (empty). Reads cached state only.
-# Submodule checkouts get a "bump parent pointer" CTA instead of `dvw update`.
 dvw_update_maybe_nudge() {
   [ "${1:-}" = "update" ] && return 0
   local behind; behind=$(dvw_update_behind_count)
   case "$behind" in ''|0) return 0 ;; esac
-  if dvw_is_submodule_checkout; then
-    printf '⬆ dvw behind main — bump parent submodule pointer (not: dvw update)\n'
-  else
-    printf '⬆ dvw behind main — run: dvw update\n'
-  fi
+  printf '⬆ %s behind main — run: dvw update\n' "$(dvw_update_target_name)"
 }

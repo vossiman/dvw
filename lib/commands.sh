@@ -436,11 +436,11 @@ cmd_doctor() {
     if [[ -z "$_dvw_behind" ]]; then
       ui_status_ok "dvw: version check pending (run again after network)"
     elif [[ "$_dvw_behind" -gt 0 ]]; then
-      if command -v dvw_is_submodule_checkout >/dev/null 2>&1 && dvw_is_submodule_checkout; then
-        ui_status_warn "dvw: $_dvw_behind commit(s) behind main — bump parent submodule pointer (not \`dvw update\`)"
-      else
-        ui_status_warn "dvw: $_dvw_behind commit(s) behind main — run: \`dvw update\`"
-      fi
+      # Under a superproject the count is the PARENT's — name it, so the number
+      # matches the repo `dvw update` will fast-forward.
+      local _dvw_name=dvw
+      command -v dvw_update_target_name >/dev/null 2>&1 && _dvw_name=$(dvw_update_target_name)
+      ui_status_warn "$_dvw_name: $_dvw_behind commit(s) behind main — run: \`dvw update\`"
     else
       ui_status_ok "dvw: up to date with main"
     fi
