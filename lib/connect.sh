@@ -85,45 +85,21 @@ _dvw_ssh_reconnect_delay() {
   esac
 }
 
-# ssh's own log for one attempt, minus what only `-v` added: the diagnostics a
-# user would have seen on stderr without it. `-v -E` sends everything to the
-# file, so this is what gets replayed to the terminal. The version banner is
-# dropped too — `-v` prints it as a non-debug line, and it is not something the
-# user saw before or wants once per reconnect.
-_dvw_ssh_log_diagnostics() {
-  grep -vE '^(debug[0-9]*:|OpenSSH_[0-9])' "$1" 2>/dev/null || true
-}
-
-# ssh client diagnostics that no amount of retrying will fix. Everything else —
-# timeouts, refused, reset, broken pipe, and names that stop resolving while the
-# network is down — is treated as a transport problem and retried.
+# True when a multiplex master for this alias is alive. A live master is itself
+# proof that authentication to the host works — it only exists because an
+# earlier connection completed one.
 #
-# Matched only against non-debug lines so the verbose log's internals cannot
-# produce a false positive.
-_dvw_ssh_error_is_fatal() {
-  local logfile="$1"
-  [[ -s "$logfile" ]] || return 1
-  _dvw_ssh_log_diagnostics "$logfile" | grep -qiE \
-    'host key verification failed|remote host identification has changed|permission denied|too many authentication failures|no supported authentication methods|bad configuration option|unknown (option|cipher|key type)|bad owner or permissions'
-}
-
-# True when ssh's log proves this attempt reached an authenticated, running
-# session. Only this refills the per-streak budget.
-#
-# This is ssh's own record of what it achieved, not an inference from what went
-# wrong afterwards or from how long the attempt took. Both of those have already
-# failed here: duration reads a slow TCP timeout as a long healthy session, and
-# disconnect wording ("closed by remote host") is emitted just as readily by a
-# host that accepts and immediately closes, so a flapping host could refill the
-# budget forever. A marker that has to be *earned* per attempt cannot be
-# re-triggered by the failure itself.
-#
-# Absence never refills, so a misread here can only end the loop early — and
-# DVW_SSH_RECONNECT_TOTAL_MAX bounds the invocation regardless.
-_dvw_ssh_session_established() {
-  local logfile="$1"
-  [[ -s "$logfile" ]] || return 1
-  grep -qE 'debug[0-9]*: (Entering interactive session|Authenticated to )' "$logfile"
+# Needed alongside the connect marker below because OpenSSH does not run
+# LocalCommand for a connection that rides an existing master (verified against
+# a real sshd). Without this, a `dvw` invocation that reused a master left over
+# from a previous one would look like it had never connected.
+_dvw_ssh_master_alive() {
+  local host="$1" cp
+  # Same `ssh -G` idiom (and SIGPIPE guard) as ssh_reap_stale_master.
+  cp=$(ssh -G "$host" 2>/dev/null | awk '$1=="controlpath"{print $2; exit}' || true)
+  [[ -z "$cp" || "$cp" == "none" ]] && return 1
+  [[ -S "$cp" ]] || return 1
+  timeout 3 ssh -O check "$host" >/dev/null 2>&1
 }
 
 # Run the interactive SSH/tmux session and reattach after transport loss.
@@ -134,40 +110,42 @@ _dvw_ssh_session_established() {
 # tmux detach/logout returns 0 and all other remote-command statuses propagate.
 #
 # 255 is not only "the network blipped" — it is also a bad host key and a
-# refused auth, so retrying is gated and bounded four ways:
+# refused auth, and exit status alone cannot tell those apart. Two structural
+# signals gate and bound the retrying; neither reads ssh's message text, which
+# would tie us to another tool's wording:
 #
-#   1. ssh's diagnostics are classified. A fatal auth/config error returns
-#      straight away with ssh's own message instead of retry chatter. ssh runs
-#      with `-v -E <file>` so its log lands in a file rather than on the
-#      terminal: `-t` puts remote output on the pty, so the file holds only
-#      client-side diagnostics, and the non-debug lines are replayed on exit.
-#   2. Consecutive attempts stop at DVW_SSH_RECONNECT_MAX_ATTEMPTS (12).
-#   3. A retry streak also stops at DVW_SSH_RECONNECT_MAX_SECONDS (120) of wall
-#      clock. The attempt cap alone is not a bound: attempts that each block for
-#      a TCP timeout make 12 tries take many minutes.
-#   4. DVW_SSH_RECONNECT_TOTAL_MAX (50) caps reconnects for the whole
-#      invocation and is NEVER reset. Bounds 2 and 3 are per-streak, and a
-#      per-streak bound is only as good as the signal that refills it; this one
-#      holds even if that signal is wrong. Two earlier attempts at this loop
-#      shipped an unbounded retry because a resettable bound was the only bound.
+#   1. Establishment. ssh runs with `-o LocalCommand=touch <marker>`, a client
+#      hook OpenSSH runs only after a connection authenticates, so the marker
+#      file existing is proof this attempt connected. A live multiplex master
+#      counts too (see _dvw_ssh_master_alive), since one cannot exist without
+#      an earlier connection having authenticated. Until something proves a
+#      connection happened, a 255 means there is no session to reconnect to —
+#      auth, host key, config, unreachable host — and it propagates with ssh's
+#      own error left on screen.
+#   2. DVW_SSH_RECONNECT_TOTAL_MAX (50) caps reconnects for the whole
+#      invocation and is NEVER reset. Three earlier versions of this loop
+#      shipped an unbounded retry because their only bound was one a failure
+#      could reset: first session duration, then disconnect wording, then a
+#      per-streak counter refilled by both. A bound that nothing resets is the
+#      only kind that holds when the signal feeding it is wrong.
 #
-# A streak refills only on proof that the attempt reached a running session
-# (`_dvw_ssh_session_established`), so an all-day connection that drops twice
-# gets the full allowance both times without a flapping host earning an endless
-# supply of fresh budgets.
+# Reconnect attempts (never the first connect, which may legitimately be slow
+# on a cold container) also carry a short ConnectTimeout, so 50 attempts cannot
+# add up to an unbounded wait when each one blocks on a dead network.
 #
 # This loop deliberately contains no `devpod up` path. A transient network
 # failure must never be reinterpreted as a stopped container after the initial
 # provider check, because that is the stale-bind-mount/wipe footgun guarded by
 # _dvw_safe_devpod_up.
 _dvw_ssh_session() {
-  local ws="$1" rc=0 attempt=0 total=0 delay logfile streak_start=$SECONDS
-  local max_attempts="${DVW_SSH_RECONNECT_MAX_ATTEMPTS:-12}"
-  local max_seconds="${DVW_SSH_RECONNECT_MAX_SECONDS:-120}"
+  local ws="$1" rc=0 total=0 delay markdir marker established=0
   local max_total="${DVW_SSH_RECONNECT_TOTAL_MAX:-50}"
-  logfile=$(mktemp "${TMPDIR:-/tmp}/dvw-ssh-log.XXXXXX") || return 1
+  local connect_timeout="${DVW_SSH_RECONNECT_CONNECT_TIMEOUT:-10}"
+  local -a retry_opts=()
+  markdir=$(mktemp -d "${TMPDIR:-/tmp}/dvw-ssh.XXXXXX") || return 1
+  marker="$markdir/connected"
   # Fires on every return path below, including the Ctrl-C one.
-  trap 'rm -f "$logfile"' RETURN
+  trap 'rm -rf "$markdir"' RETURN
   # Expanded by the remote login shell, not by this client-side assignment.
   # shellcheck disable=SC2016
   local remote_command='
@@ -191,9 +169,13 @@ _dvw_ssh_session() {
     # wins; the session itself keeps running across viewer changes. Plain
     # `docker exec` shells (Cursor remote-ssh, non-tmux ssh) are unaffected —
     # exclusivity is scoped to the tmux path only.
-    : > "$logfile"  # -E appends; each attempt is classified on its own log
-    ssh -v -E "$logfile" -t "${ws}.devpod" "$remote_command" || rc=$?
-    _dvw_ssh_log_diagnostics "$logfile" >&2
+    # A master alive before the attempt proves auth to this host works, and is
+    # what covers a session that rides one (OpenSSH skips LocalCommand then).
+    _dvw_ssh_master_alive "${ws}.devpod" && established=1
+    rm -f "$marker"
+    ssh -o PermitLocalCommand=yes -o "LocalCommand=touch '$marker'" \
+      "${retry_opts[@]}" -t "${ws}.devpod" "$remote_command" || rc=$?
+    [[ -e "$marker" ]] && established=1
 
     case "$rc" in
       0)   return 0 ;;
@@ -201,15 +183,11 @@ _dvw_ssh_session() {
       *)   return "$rc" ;;
     esac
 
-    if _dvw_ssh_error_is_fatal "$logfile"; then
-      ui_error "$ws: ssh failed for a reason reconnecting cannot fix (see above)"
+    if (( ! established )); then
+      # ssh never authenticated, so there is no session to reattach to. Its own
+      # error is already on screen; retrying would only bury it.
+      ui_error "$ws: ssh never connected — not a dropped session (see above)"
       return "$rc"
-    fi
-
-    # Only a session ssh confirms it established earns a fresh streak.
-    if _dvw_ssh_session_established "$logfile"; then
-      attempt=0
-      streak_start=$SECONDS
     fi
 
     if (( total >= max_total )); then
@@ -218,17 +196,11 @@ _dvw_ssh_session() {
       return "$rc"
     fi
 
-    if (( attempt >= max_attempts || SECONDS - streak_start >= max_seconds )); then
-      ui_error "$ws: still unreachable after $((SECONDS - streak_start))s and $attempt reconnect attempts — giving up"
-      ui_info "  the tmux 'work' session is untouched; reconnect with: dvw $ws"
-      return "$rc"
-    fi
-
     _dvw_reap_stale_masters "$ws"
-    delay=$(_dvw_ssh_reconnect_delay "$attempt")
-    attempt=$((attempt + 1))
+    delay=$(_dvw_ssh_reconnect_delay "$total")
     total=$((total + 1))
-    ui_status_warn "$ws: ssh transport lost — reconnecting in ${delay}s (attempt $attempt/$max_attempts, $total/$max_total total, Ctrl-C to stop)"
+    retry_opts=(-o "ConnectTimeout=$connect_timeout")
+    ui_status_warn "$ws: ssh transport lost — reconnecting in ${delay}s ($total/$max_total, Ctrl-C to stop)"
     # An interrupt during the delay is an explicit request to leave the
     # reconnect loop. Returning 130 matches conventional SIGINT status.
     sleep "$delay" || return 130

@@ -270,23 +270,31 @@ master and automatically reattaches the same `work` tmux session with a 1s/2s/5s
 retry backoff. Clean tmux detach or logout still returns immediately; press
 Ctrl-C during a reconnect delay to stop retrying.
 
-Reconnecting is deliberately bounded, because ssh exits 255 for a dropped
-transport *and* for a bad host key or a refused auth. dvw runs ssh with
-`-v -E <tmpfile>` so it can read ssh's own record of the attempt instead of
-guessing from how long it took: a fatal auth/config error returns immediately
-with ssh's message intact, and a fresh retry budget is granted only on ssh's
-`debug1:` proof that the attempt reached an authenticated, running session. The
-log stays out of your terminal — only the lines you'd have seen without `-v` are
-replayed.
+Reconnecting is gated on whether a connection ever happened, because ssh exits
+255 both for a dropped transport and for a bad host key or refused auth, and the
+exit status cannot tell them apart. dvw asks OpenSSH directly rather than reading
+its messages: `-o LocalCommand=touch <marker>` is a client-side hook OpenSSH runs
+only after a connection authenticates, so the marker file is proof. A live
+multiplex master counts too — one cannot exist unless an earlier connection
+authenticated — which matters because OpenSSH skips the hook for a session riding
+an existing master. Until something proves a connection happened, a 255 returns
+immediately with ssh's own error on screen.
 
-Three bounds apply. `DVW_SSH_RECONNECT_MAX_ATTEMPTS` (12) and
-`DVW_SSH_RECONNECT_MAX_SECONDS` (120) bound a run of consecutive failures — the
-time bound matters because attempts that each block on a TCP timeout blow the
-clock long before the attempt count. Those two reset when a session establishes,
-so `DVW_SSH_RECONNECT_TOTAL_MAX` (50) bounds the whole invocation and is never
-reset: a host that accepts and immediately closes would otherwise earn a fresh
-budget on every pass. dvw then tells you to rerun `dvw <id>`; the remote `work`
-session is untouched in every case.
+`DVW_SSH_RECONNECT_TOTAL_MAX` (50) then bounds reconnects for the whole
+invocation and is **never** reset by anything — a host that accepts and instantly
+closes is otherwise indistinguishable from a flaky link, and every earlier
+version of this loop that bounded itself with a resettable counter could be held
+open forever. Reconnect attempts (not the first connect, which may legitimately
+be slow on a cold container) also carry a short `ConnectTimeout`, so 50 attempts
+against a dead network cannot add up to an unbounded wait. When dvw gives up it
+tells you to rerun `dvw <id>`; the remote `work` session is untouched in every
+case.
+
+The OpenSSH behaviour this relies on is verified against a real sshd by
+`tests/manual/verify-ssh-localcommand.sh` (11 checks, including a genuine
+transport cut). It needs sudo, so it is not part of `tests/bats/run.sh` — run it
+by hand when changing the reconnect loop or moving to a new OpenSSH major
+version.
 
 The 15s detection window is a deliberate trade: it also means a network blip
 longer than 15s tears down an *idle* multiplex master and costs the next connect

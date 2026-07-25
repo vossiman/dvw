@@ -4,11 +4,11 @@
 # live in _connect_ssh; these tests isolate the post-check session runner so a
 # reconnect can never accidentally enter a devpod-up path.
 #
-# SSH_RESULTS drives the ssh stub, one `rc[|log text]` per attempt (`\n` for
-# multiple lines). The stub writes that text to the `-E` log file, which is where
-# the retry decisions come from: a `debug1:` establishment marker is ssh's proof
-# that the attempt reached a running session, and only that refills the budget.
-# UP is that marker; DROPPED is an established session that then died.
+# SSH_RESULTS drives the ssh stub, one `rc[|connected]` per attempt. `connected`
+# makes the stub honour the `-o LocalCommand=touch <marker>` it was passed,
+# which is how OpenSSH signals that a connection authenticated — the stub is
+# mimicking the real hook, verified against a live sshd in
+# scratchpad/verify-localcommand.sh (11 checks, including a real transport cut).
 
 setup() {
   TMPDIR=$(mktemp -d)
@@ -35,27 +35,20 @@ count=$((count + 1))
 printf '%s\n' "$count" > "$SSH_COUNT"
 printf '%q ' "$@" >> "$SSH_CALLS"
 printf '\n' >> "$SSH_CALLS"
-log=""
+localcmd=""
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
-  [[ "${args[i]}" == "-E" ]] && log="${args[i + 1]}"
+  [[ "${args[i]}" == LocalCommand=* ]] && localcmd="${args[i]#LocalCommand=}"
 done
 spec=$(sed -n "${count}p" "$SSH_RESULTS")
 [[ -n "$spec" ]] || spec=$(tail -n1 "$SSH_RESULTS")
 [[ -n "$spec" ]] || spec=0
 [[ "${SSH_SLEEP:-0}" != "0" ]] && sleep "$SSH_SLEEP"
-text="${spec#*|}"
-if [[ "$text" != "$spec" ]]; then
-  if [[ -n "$log" ]]; then printf '%b\n' "$text" >> "$log"; else printf '%b\n' "$text" >&2; fi
-fi
+# "connected" == OpenSSH ran the client-side hook after authenticating.
+[[ "${spec#*|}" == "connected" && -n "$localcmd" ]] && eval "$localcmd"
 exit "${spec%%|*}"
 EOF
   chmod +x "$STUB_BIN/ssh"
-
-  # ssh's own establishment marker, and an established session that then died.
-  UP='debug1: Authenticated to myws.devpod\ndebug1: Entering interactive session.'
-  DROPPED="$UP"'\nConnection to myws.devpod closed by remote host.'
-  REFUSED='ssh: connect to host myws.devpod port 22: Connection refused'
 
   ui_status_warn() { printf 'WARN: %s\n' "$*"; }
   ui_error() { printf 'ERROR: %s\n' "$*"; }
@@ -65,17 +58,19 @@ EOF
   source "$DVW_ROOT/lib/connect.sh"
 
   _dvw_reap_stale_masters() { printf '%s\n' "$1" >> "$REAP_CALLS"; }
+  # No multiplex master unless a test says otherwise.
+  _dvw_ssh_master_alive() { return 1; }
   _dvw_safe_devpod_up() {
     printf '%s\n' "$*" >> "$DEVPOD_UP_CALLS"
     return 99
   }
-  export -f _dvw_reap_stale_masters _dvw_safe_devpod_up
+  export -f _dvw_reap_stale_masters _dvw_ssh_master_alive _dvw_safe_devpod_up
 }
 
 teardown() { rm -rf "$TMPDIR"; }
 
 @test "ssh session reconnects after transport loss and then returns cleanly" {
-  printf '255|%s\n0\n' "$DROPPED" > "$SSH_RESULTS"
+  printf '255|connected\n0|connected\n' > "$SSH_RESULTS"
 
   run _dvw_ssh_session myws
 
@@ -88,7 +83,7 @@ teardown() { rm -rf "$TMPDIR"; }
 }
 
 @test "ssh session does not reconnect after clean detach or logout" {
-  printf '0\n' > "$SSH_RESULTS"
+  printf '0|connected\n' > "$SSH_RESULTS"
 
   run _dvw_ssh_session myws
 
@@ -98,7 +93,7 @@ teardown() { rm -rf "$TMPDIR"; }
 }
 
 @test "ssh session propagates non-transport remote command failure" {
-  printf '42\n' > "$SSH_RESULTS"
+  printf '42|connected\n' > "$SSH_RESULTS"
 
   run _dvw_ssh_session myws
 
@@ -107,100 +102,39 @@ teardown() { rm -rf "$TMPDIR"; }
   [ ! -s "$REAP_CALLS" ]
 }
 
-@test "ssh session does not retry an auth or host-key failure" {
-  # Reconnecting cannot fix these, and retrying would bury ssh's own message.
-  printf '255|Host key verification failed.\n' > "$SSH_RESULTS"
+@test "ssh session does not retry when it never connected" {
+  # No hook fired: auth, host key, config, or an unreachable host. There is no
+  # session to reattach to, and retrying would bury ssh's own error.
+  printf '255\n' > "$SSH_RESULTS"
 
   run _dvw_ssh_session myws
 
   [ "$status" -eq 255 ]
   [ "$(<"$SSH_COUNT")" -eq 1 ]
   [ ! -s "$REAP_CALLS" ]
-  [[ "$output" == *"Host key verification failed."* ]]  # replayed, not swallowed
-  [[ "$output" == *"reconnecting cannot fix"* ]]
+  [ ! -s "$DEVPOD_UP_CALLS" ]
+  [[ "$output" == *"never connected"* ]]
   [[ "$output" != *"reconnecting in"* ]]
 }
 
-@test "ssh session does not retry a permission-denied failure" {
-  printf '255|Permission denied (publickey).\n' > "$SSH_RESULTS"
-
-  run _dvw_ssh_session myws
-
-  [ "$status" -eq 255 ]
-  [ "$(<"$SSH_COUNT")" -eq 1 ]
-  [[ "$output" == *"reconnecting cannot fix"* ]]
-}
-
-@test "ssh session gives up after the attempt budget instead of spinning" {
-  printf '255|%s\n' "$REFUSED" > "$SSH_RESULTS"
-  export DVW_SSH_RECONNECT_MAX_ATTEMPTS=3
-
-  run _dvw_ssh_session myws
-
-  [ "$status" -eq 255 ]
-  [ "$(<"$SSH_COUNT")" -eq 4 ]  # first attempt + 3 reconnects
-  [[ "$output" == *"still unreachable"* ]]
-  [[ "$output" == *"reconnect with: dvw myws"* ]]
-  [ ! -s "$DEVPOD_UP_CALLS" ]
-}
-
-@test "a failure to connect never refills the reconnect budget" {
-  # Regression: a slow connect failure used to look like a long, successful
-  # session, refill the budget on every attempt, and leave the loop unbounded
-  # against a host that was never coming back.
-  export SSH_SLEEP=1
-  printf '255|ssh: connect to host myws.devpod port 22: Connection timed out\n' > "$SSH_RESULTS"
-  export DVW_SSH_RECONNECT_MAX_ATTEMPTS=2
-
-  run _dvw_ssh_session myws
-
-  [ "$status" -eq 255 ]
-  [ "$(<"$SSH_COUNT")" -eq 3 ]
-  [[ "$output" == *"still unreachable"* ]]
-}
-
-@test "a retry streak also stops on the wall-clock deadline" {
-  # Attempts that each block for a TCP timeout blow the time budget long before
-  # the attempt count, so the deadline is the bound that actually applies.
-  export SSH_SLEEP=1
-  printf '255|ssh: connect to host myws.devpod port 22: Connection timed out\n' > "$SSH_RESULTS"
-  export DVW_SSH_RECONNECT_MAX_ATTEMPTS=99
-  export DVW_SSH_RECONNECT_MAX_SECONDS=2
-
-  run _dvw_ssh_session myws
-
-  [ "$status" -eq 255 ]
-  [ "$(<"$SSH_COUNT")" -lt 10 ]
-  [[ "$output" == *"still unreachable"* ]]
-}
-
-@test "an established session that drops gets a fresh reconnect budget" {
-  # drop, one failed retry, then a reconnect that establishes and drops again:
-  # the second drop must not inherit the first one's spent attempts.
-  {
-    printf '255|%s\n' "$DROPPED"
-    printf '255|%s\n' "$REFUSED"
-    printf '255|%s\n' "$DROPPED"
-    printf '0\n'
-  } > "$SSH_RESULTS"
-  export DVW_SSH_RECONNECT_MAX_ATTEMPTS=2
+@test "a live multiplex master also counts as having connected" {
+  # OpenSSH skips the hook for a session riding an existing master, so without
+  # this signal a reused master would look like it had never connected.
+  _dvw_ssh_master_alive() { return 0; }
+  printf '255\n0\n' > "$SSH_RESULTS"
 
   run _dvw_ssh_session myws
 
   [ "$status" -eq 0 ]
-  [ "$(<"$SSH_COUNT")" -eq 4 ]
-  [[ "$output" != *"still unreachable"* ]]
+  [ "$(<"$SSH_COUNT")" -eq 2 ]
+  [[ "$output" == *"ssh transport lost"* ]]
 }
 
 @test "a host that accepts and immediately closes cannot retry forever" {
-  # Regression: an established-then-dropped attempt refills the per-streak
-  # budget, so a host that keeps doing exactly that reset both the attempt count
-  # and the deadline on every pass and reached neither limit. The total cap is
-  # never reset, so it bounds the loop even when the refill signal keeps firing.
-  printf '255|%s\n' "$DROPPED" > "$SSH_RESULTS"
+  # Every attempt connects, so every attempt is retry-worthy. Only a bound that
+  # nothing resets stops this; earlier versions spun here indefinitely.
+  printf '255|connected\n' > "$SSH_RESULTS"
   export DVW_SSH_RECONNECT_TOTAL_MAX=5
-  export DVW_SSH_RECONNECT_MAX_ATTEMPTS=2
-  export DVW_SSH_RECONNECT_MAX_SECONDS=1
 
   run _dvw_ssh_session myws
 
@@ -211,33 +145,48 @@ teardown() { rm -rf "$TMPDIR"; }
   [ ! -s "$DEVPOD_UP_CALLS" ]
 }
 
-@test "ssh diagnostics are replayed but verbose debug lines are not" {
-  # One attempt whose log holds the `-v` banner, a debug line, and a real
-  # diagnostic. Only the diagnostic is the user's business.
-  printf '255|OpenSSH_9.6p1 Ubuntu-3ubuntu13.15, OpenSSL 3.0.13\\ndebug1: Connecting to myws.devpod\\n%s\n' \
-    "$REFUSED" > "$SSH_RESULTS"
-  export DVW_SSH_RECONNECT_MAX_ATTEMPTS=0
+@test "an outage after a real session retries, then stops at the cap" {
+  # Connect, drop, then the network stays down: later attempts never connect,
+  # but the session is known to have existed, so reconnecting stays sensible
+  # until the cap.
+  printf '255|connected\n255\n' > "$SSH_RESULTS"
+  export DVW_SSH_RECONNECT_TOTAL_MAX=4
 
   run _dvw_ssh_session myws
 
   [ "$status" -eq 255 ]
-  [[ "$output" == *"Connection refused"* ]]
-  [[ "$output" != *"debug1:"* ]]
-  [[ "$output" != *"OpenSSH_9.6p1"* ]]
+  [ "$(<"$SSH_COUNT")" -eq 5 ]
+  [[ "$output" == *"4 reconnects in one session without settling"* ]]
 }
 
-@test "ssh runs with a private verbose log so the pty stays clean" {
-  printf '0\n' > "$SSH_RESULTS"
+@test "reconnect attempts carry a connect timeout but the first does not" {
+  # A cold container may legitimately be slow to accept the first connection;
+  # retries must not be able to stack up unbounded waits.
+  printf '255|connected\n0|connected\n' > "$SSH_RESULTS"
+  export DVW_SSH_RECONNECT_CONNECT_TIMEOUT=7
 
   run _dvw_ssh_session myws
 
   [ "$status" -eq 0 ]
-  run grep -E -- "-v -E [^ ]*dvw-ssh-log" "$SSH_CALLS"
+  [ "$(head -1 "$SSH_CALLS" | grep -c ConnectTimeout)" -eq 0 ]
+  [ "$(sed -n 2p "$SSH_CALLS" | grep -c 'ConnectTimeout=7')" -eq 1 ]
+}
+
+@test "ssh session asks OpenSSH to signal a connection via LocalCommand" {
+  printf '0|connected\n' > "$SSH_RESULTS"
+
+  run _dvw_ssh_session myws
+
+  [ "$status" -eq 0 ]
+  run grep -F -- "PermitLocalCommand=yes" "$SSH_CALLS"
+  [ "$status" -eq 0 ]
+  # SSH_CALLS records args with %q, so the space after touch is escaped.
+  run grep -E -- "LocalCommand=touch.*dvw-ssh.*connected" "$SSH_CALLS"
   [ "$status" -eq 0 ]
 }
 
 @test "ssh session uses workspace alias and tmux work command" {
-  printf '0\n' > "$SSH_RESULTS"
+  printf '0|connected\n' > "$SSH_RESULTS"
 
   run _dvw_ssh_session alpha
 
@@ -255,4 +204,15 @@ teardown() { rm -rf "$TMPDIR"; }
   [ "$(_dvw_ssh_reconnect_delay 1)" = "2" ]
   [ "$(_dvw_ssh_reconnect_delay 2)" = "5" ]
   [ "$(_dvw_ssh_reconnect_delay 99)" = "5" ]
+}
+
+@test "the connection marker is cleaned up on every exit path" {
+  printf '255\n' > "$SSH_RESULTS"
+  local before after
+  before=$(find /tmp -maxdepth 1 -name 'dvw-ssh.*' 2>/dev/null | wc -l)
+
+  run _dvw_ssh_session myws
+
+  after=$(find /tmp -maxdepth 1 -name 'dvw-ssh.*' 2>/dev/null | wc -l)
+  [ "$before" -eq "$after" ]
 }
