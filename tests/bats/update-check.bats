@@ -130,16 +130,6 @@ _write_cache() { mkdir -p "$DVW_STATE_DIR"; printf '%s\n%s\n' "$1" "$2" > "$DVW_
   [[ "$output" == *"behind main — run: dvw update"* ]]
 }
 
-@test "maybe_nudge: submodule checkout gets parent-pointer CTA" {
-  _write_cache 123 2
-  # Predicate is pure; stub it so we don't fight git submodule fixtures.
-  dvw_is_submodule_checkout() { return 0; }
-  run dvw_update_maybe_nudge connect
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"bump parent submodule pointer"* ]]
-  [[ "$output" != *"run: dvw update"* ]]
-}
-
 @test "maybe_nudge: silent for the update subcommand even when behind" {
   _write_cache 123 2
   run dvw_update_maybe_nudge update
@@ -158,4 +148,85 @@ _write_cache() { mkdir -p "$DVW_STATE_DIR"; printf '%s\n%s\n' "$1" "$2" > "$DVW_
   run dvw_update_maybe_nudge connect
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+# --- superproject mode -------------------------------------------------------
+# When dvw is pinned as a submodule, the staleness that matters is the PARENT's
+# (its main is what `dvw update` follows), not dvw's own.
+
+# Build: bare parent remote + parent clone with $REMOTE added as submodule "sub".
+# Leaves PARENT/SUPER_REMOTE set and DVW_ROOT pointing at the submodule checkout.
+_make_super() {
+  git -C "$REMOTE" symbolic-ref HEAD refs/heads/main
+  SUPER_REMOTE="$TMP/super.git"; git init -q --bare -b main "$SUPER_REMOTE"
+  PARENT="$TMP/super"; git clone -q "$SUPER_REMOTE" "$PARENT"
+  git -C "$PARENT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m super
+  git -C "$PARENT" -c user.email=t@t -c user.name=t \
+      -c protocol.file.allow=always submodule add -q -b main "$REMOTE" sub
+  git -C "$PARENT" -c user.email=t@t -c user.name=t commit -q -m "add sub"
+  git -C "$PARENT" push -q origin main
+  export DVW_ROOT="$PARENT/sub"
+}
+
+# Advance the parent's remote main by N empty commits (throwaway clone).
+_advance_super_remote() {
+  local n=$1 w2="$TMP/sw2"
+  rm -rf "$w2"; git clone -q "$SUPER_REMOTE" "$w2"
+  local i; for ((i=0;i<n;i++)); do
+    git -C "$w2" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "s$i"
+  done
+  git -C "$w2" push -q origin main
+}
+
+@test "superproject_root: empty for a standalone checkout" {
+  run dvw_superproject_root
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "superproject_root: the parent working tree for a submodule checkout" {
+  _make_super
+  run dvw_superproject_root
+  [ "$output" = "$PARENT" ]
+}
+
+@test "target_repo/name: dvw checkout when standalone" {
+  run dvw_update_target_repo
+  [ "$output" = "$WORK" ]
+  run dvw_update_target_name
+  [ "$output" = "dvw" ]
+}
+
+@test "target_repo/name: the parent when a submodule checkout" {
+  _make_super
+  run dvw_update_target_repo
+  [ "$output" = "$PARENT" ]
+  run dvw_update_target_name
+  [ "$output" = "super" ]
+}
+
+@test "refresh: counts the PARENT's behind-count in superproject mode" {
+  _make_super
+  _advance_super_remote 3
+  DVW_UPDATE_SYNC=1 dvw_update_refresh_if_stale
+  [ "$(dvw_update_behind_count)" = "3" ]
+}
+
+@test "refresh: parent stale but dvw pin current still reports behind" {
+  # The exact loop the old CTA caused: dvw's own main may be ahead of the pin
+  # forever. What we report is the parent's, which `dvw update` can resolve.
+  _make_super
+  _advance_remote 5          # dvw's own main moves; the pin does not
+  _advance_super_remote 1
+  DVW_UPDATE_SYNC=1 dvw_update_refresh_if_stale
+  [ "$(dvw_update_behind_count)" = "1" ]
+}
+
+@test "nudge: superproject mode names the parent and says run: dvw update" {
+  _make_super
+  _write_cache "$(date +%s)" 2
+  run dvw_update_maybe_nudge status
+  [[ "$output" == *"super behind main"* ]]
+  [[ "$output" == *"run: dvw update"* ]]
+  [[ "$output" != *"bump parent"* ]]
 }

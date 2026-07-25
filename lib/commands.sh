@@ -69,18 +69,18 @@ cmd_stop() {
   _dvw_run_or_print devpod stop "$id"
 }
 
-# dvw update — manual, user-invoked in-place update. Pull latest main, re-run
-# the installer, refresh the version marker. NEVER called automatically.
-# Refuses when this checkout is a git submodule of a parent repo (e.g.
-# devMachine): bump the parent pointer instead so the pin stays authoritative.
+# dvw update — manual, user-invoked in-place update. NEVER called automatically.
+# Standalone checkout: pull latest main, re-run the installer, refresh the
+# version marker. Submodule checkout (e.g. devMachine pins devpod/dvw): follow
+# the parent's pins instead — see lib/update-super.sh.
 cmd_update() {
   . "$DVW_ROOT/lib/version.sh"
   local super
   super=$(git -C "$DVW_ROOT" rev-parse --show-superproject-working-tree 2>/dev/null || true)
   if [[ -n "$super" ]]; then
-    ui_error "dvw is a git submodule of $super — refusing \`dvw update\`"
-    ui_info "bump the parent submodule pointer instead (e.g. \`bash scripts/update-submodules.sh && git push\`)"
-    return 1
+    . "$DVW_ROOT/lib/update-super.sh"
+    _dvw_update_superproject "$super"
+    return $?
   fi
   ui_info "updating dvw in $DVW_ROOT"
   if ! git -C "$DVW_ROOT" pull --ff-only origin main; then
@@ -436,11 +436,11 @@ cmd_doctor() {
     if [[ -z "$_dvw_behind" ]]; then
       ui_status_ok "dvw: version check pending (run again after network)"
     elif [[ "$_dvw_behind" -gt 0 ]]; then
-      if command -v dvw_is_submodule_checkout >/dev/null 2>&1 && dvw_is_submodule_checkout; then
-        ui_status_warn "dvw: $_dvw_behind commit(s) behind main — bump parent submodule pointer (not \`dvw update\`)"
-      else
-        ui_status_warn "dvw: $_dvw_behind commit(s) behind main — run: \`dvw update\`"
-      fi
+      # Under a superproject the count is the PARENT's — name it, so the number
+      # matches the repo `dvw update` will fast-forward.
+      local _dvw_name=dvw
+      command -v dvw_update_target_name >/dev/null 2>&1 && _dvw_name=$(dvw_update_target_name)
+      ui_status_warn "$_dvw_name: $_dvw_behind commit(s) behind main — run: \`dvw update\`"
     else
       ui_status_ok "dvw: up to date with main"
     fi

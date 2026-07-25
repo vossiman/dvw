@@ -34,7 +34,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw stop <id>` | `devpod stop` |
 | `dvw start <id>` | `devpod up` with the workspace's saved IDE |
 | `dvw recreate <id>` (alias `rebuild`) | rebuild the container (`devpod up --recreate`) — needed to pick up a changed `devcontainer.json` (mounts/hooks) |
-| `dvw update` | Update a standalone dvw checkout to latest main and refresh the version marker. Refuses (with a clear CTA) when dvw is a git submodule — bump the parent pointer instead. Startup/`dvw doctor` nudge when behind `origin/main`. |
+| `dvw update` | Update to the latest released tooling and refresh the version marker. Standalone checkout: pull `main` + reinstall. Submodule checkout: follow the parent's pins (ff the parent, check out pinned submodules, reinstall) — never commits or pushes. Startup/`dvw doctor` nudge when behind `origin/main`. |
 | `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
 | `dvw doctor` | health check: catalog endpoint + transport note, provider probe, catalog service, ssh-sync, devpod, gum, per-orphan summary |
 | `dvw config` / `dvw config set KEY VALUE` | show or persist the per-machine config (catalog host, provider — see [Configuration](#configuration-host-user-provider)); runs even when the service is unreachable |
@@ -156,13 +156,20 @@ the `~/.local/bin/dvw` symlink.
 
 ### Submodule consumer
 
+    dvw update
+
+Follows the parent's pins: fast-forwards the parent repo to its `origin/main`,
+checks every submodule out at the commit the parent pins, and re-runs
+`dvw-install.sh`. Creates no commits — nothing to push. Refuses (naming the
+blocker) if the parent is off `main`, has uncommitted changes, or can't
+fast-forward.
+
+To move the pin *forward* instead — a maintainer action that commits — bump it
+in the parent:
+
     git submodule update --remote devpod/dvw
     git add devpod/dvw
     git commit -m "devpod/dvw: bump to <sha>"
-
-(Then run `./devpod/dvw/dvw-install.sh` if any new host-level prereqs landed
-in the bumped version. The script's `--check-only` flag tells you whether
-you need to.)
 
 ### PATH symlink hygiene
 

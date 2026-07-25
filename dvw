@@ -28,6 +28,8 @@ dvw_load_config
 . "$DVW_ROOT/lib/ui.sh"
 # shellcheck source=lib/update-check.sh
 . "$DVW_ROOT/lib/update-check.sh"
+# shellcheck source=lib/update-super.sh
+. "$DVW_ROOT/lib/update-super.sh"
 # shellcheck source=lib/tui-launch.sh
 . "$DVW_ROOT/lib/tui-launch.sh"
 
