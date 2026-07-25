@@ -271,15 +271,22 @@ retry backoff. Clean tmux detach or logout still returns immediately; press
 Ctrl-C during a reconnect delay to stop retrying.
 
 Reconnecting is deliberately bounded, because ssh exits 255 for a dropped
-transport *and* for a bad host key or a refused auth. dvw classifies ssh's own
-stderr rather than guessing from how long the attempt took: a fatal auth/config
-error returns immediately with ssh's message intact, and only a reported
-disconnect ("connection closed by remote host", "broken pipe") earns a fresh
-retry budget. Retrying stops at `DVW_SSH_RECONNECT_MAX_ATTEMPTS` (12) or
-`DVW_SSH_RECONNECT_MAX_SECONDS` (120) of wall clock, whichever comes first —
-the time bound matters because attempts that each block on a TCP timeout blow
-the clock long before the attempt count. dvw then tells you to rerun
-`dvw <id>`; the remote `work` session is untouched either way.
+transport *and* for a bad host key or a refused auth. dvw runs ssh with
+`-v -E <tmpfile>` so it can read ssh's own record of the attempt instead of
+guessing from how long it took: a fatal auth/config error returns immediately
+with ssh's message intact, and a fresh retry budget is granted only on ssh's
+`debug1:` proof that the attempt reached an authenticated, running session. The
+log stays out of your terminal — only the lines you'd have seen without `-v` are
+replayed.
+
+Three bounds apply. `DVW_SSH_RECONNECT_MAX_ATTEMPTS` (12) and
+`DVW_SSH_RECONNECT_MAX_SECONDS` (120) bound a run of consecutive failures — the
+time bound matters because attempts that each block on a TCP timeout blow the
+clock long before the attempt count. Those two reset when a session establishes,
+so `DVW_SSH_RECONNECT_TOTAL_MAX` (50) bounds the whole invocation and is never
+reset: a host that accepts and immediately closes would otherwise earn a fresh
+budget on every pass. dvw then tells you to rerun `dvw <id>`; the remote `work`
+session is untouched in every case.
 
 The 15s detection window is a deliberate trade: it also means a network blip
 longer than 15s tears down an *idle* multiplex master and costs the next connect
