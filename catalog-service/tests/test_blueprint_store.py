@@ -107,6 +107,37 @@ def test_v2_legacy_block_is_removed_as_one_unit(tmp_path):
     assert snapshot.content.count("ServerAliveInterval 5") == 1
 
 
+def test_the_live_pre_catalog_blueprint_migrates_to_stock_defaults(tmp_path):
+    """The actual file deployed on vossisrv, byte-for-byte.
+
+    Its header predates the catalog service (it points at the old Dropbox sync
+    path), so it does not match the catalog-era preamble. Without recognizing
+    it, the whole comment block survives as "operator custom config" and keeps
+    telling every reader to edit a path that is no longer the source of truth.
+    """
+    store = _store(tmp_path)
+    live = (
+        "# dvw blueprint — synced from ~/Dropbox-remote/dvw/ssh-blueprint.conf.\n"
+        "# Edit there; all machines pick it up on the next `dvw` invocation.\n"
+        "# Personal/host-specific config stays in ~/.ssh/config; only put shared\n"
+        "# config here.\n"
+        "\n"
+        "Host *.devpod\n"
+        "  ControlMaster auto\n"
+        "  ControlPath ~/.ssh/cm-%r@%h:%p\n"
+        "  ControlPersist 10m\n"
+    )
+    store.effective_path.write_text(live)
+
+    snapshot = store.read()
+
+    assert snapshot.migration_status == "legacy_defaults_removed"
+    assert snapshot.custom_content == ""
+    assert snapshot.content == MANAGED_BLOCK
+    assert "Dropbox" not in snapshot.content
+    assert store.legacy_backup_path.read_text() == live  # original recoverable
+
+
 def test_directives_added_inside_the_default_block_keep_their_host_scope(tmp_path):
     """An edited default stanza must not be split apart.
 

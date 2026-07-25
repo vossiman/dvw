@@ -72,6 +72,23 @@ _LEGACY_PREAMBLE = """\
 
 """
 
+# The header dvw wrote before the catalog service existed, when the blueprint
+# was synced through Dropbox. Still on deployed installs (confirmed against the
+# live vossisrv blueprint). Recognized so migration drops it with the rest of
+# the old defaults instead of preserving it as operator content: it would
+# otherwise survive as "custom config" telling every reader to edit a path that
+# is no longer the source of truth. The original file is kept in
+# ssh-blueprint.legacy.bak either way.
+_LEGACY_PREAMBLE_DROPBOX = """\
+# dvw blueprint — synced from ~/Dropbox-remote/dvw/ssh-blueprint.conf.
+# Edit there; all machines pick it up on the next `dvw` invocation.
+# Personal/host-specific config stays in ~/.ssh/config; only put shared
+# config here.
+
+"""
+
+_LEGACY_PREAMBLES = (_LEGACY_PREAMBLE, _LEGACY_PREAMBLE_DROPBOX)
+
 _LEGACY_BLOCK_V1 = """\
 Host *.devpod
   ControlMaster auto
@@ -89,8 +106,9 @@ Host *.devpod
 """
 
 _KNOWN_LEGACY_DOCUMENTS = {
-    _LEGACY_PREAMBLE + _LEGACY_BLOCK_V1,
-    _LEGACY_PREAMBLE + _LEGACY_BLOCK_V2,
+    preamble + block
+    for preamble in _LEGACY_PREAMBLES
+    for block in (_LEGACY_BLOCK_V1, _LEGACY_BLOCK_V2)
 }
 
 
@@ -392,7 +410,10 @@ def _migrate_legacy_content(content: str) -> tuple[str, str]:
         if content[index + len(block) :].startswith((" ", "\t")):
             break
         custom = content[:index] + content[index + len(block) :]
-        custom = custom.removeprefix(_LEGACY_PREAMBLE)
+        for preamble in _LEGACY_PREAMBLES:
+            if custom.startswith(preamble):
+                custom = custom[len(preamble) :]
+                break
         return custom.lstrip("\n"), "legacy_defaults_removed"
 
     # Unknown configurations are data, never debris. Keep every byte as custom
