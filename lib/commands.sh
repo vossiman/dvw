@@ -69,18 +69,18 @@ cmd_stop() {
   _dvw_run_or_print devpod stop "$id"
 }
 
-# dvw update — manual, user-invoked in-place update. Pull latest main, re-run
-# the installer, refresh the version marker. NEVER called automatically.
-# Refuses when this checkout is a git submodule of a parent repo (e.g.
-# devMachine): bump the parent pointer instead so the pin stays authoritative.
+# dvw update — manual, user-invoked in-place update. NEVER called automatically.
+# Standalone checkout: pull latest main, re-run the installer, refresh the
+# version marker. Submodule checkout (e.g. devMachine pins devpod/dvw): follow
+# the parent's pins instead — see lib/update-super.sh.
 cmd_update() {
   . "$DVW_ROOT/lib/version.sh"
   local super
   super=$(git -C "$DVW_ROOT" rev-parse --show-superproject-working-tree 2>/dev/null || true)
   if [[ -n "$super" ]]; then
-    ui_error "dvw is a git submodule of $super — refusing \`dvw update\`"
-    ui_info "bump the parent submodule pointer instead (e.g. \`bash scripts/update-submodules.sh && git push\`)"
-    return 1
+    . "$DVW_ROOT/lib/update-super.sh"
+    _dvw_update_superproject "$super"
+    return $?
   fi
   ui_info "updating dvw in $DVW_ROOT"
   if ! git -C "$DVW_ROOT" pull --ff-only origin main; then
