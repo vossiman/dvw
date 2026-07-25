@@ -376,10 +376,24 @@ def _migrate_legacy_content(content: str) -> tuple[str, str]:
     # Longer v2 first: its v1 prefix would otherwise leave the keepalive lines
     # behind as invalid top-level options.
     for block in (_LEGACY_BLOCK_V2, _LEGACY_BLOCK_V1):
-        if block in content:
-            custom = content.replace(block, "", 1)
-            custom = custom.removeprefix(_LEGACY_PREAMBLE)
-            return custom.lstrip("\n"), "legacy_defaults_removed"
+        index = content.find(block)
+        if index < 0:
+            continue
+        # Only strip the stanza when nothing was added inside it. An operator
+        # who appended `ForwardAgent yes` to the shared `Host *.devpod` block
+        # leaves an indented line directly after the defaults; removing the
+        # `Host` header above it would re-file that directive at the top of the
+        # document, where OpenSSH applies it to EVERY host rather than to the
+        # devpods. Widening the scope of someone's SSH options is worse than
+        # keeping a duplicate stanza, so an edited block falls through to
+        # `legacy_preserved` below: the operator's whole block is kept verbatim
+        # and the generated defaults are appended after it, where
+        # first-value-wins leaves their intent authoritative.
+        if content[index + len(block) :].startswith((" ", "\t")):
+            break
+        custom = content[:index] + content[index + len(block) :]
+        custom = custom.removeprefix(_LEGACY_PREAMBLE)
+        return custom.lstrip("\n"), "legacy_defaults_removed"
 
     # Unknown configurations are data, never debris. Keep every byte as custom
     # content and append generated defaults; first-value-wins preserves any

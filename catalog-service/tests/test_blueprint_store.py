@@ -107,6 +107,34 @@ def test_v2_legacy_block_is_removed_as_one_unit(tmp_path):
     assert snapshot.content.count("ServerAliveInterval 5") == 1
 
 
+def test_directives_added_inside_the_default_block_keep_their_host_scope(tmp_path):
+    """An edited default stanza must not be split apart.
+
+    Stripping the recognized default lines out of a block the operator extended
+    would leave their directives at the top of the document, above any `Host`
+    line — where OpenSSH applies them to every host instead of the devpods.
+    Silently turning `ForwardAgent yes` for devpods into `ForwardAgent yes`
+    everywhere is a security change, so the whole stanza is preserved instead.
+    """
+    store = _store(tmp_path)
+    edited = LEGACY_PREAMBLE + LEGACY_BLOCK_V1 + "  ForwardAgent yes\n"
+    store.effective_path.write_text(edited)
+
+    snapshot = store.read()
+
+    assert snapshot.migration_status == "legacy_preserved"
+    # The directive still sits under its Host block, before the generated one.
+    body = snapshot.content
+    assert "Host *.devpod\n" in body
+    assert body.index("Host *.devpod") < body.index("ForwardAgent yes")
+    assert body.index("ForwardAgent yes") < body.index(MANAGED_BLOCK)
+    # No directive is left stranded above the first Host block.
+    head = body[: body.index("Host ")]
+    assert not [ln for ln in head.splitlines() if ln.strip() and not ln.startswith("#")]
+    # And the new keepalives still arrive, because the operator never set them.
+    assert "ServerAliveInterval 5" in body
+
+
 def test_unknown_legacy_content_is_preserved_byte_for_byte(tmp_path):
     store = _store(tmp_path)
     legacy = "Host *.devpod\n  ProxyJump unusual-gateway\n\n# keep this\n"
