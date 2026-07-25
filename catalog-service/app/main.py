@@ -14,6 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from . import __version__
+from .blueprint_store import BlueprintStore
 from .config import get_settings
 from .deps import require_auth
 from .docker_inspect import DockerInspector
@@ -52,6 +53,12 @@ async def lifespan(app: FastAPI):
     app.state._writer_lock = wlock  # keep the fd alive for the process lifetime
 
     app.state.store = CatalogStore(settings.catalog_path)
+    app.state.blueprint_store = BlueprintStore(
+        effective_path=settings.blueprint_path,
+        custom_path=settings.blueprint_custom_path,
+        meta_path=settings.blueprint_meta_path,
+        legacy_backup_path=settings.blueprint_legacy_backup_path,
+    )
     # Docker client is created here, not at import time, so the module imports
     # (and tests) don't require a running daemon.
     app.state.inspector = DockerInspector(settings)

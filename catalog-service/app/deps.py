@@ -15,6 +15,7 @@ from typing import Annotated
 from fastapi import Depends, Header, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
+from .blueprint_store import BlueprintStore
 from .config import Settings, get_settings
 from .docker_inspect import Inspector
 from .models import CanonicalContainer
@@ -31,8 +32,15 @@ def get_inspector(request: Request) -> Inspector:
     return request.app.state.inspector
 
 
+def get_blueprint_store(request: Request) -> BlueprintStore:
+    # One instance per process: its lock is what serializes the blueprint
+    # read-modify-write, so a per-request instance would not serialize anything.
+    return request.app.state.blueprint_store
+
+
 StoreDep = Annotated[CatalogStore, Depends(get_store)]
 InspectorDep = Annotated[Inspector, Depends(get_inspector)]
+BlueprintStoreDep = Annotated[BlueprintStore, Depends(get_blueprint_store)]
 
 
 async def require_auth(

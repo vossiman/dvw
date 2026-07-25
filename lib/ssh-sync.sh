@@ -41,17 +41,14 @@ ssh_sync_init() {
     chmod 600 "$DVW_SSH_CONFIG"
   fi
 
-  # If the server has no blueprint yet (version 0 = seed), persist the seed so
-  # it becomes the durable source of truth.
-  local body ver
-  body=$(_catalog_req GET /v1/blueprint) || { echo "ssh_sync_init: catalog service unreachable" >&2; return 1; }
-  ver=$(jq -r '.version' <<<"$body" 2>/dev/null)
-  if [[ "$ver" == "0" ]]; then
-    local seed payload
-    seed=$(jq -r '.content' <<<"$body")
-    payload=$(jq -n --arg c "$seed" '{content:$c}')
-    _catalog_req PUT /v1/blueprint "$payload" >/dev/null
-  fi
+  # Fail early and loudly if the service is down; refresh below is a silent
+  # no-op by design and would otherwise leave a fresh machine with no config.
+  # No seed-back PUT here: the service materializes its own defaults on the
+  # first GET, so there is nothing for the client to persist on its behalf.
+  _catalog_req GET /v1/blueprint >/dev/null || {
+    echo "ssh_sync_init: catalog service unreachable" >&2
+    return 1
+  }
 
   ssh_sync_refresh
   _ssh_sync_ensure_include_at_top
@@ -83,8 +80,14 @@ _ssh_sync_ensure_include_at_top() {
 
 # Three [OK]/[WARN] lines for `dvw doctor`. Returns 0 always.
 ssh_sync_doctor() {
-  if _catalog_req GET /v1/blueprint >/dev/null 2>&1; then
-    ui_status_ok "ssh blueprint: served by catalog ($(ssh_sync_blueprint_path))"
+  local body managed migration endpoint detail=""
+  if body=$(_catalog_req GET /v1/blueprint 2>/dev/null); then
+    managed=$(jq -r '.managed_version // empty' <<< "$body" 2>/dev/null || true)
+    migration=$(jq -r '.migration_status // empty' <<< "$body" 2>/dev/null || true)
+    endpoint=$(ssh_sync_blueprint_path)
+    [[ -n "$managed" ]] && detail="; managed defaults v$managed"
+    [[ -n "$migration" && "$migration" != "current" ]] && detail+="; $migration"
+    ui_status_ok "ssh blueprint: served by catalog ($endpoint$detail)"
   else
     ui_status_warn "ssh blueprint: catalog service unreachable"
   fi
