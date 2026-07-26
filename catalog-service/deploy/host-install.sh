@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# One-time install of dvw-catalog ON vossisrv from a local git checkout of the
-# dvw repo. After this, updates are just `deploy/host-update.sh` (git pull +
+# Install of dvw-catalog ON vossisrv from a local git checkout of the dvw repo.
+# Idempotent and safe to re-run: it pulls, re-syncs the venv and RESTARTS the
+# service, so a re-run genuinely picks up new code.
+# For routine updates prefer `deploy/host-update.sh` (git pull +
 # restart) — no laptop, no rsync.
 #
 # Run as `vossi` on vossisrv — NOT with sudo. The script runs as your normal
@@ -100,7 +102,14 @@ sudo install -m 0440 /dev/stdin /etc/sudoers.d/dvw-catalog <<SUDO
 $USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart dvw-catalog.service, /usr/bin/systemctl status dvw-catalog.service, /usr/bin/systemctl daemon-reload
 SUDO
 sudo systemctl daemon-reload
-sudo systemctl enable --now dvw-catalog.service
+# enable --now STARTS an inactive unit but does NOT restart a running one, so
+# re-running this installer against a live service left the old code serving
+# while the checkout and venv were already updated — and the smoke test below
+# passes either way, because /v1/health exists in both builds. Enable, then
+# restart unconditionally: the whole point of a re-run is to pick up new code.
+# `restart` starts a stopped unit too, so this is correct on first install.
+sudo systemctl enable dvw-catalog.service
+sudo systemctl restart dvw-catalog.service
 sudo systemctl enable --now dvw-catalog-backup.timer
 
 echo "==> 7/7 smoke test"
