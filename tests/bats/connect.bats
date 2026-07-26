@@ -73,3 +73,71 @@ ssh:myws" ]
   [ "$status" -eq 0 ]
   [ "$(cat "$MODES_LOG")" = "ssh:myws" ]
 }
+
+# --- duplicate-container guard + action log -------------------------------
+# 2026-07-26: two `devpod up` runs for one workspace produced sibling
+# containers 6s apart. The survivors deadlocked connect, which refuses to pick
+# between siblings without a tmux `work` session.
+
+_load_up_guard() {
+  _load_connect
+  export DVW_UP_LOCK_DIR="$TMPDIR/locks"; mkdir -p "$DVW_UP_LOCK_DIR"
+  export DVW_ACTION_LOG="$TMPDIR/actions.log"
+  # No container on the provider -> the wipe guard permits `devpod up`.
+  _dvw_provider_has_container() { return 1; }
+  cat > "$STUB_BIN/devpod" <<'STUB'
+#!/bin/bash
+echo "devpod $*" >> "$MODES_LOG"
+exit 0
+STUB
+  chmod +x "$STUB_BIN/devpod"
+}
+
+@test "_dvw_safe_devpod_up: runs devpod up and releases the lock" {
+  _load_up_guard
+  run _dvw_safe_devpod_up myws --ide none
+  [ "$status" -eq 0 ]
+  grep -q "devpod up myws --ide none" "$MODES_LOG"
+  # Lock must not leak, or every later run for this id is refused.
+  [ -z "$(ls -A "$DVW_UP_LOCK_DIR")" ]
+}
+
+@test "_dvw_safe_devpod_up: refuses a second concurrent run for the same workspace" {
+  _load_up_guard
+  mkdir "$DVW_UP_LOCK_DIR/dvw-up-myws.lock"      # simulate a run in flight
+  run _dvw_safe_devpod_up myws --ide none
+  [ "$status" -ne 0 ]
+  # The whole point: no second container.
+  ! grep -q "devpod up myws" "$MODES_LOG"
+}
+
+@test "_dvw_safe_devpod_up: a different workspace is not blocked" {
+  _load_up_guard
+  mkdir "$DVW_UP_LOCK_DIR/dvw-up-myws.lock"
+  run _dvw_safe_devpod_up otherws --ide none
+  [ "$status" -eq 0 ]
+  grep -q "devpod up otherws" "$MODES_LOG"
+}
+
+@test "_dvw_run_or_print: appends every mutating action to the action log" {
+  _load_up_guard
+  _dvw_run_or_print devpod up myws --ide none
+  grep -q "devpod up myws --ide none" "$DVW_ACTION_LOG"
+  grep -q "pid=" "$DVW_ACTION_LOG"
+}
+
+@test "_dvw_run_or_print: dry-run is logged but not executed, and takes no lock" {
+  _load_up_guard
+  DVW_DRY_RUN=1 run _dvw_safe_devpod_up myws --ide none
+  [ "$status" -eq 0 ]
+  [ ! -s "$MODES_LOG" ]                          # devpod never invoked
+  [ -z "$(ls -A "$DVW_UP_LOCK_DIR")" ]           # --dry-run must not touch fs
+}
+
+@test "_dvw_log_action: a broken log path never fails the command" {
+  _load_up_guard
+  export DVW_ACTION_LOG=/proc/nonexistent/actions.log
+  run _dvw_run_or_print devpod up myws
+  [ "$status" -eq 0 ]
+  grep -q "devpod up myws" "$MODES_LOG"
+}

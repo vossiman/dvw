@@ -279,3 +279,45 @@ _ws_json() {
   [ "${DVW_PROBE_STATE[a]}" = "running" ]
   [ "${DVW_PROBE_STATE[b]}" = "stopped" ]
 }
+
+@test "http load_probe: records running_siblings when the server reports it" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/containers/status")
+        _stub_emit '[{"id":"dup","liveness":"alive","running_siblings":2},{"id":"solo","liveness":"alive","running_siblings":1}]' 200 ;;
+      "GET /v1/containers/orphans") _stub_emit '[]' 200 ;;
+      "GET /v1/catalog")
+        _stub_emit '{ "version":1, "defaults":{}, "repos":[], "workspaces":[] }' 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
+  _load_http_resolver
+  unset DVW_PROBE_LOADED
+  _dvw_load_probe
+  [ "${DVW_PROBE_SIBLINGS[dup]}" = "2" ]
+  [ "${DVW_PROBE_SIBLINGS[solo]}" = "1" ]
+}
+
+@test "http load_probe: server without running_siblings still yields liveness" {
+  # Regression: `\(.running_siblings // empty)` inside string interpolation
+  # collapses the WHOLE row, silently dropping every status from an older
+  # catalog service. Liveness must survive; siblings must stay unset.
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/containers/status")
+        _stub_emit '[{"id":"a","liveness":"running"},{"id":"b","liveness":"stopped"}]' 200 ;;
+      "GET /v1/containers/orphans") _stub_emit '[]' 200 ;;
+      "GET /v1/catalog")
+        _stub_emit '{ "version":1, "defaults":{}, "repos":[], "workspaces":[] }' 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
+  _load_http_resolver
+  unset DVW_PROBE_LOADED
+  _dvw_load_probe
+  [ "${DVW_PROBE_STATE[a]}" = "running" ]
+  [ "${DVW_PROBE_STATE[b]}" = "stopped" ]
+  [ -z "${DVW_PROBE_SIBLINGS[a]:-}" ]
+}

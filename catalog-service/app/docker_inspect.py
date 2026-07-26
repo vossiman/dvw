@@ -24,6 +24,7 @@ from .models import (
     CanonicalContainer,
     ContainerInspect,
     Orphan,
+    SiblingContainer,
     WorkspaceStatus,
 )
 
@@ -54,6 +55,7 @@ class Inspector(Protocol):
     def resolve(self, ws_id: str) -> CanonicalContainer: ...
     def inspect(self, ws_id: str) -> ContainerInspect: ...
     def status_many(self, ids: list[str]) -> list[WorkspaceStatus]: ...
+    def siblings(self, ws_id: str) -> list[SiblingContainer]: ...
     def orphans(self, catalog_ids: set[str]) -> list[Orphan]: ...
 
 
@@ -129,6 +131,48 @@ class DockerInspector:
 
     def _uid(self, c: Container) -> str | None:
         return c.labels.get(self._settings.devpod_id_label)
+
+    def _workspaces_owner(self, c: Container) -> str | None:
+        """`user:group` owning /workspaces, or None if unreadable.
+
+        root:root means the devcontainer's setup-user step never ran — the
+        container was created and abandoned before provisioning. That is what
+        distinguishes a dud sibling from the real one.
+        """
+        if c.status != "running":
+            return None
+        try:
+            res = c.exec_run(["stat", "-c", "%U:%G", "/workspaces"], demux=True)
+        except Exception:
+            return None
+        if res.exit_code != 0:
+            return None
+        stdout = res.output[0] if isinstance(res.output, tuple) else res.output
+        if not stdout:
+            return None
+        return stdout.decode("utf-8", "replace").strip() or None
+
+    def siblings(self, ws_id: str) -> list[SiblingContainer]:
+        """Per-container detail for every RUNNING candidate of a workspace.
+
+        Deliberately NOT part of status_many: this execs into each container
+        twice, which is far too expensive for the bulk hot path. Callers should
+        only ask for workspaces that status_many already flagged with
+        running_siblings > 1.
+        """
+        out = []
+        for c in self._candidates(ws_id):
+            out.append(
+                SiblingContainer(
+                    container_id=c.id,
+                    container_name=c.name,
+                    created=c.attrs.get("Created"),
+                    state=c.status,
+                    tmux_work_activity=self._tmux_work_activity(c),
+                    workspaces_owner=self._workspaces_owner(c),
+                )
+            )
+        return out
 
     def _liveness(self, c: Container | None) -> str:
         if c is None:
@@ -297,11 +341,18 @@ class DockerInspector:
         # Build a destination -> container map in one pass over devpod
         # containers, then answer each id locally.
         by_dest: dict[str, Container] = {}
+        # Count RUNNING containers per destination. Picking a winner below
+        # discards the fact that there WAS a duplicate, which is how a
+        # workspace could report `running` here while connect refused it as
+        # ambiguous. Count first, report it alongside the winner.
+        running_count: dict[str, int] = {}
         prefix = self._settings.workspace_mount_prefix
         for c in self._devpod_containers():
             wid = _ws_id_from_mounts(c.attrs.get("Mounts", []), prefix)
             if wid is None:
                 continue
+            if c.status == "running":
+                running_count[wid] = running_count.get(wid, 0) + 1
             # Prefer a running container if duplicates share a destination.
             existing = by_dest.get(wid)
             if existing is None or (
@@ -318,6 +369,7 @@ class DockerInspector:
                     liveness=self._liveness(c),
                     container_id=c.id if c else None,
                     devpod_uid=self._uid(c) if c else None,
+                    running_siblings=running_count.get(ws_id, 0),
                 )
             )
         return out

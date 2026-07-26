@@ -26,6 +26,7 @@ class FakeInspector:
         self.inspections: dict[str, ContainerInspect] = {}
         self.statuses: dict[str, WorkspaceStatus] = {}
         self._orphans: list[Orphan] = []
+        self.sibling_map: dict[str, list] = {}
 
     def ping(self) -> bool:
         return self.alive
@@ -35,6 +36,9 @@ class FakeInspector:
 
     def inspect(self, ws_id: str) -> ContainerInspect:
         return self.inspections.get(ws_id, ContainerInspect(workspace_id=ws_id))
+
+    def siblings(self, ws_id: str) -> list:
+        return self.sibling_map.get(ws_id, [])
 
     def status_many(self, ids):
         return [
