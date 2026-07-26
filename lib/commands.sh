@@ -266,6 +266,38 @@ _dvw_doctor_check_uv() {
   return 1
 }
 
+# Print one line per running sibling of a duplicated workspace, with the two
+# facts that actually decide which to remove:
+#
+#   tmux `work`  — the resolver's tie-break. The sibling that has one is where
+#                  connect routes; removing it is what you must NOT do.
+#   /workspaces  — root:root means setup-user never ran, i.e. created and
+#                  abandoned before provisioning. That is the dud.
+#
+# Verdicts are advisory and deliberately conservative: anything that is not
+# clearly one or the other prints "unclear" rather than a guess. Never removes
+# anything.
+_dvw_doctor_sibling_detail() {
+  local id="$1" body
+  body=$(_catalog_req GET "/v1/workspaces/$id/siblings" 2>/dev/null) || {
+    ui_info "           (sibling detail unavailable — catalog service predates /siblings?)"
+    return 0
+  }
+  local cid name tmux owner verdict short
+  while IFS=$'\t' read -r cid name tmux owner; do
+    [[ -z "$cid" ]] && continue
+    if [[ "$tmux" != "-1" ]]; then
+      verdict="KEEP    (live tmux \`work\` — connect routes here)"
+    elif [[ "$owner" == root:* ]]; then
+      verdict="DUD     (never provisioned — /workspaces still $owner)"
+    else
+      verdict="unclear (provisioned, but no tmux \`work\` session)"
+    fi
+    short="${cid:0:12}"
+    ui_info "           $short  ${name:-?}  $verdict"
+  done < <(jq -r '.[] | "\(.container_id)\t\(.container_name // "")\t\(.tmux_work_activity)\t\(.workspaces_owner // "")"' <<<"$body")
+}
+
 cmd_doctor() {
   local fail=0 warn=0
 
@@ -319,11 +351,11 @@ cmd_doctor() {
       fi
       n_dups=$((n_dups+1))
       ui_info "         $dup_id · $dup_n running containers"
+      _dvw_doctor_sibling_detail "$dup_id"
     fi
   done
   if (( n_dups > 0 )); then
-    ui_info "         inspect: curl -sS --unix-socket <sock> http://localhost/v1/workspaces/<id>/container"
-    ui_info "         a live tmux \`work\` session in the right one breaks the tie; remove the other after checking it"
+    ui_info "         removal is never automatic — verify, then \`docker rm -f <id>\` on the provider"
   fi
 
   # Orphan containers: labelled devpod containers whose uid isn't claimed

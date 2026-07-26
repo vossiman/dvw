@@ -17,7 +17,8 @@ class FakeExecResult:
 
 class FakeContainer:
     def __init__(self, cid, name, uid, dest, status="running",
-                 created="2026-01-01T00:00:00Z", tmux_work=None, source="/exists"):
+                 created="2026-01-01T00:00:00Z", tmux_work=None, source="/exists",
+                 owner="codespace:codespace"):
         self.id = cid
         self.name = name
         self.status = status
@@ -28,8 +29,15 @@ class FakeContainer:
             "State": {"Pid": 0, "Status": status, "Running": status == "running"},
         }
         self._tmux_work = tmux_work
+        self._owner = owner
 
     def exec_run(self, cmd, demux=False):
+        # `stat -c %U:%G /workspaces` — owner probe used to tell a provisioned
+        # container from one abandoned before setup-user ran.
+        if cmd and cmd[0] == "stat":
+            if self._owner is None:
+                return FakeExecResult(1, None)
+            return FakeExecResult(0, f"{self._owner}\n".encode())
         if self._tmux_work is None:
             return FakeExecResult(1, None)
         return FakeExecResult(0, f"work {self._tmux_work}\nother 123\n".encode())
@@ -193,3 +201,42 @@ def test_status_many_stopped_and_absent_report_zero_siblings(monkeypatch):
     assert st_by_id["ws-a"].liveness == "stopped"
     assert st_by_id["ws-missing"].running_siblings == 0
     assert st_by_id["ws-missing"].liveness == "absent"
+
+
+def test_siblings_reports_what_distinguishes_a_dud(monkeypatch):
+    # The 2026-07-26 shape: two running containers, one provisioned with a live
+    # `work` session, one abandoned before setup-user chowned /workspaces.
+    real = FakeContainer("c-real", "elated_perlman", "uid-r", "/workspaces/ws-a",
+                         tmux_work=555, owner="codespace:codespace")
+    dud = FakeContainer("c-dud", "elated_wu", "uid-d", "/workspaces/ws-a",
+                        tmux_work=None, owner="root:root")
+    insp = _inspector([real, dud], monkeypatch)
+    by_id = {s.container_id: s for s in insp.siblings("ws-a")}
+    assert set(by_id) == {"c-real", "c-dud"}
+    assert by_id["c-real"].tmux_work_activity == 555
+    assert by_id["c-real"].workspaces_owner == "codespace:codespace"
+    assert by_id["c-dud"].tmux_work_activity == -1
+    assert by_id["c-dud"].workspaces_owner == "root:root"
+    assert by_id["c-dud"].container_name == "elated_wu"
+
+
+def test_siblings_single_container_is_a_one_element_list(monkeypatch):
+    c = FakeContainer("c1", "n1", "uid-1", "/workspaces/ws-a", tmux_work=1)
+    insp = _inspector([c], monkeypatch)
+    assert len(insp.siblings("ws-a")) == 1
+
+
+def test_siblings_excludes_stopped_containers(monkeypatch):
+    # Only RUNNING containers are candidates, so only they can be siblings.
+    run = FakeContainer("c-run", "r", "uid-r", "/workspaces/ws-a", status="running")
+    stop = FakeContainer("c-stop", "s", "uid-s", "/workspaces/ws-a", status="exited")
+    insp = _inspector([run, stop], monkeypatch)
+    assert [s.container_id for s in insp.siblings("ws-a")] == ["c-run"]
+
+
+def test_siblings_tolerates_unreadable_owner(monkeypatch):
+    # A container that can't answer `stat` must not break the listing.
+    c = FakeContainer("c1", "n1", "uid-1", "/workspaces/ws-a", tmux_work=1, owner=None)
+    insp = _inspector([c], monkeypatch)
+    (s,) = insp.siblings("ws-a")
+    assert s.workspaces_owner is None

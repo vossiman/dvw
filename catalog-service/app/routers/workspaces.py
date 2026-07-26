@@ -15,6 +15,7 @@ from ..deps import (
 from ..models import (
     CanonicalContainer,
     ContainerInspect,
+    SiblingContainer,
     Workspace,
     WorkspaceCreate,
     WorkspacePatch,
@@ -108,6 +109,23 @@ async def resolve_container(
     workspace (a valid state, returned 200, not 404).
     """
     return await resolve_cached(inspector, settings, ws_id)
+
+
+@router.get("/{ws_id}/siblings", response_model=list[SiblingContainer])
+async def workspace_siblings(
+    ws_id: WsId, inspector: InspectorDep
+) -> list[SiblingContainer]:
+    """Per-container detail for every RUNNING container of this workspace.
+
+    Normally a one-element list. More than one means duplicate siblings, which
+    connect refuses to disambiguate unless exactly one has a live tmux `work`
+    session. Returns the fields needed to decide WHICH to remove — tmux
+    activity and /workspaces ownership — so the operator is not guessing.
+
+    Execs into each container, so it is intentionally a per-workspace call:
+    ask only for ids that /v1/containers/status flagged running_siblings > 1.
+    """
+    return await run_inspect(inspector.siblings, ws_id)
 
 
 @router.get("/{ws_id}/inspect", response_model=ContainerInspect)

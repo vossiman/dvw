@@ -121,3 +121,28 @@ def test_catalog_full_dump(client):
     assert cat["version"] == 1
     assert cat["defaults"]["provider"] == "vossisrv"
     assert [w["id"] for w in cat["workspaces"]] == ["a"]
+
+
+def test_workspace_siblings_endpoint(client, inspector):
+    from app.models import SiblingContainer
+
+    inspector.sibling_map["ws-a"] = [
+        SiblingContainer(container_id="c-real", container_name="perlman",
+                         state="running", tmux_work_activity=555,
+                         workspaces_owner="codespace:codespace"),
+        SiblingContainer(container_id="c-dud", container_name="wu",
+                         state="running", tmux_work_activity=-1,
+                         workspaces_owner="root:root"),
+    ]
+    r = client.get("/v1/workspaces/ws-a/siblings")
+    assert r.status_code == 200
+    body = {s["container_id"]: s for s in r.json()}
+    assert body["c-dud"]["workspaces_owner"] == "root:root"
+    assert body["c-dud"]["tmux_work_activity"] == -1
+    assert body["c-real"]["tmux_work_activity"] == 555
+
+
+def test_workspace_siblings_empty_when_no_containers(client, inspector):
+    r = client.get("/v1/workspaces/ws-none/siblings")
+    assert r.status_code == 200
+    assert r.json() == []

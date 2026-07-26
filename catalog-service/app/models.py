@@ -146,6 +146,30 @@ class BlueprintUpdate(BaseModel):
 # ---- Docker / resolver results -------------------------------------------
 
 
+class SiblingContainer(BaseModel):
+    """One of several running containers mounting the same /workspaces/<id>.
+
+    Carries exactly the fields needed to tell a real container from a dud, so
+    the operator removing one is not guessing:
+
+      tmux_work_activity  -1 = no live `work` session. The resolver's
+                          tie-break; the sibling that has one is the one
+                          connect will route to.
+      workspaces_owner    "root:root" means setup-user never ran, i.e. the
+                          container was created and abandoned before
+                          provisioning finished. "codespace:codespace" means
+                          it provisioned. This was the decisive signal in the
+                          2026-07-26 incident.
+    """
+
+    container_id: str
+    container_name: str | None = None
+    created: str | None = None
+    state: str | None = None
+    tmux_work_activity: int = -1
+    workspaces_owner: str | None = None
+
+
 class CanonicalContainer(BaseModel):
     """Result of resolving a workspace id -> its docker container.
 
