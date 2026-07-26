@@ -416,6 +416,12 @@ DVW_PROBE_ORPHAN_UIDS=""
 #   "<host>\t<name>\t<state>\t<mountstatus>\t<mountsrc>\t<workspace_id_inside_mount>"
 # Populated by connect-resolver.sh from GET /v1/containers/orphans.
 declare -gA DVW_PROBE_ORPHAN_INFO=()
+# Count of RUNNING containers mounting /workspaces/<id>, keyed by workspace id.
+# >1 means duplicate siblings: resolve() refuses to disambiguate them without a
+# tmux `work` session, so connect hard-fails while the bulk status still reports
+# the arbitrary winner as running. Empty for servers predating the
+# running_siblings field — treated as "unknown", never as a problem.
+declare -gA DVW_PROBE_SIBLINGS=()
 
 # Wrapper for `devpod up <id> [args...]` with a safety check.
 #
@@ -448,7 +454,27 @@ _dvw_safe_devpod_up() {
       return 1
     fi
   fi
+  # Serialise per workspace. Two overlapping `devpod up` runs for one id create
+  # two containers: observed 2026-07-26, siblings 6s apart with identical config,
+  # one abandoned before setup-user ever chowned /workspaces. The survivor pair
+  # then deadlocks connect, which refuses to guess between them. Atomic mkdir,
+  # same idiom as dvw_update_refresh_if_stale (lib/update-check.sh).
+  # Skipped under --dry-run: that mode must not touch the filesystem.
+  if [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
+    _dvw_run_or_print devpod up "$id" "$@"
+    return $?
+  fi
+  local lock="${DVW_UP_LOCK_DIR:-${TMPDIR:-/tmp}}/dvw-up-${id//[^A-Za-z0-9_.-]/_}.lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    ui_status_warn "$id: a \`devpod up\` is already in flight — refusing to start a second"
+    ui_info "  two concurrent runs create duplicate containers that connect cannot disambiguate."
+    ui_info "  if no other run is active, the lock is stale: rmdir $lock"
+    return 1
+  fi
   _dvw_run_or_print devpod up "$id" "$@"
+  local up_rc=$?
+  rmdir "$lock" 2>/dev/null || true
+  return $up_rc
 }
 
 # Dry-run helper. When DVW_DRY_RUN=1, print the would-be command and return
@@ -456,7 +482,25 @@ _dvw_safe_devpod_up() {
 #
 # Wraps every dvw-internal mutating shellout (devpod up/delete/stop, docker
 # restart). Plumbed in from the top-level --dry-run flag in `dvw`.
+# Append one line per mutating action to an action log. dvw had NO logging at
+# all, which is why "did something run `devpod up` twice, and what removed the
+# previous containers?" was unanswerable after the fact (2026-07-26). Every
+# mutating shellout already funnels through _dvw_run_or_print, so this is the
+# one choke point that sees them all.
+#
+# Strictly fail-open: a logging problem must never break the command. Set
+# DVW_ACTION_LOG=/dev/null to disable.
+_dvw_log_action() {
+  local logf="${DVW_ACTION_LOG:-$HOME/.dvw/actions.log}"
+  [[ "$logf" == /dev/null ]] && return 0
+  mkdir -p "$(dirname "$logf")" 2>/dev/null || return 0
+  printf '%s\tpid=%s\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$*" >> "$logf" 2>/dev/null || true
+  return 0
+}
+
 _dvw_run_or_print() {
+  _dvw_log_action "${DVW_DRY_RUN:+[dry-run] }$*"
   if [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
     local arg quoted=()
     for arg in "$@"; do

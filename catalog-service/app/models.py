@@ -215,6 +215,13 @@ class WorkspaceStatus(BaseModel):
     liveness: str
     container_id: str | None = None
     devpod_uid: str | None = None
+    # How many RUNNING containers mount /workspaces/<id> — i.e. how many
+    # candidates resolve() would see. Normally 1. >1 means duplicate siblings,
+    # which resolve() refuses to disambiguate without a tmux `work` session, so
+    # connect hard-fails while this bulk status happily reports the arbitrary
+    # winner as running. Surfaced so `dvw doctor` can name the condition
+    # instead of passing clean. 0 when nothing is running (stopped/absent).
+    running_siblings: int = 0
 
 
 class Orphan(BaseModel):

@@ -74,11 +74,16 @@ _dvw_load_probe() {
     return 0
   }
 
-  local id liveness
-  while IFS=$'\t' read -r id liveness; do
+  local id liveness siblings
+  # `// ""` — NOT `// empty`: inside string interpolation `empty` collapses the
+  # whole row to nothing, silently dropping every status from a server that
+  # predates running_siblings. An empty field leaves the siblings map unset for
+  # that id, so old servers read as "unknown" rather than "zero siblings".
+  while IFS=$'\t' read -r id liveness siblings; do
     [[ -z "$id" ]] && continue
     DVW_PROBE_STATE["$id"]="$liveness"
-  done < <(jq -r '.[] | "\(.id)\t\(.liveness)"' <<<"$status_body")
+    [[ -n "$siblings" ]] && DVW_PROBE_SIBLINGS["$id"]="$siblings"
+  done < <(jq -r '.[] | "\(.id)\t\(.liveness)\t\(.running_siblings // "")"' <<<"$status_body")
 
   # Orphans -> DVW_PROBE_ORPHAN_INFO (host \t name \t state \t mountstatus \t src \t wsdest)
   orphan_body=$(_catalog_req GET /v1/containers/orphans) || return 0

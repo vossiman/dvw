@@ -163,3 +163,33 @@ def test_orphans(monkeypatch):
     insp = _inspector([known, leaked], monkeypatch)
     orphans = insp.orphans({"known"})
     assert [o.workspace_id for o in orphans] == ["leaked"]
+
+
+def test_status_many_reports_duplicate_running_siblings(monkeypatch):
+    # Two RUNNING containers on one destination: status_many still picks a
+    # winner, but must no longer hide that a duplicate exists — that silence is
+    # how `dvw status`/`doctor` showed `running` while connect refused the same
+    # workspace as ambiguous.
+    a = FakeContainer("c-a", "a", "uid-a", "/workspaces/ws-a", status="running")
+    b = FakeContainer("c-b", "b", "uid-b", "/workspaces/ws-a", status="running")
+    insp = _inspector([a, b], monkeypatch)
+    (st,) = insp.status_many(["ws-a"])
+    assert st.running_siblings == 2
+    assert st.container_id in {"c-a", "c-b"}
+
+
+def test_status_many_single_running_has_one_sibling(monkeypatch):
+    a = FakeContainer("c-a", "a", "uid-a", "/workspaces/ws-a", status="running")
+    insp = _inspector([a], monkeypatch)
+    (st,) = insp.status_many(["ws-a"])
+    assert st.running_siblings == 1
+
+
+def test_status_many_stopped_and_absent_report_zero_siblings(monkeypatch):
+    stopped = FakeContainer("c-s", "s", "uid-s", "/workspaces/ws-a", status="exited")
+    insp = _inspector([stopped], monkeypatch)
+    st_by_id = {s.id: s for s in insp.status_many(["ws-a", "ws-missing"])}
+    assert st_by_id["ws-a"].running_siblings == 0
+    assert st_by_id["ws-a"].liveness == "stopped"
+    assert st_by_id["ws-missing"].running_siblings == 0
+    assert st_by_id["ws-missing"].liveness == "absent"

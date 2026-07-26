@@ -36,7 +36,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw recreate <id>` (alias `rebuild`) | rebuild the container (`devpod up --recreate`) — needed to pick up a changed `devcontainer.json` (mounts/hooks) |
 | `dvw update` | Update to the latest released tooling and refresh the version marker. Standalone checkout: pull `main` + reinstall. Submodule checkout: follow the parent's pins (ff the parent, check out pinned submodules, reinstall) — never commits or pushes. Startup/`dvw doctor` nudge when behind `origin/main`. |
 | `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
-| `dvw doctor` | health check: catalog endpoint + transport note, provider probe, catalog service, ssh-sync, devpod, gum, per-orphan summary |
+| `dvw doctor` | health check: catalog endpoint + transport note, provider probe, catalog service, ssh-sync, devpod, gum, per-orphan summary, duplicate-sibling containers |
 | `dvw config` / `dvw config set KEY VALUE` | show or persist the per-machine config (catalog host, provider — see [Configuration](#configuration-host-user-provider)); runs even when the service is unreachable |
 | `dvw <anything> --dry-run` | print would-be `devpod ...` / `docker ...` invocations without executing — works on any mutating subcommand |
 
@@ -245,6 +245,62 @@ Five user-visible states:
 | `? unreachable` | The catalog service couldn't be reached from this machine. **Distinct from `○ stopped`** — it means "I can't ask," not "container is down." Detail appears in the `dvw status` / `dvw doctor` footer. |
 
 `dvw doctor` opens with a `[OK] provider probe: alive=N stale=N stopped=N absent=N` summary or fails noisily if the probe couldn't reach the provider.
+
+## Duplicate sibling containers
+
+Distinct from orphans. An **orphan**'s workspace id is *absent* from the catalog;
+**siblings** are two live containers for a workspace the catalog knows about, so
+the orphan check cannot see them.
+
+They deadlock connect: the resolver refuses to pick between siblings unless
+exactly one has a live tmux `work` session, while `dvw status` shows the
+workspace as plain `● running` (bulk status picks an arbitrary winner). Before
+2026-07, that combination produced `dvw doctor` reporting **"✓ all checks
+passed"** while `dvw <id> --ssh` hard-failed on the same workspace.
+
+Now `dvw doctor` names it:
+
+```
+[WARN]  duplicate container(s): a workspace has >1 running container — connect will refuse it
+         roleplaygame-git-develop · 2 running containers
+```
+
+Recovery, in order — no deletion required to get back in:
+
+```bash
+# 1. identify the siblings
+curl -sS --unix-socket /run/dvw-catalog/catalog.sock \
+  http://localhost/v1/workspaces/<id>/container      # -> sibling_ids
+
+# 2. break the tie: give the REAL one a `work` session
+docker exec <live-id> tmux new-session -d -s work
+
+# 3. only then, after checking it for unpushed work, remove the other
+docker rm -f <dead-id>
+```
+
+Tell the siblings apart by whether `/workspaces` inside is still `root`-owned
+(never finished provisioning) and whether the mount source still exists.
+
+Creation is guarded: `_dvw_safe_devpod_up` takes a per-workspace lock, so two
+concurrent `devpod up` runs for one id can no longer produce a sibling pair.
+Override the lock location with `DVW_UP_LOCK_DIR`; a stale lock prints the
+`rmdir` needed to clear it.
+
+## Action log
+
+Every mutating shellout (`devpod up`/`delete`/`stop`, `docker restart`, …) funnels
+through `_dvw_run_or_print`, which appends one line to `~/.dvw/actions.log`:
+
+```
+2026-07-26T07:36:27Z	pid=48213	devpod up roleplaygame-git-develop --ide none
+```
+
+Point it elsewhere with `DVW_ACTION_LOG`, or set `DVW_ACTION_LOG=/dev/null` to
+disable. Logging is fail-open — an unwritable path never breaks the command.
+
+It exists because dvw previously had no logging at all, which left "did
+something run `devpod up` twice?" unanswerable after the fact.
 
 ## Orphan containers
 

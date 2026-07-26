@@ -104,7 +104,8 @@ def test_containers_status_defaults_to_all(client, inspector):
     inspector.statuses["a"] = WorkspaceStatus(id="a", liveness="alive", container_id="c1")
     r = client.get("/v1/containers/status")
     assert r.json() == [{"id": "a", "liveness": "alive",
-                         "container_id": "c1", "devpod_uid": None}]
+                         "container_id": "c1", "devpod_uid": None,
+                         "running_siblings": 0}]
 
 
 def test_containers_orphans(client, inspector):

@@ -301,6 +301,31 @@ cmd_doctor() {
     ui_status_ok "provider probe: alive=$n_alive stale=$n_stale stopped=$n_stopped absent=$n_absent"
   fi
 
+  # Duplicate sibling containers. NOT the same as orphans: an orphan's workspace
+  # id is absent from the catalog, whereas siblings are two live containers for
+  # a workspace the catalog knows about — so the orphan check below cannot see
+  # them. This state is invisible in `dvw status` too (bulk status picks an
+  # arbitrary running winner), yet connect REFUSES it as ambiguous unless one
+  # has a tmux `work` session. That combination — "✓ all checks passed" while
+  # `dvw <id> --ssh` hard-fails — is what this check exists to end.
+  local dup_id dup_n n_dups=0
+  for dup_id in "${!DVW_PROBE_SIBLINGS[@]}"; do
+    dup_n="${DVW_PROBE_SIBLINGS[$dup_id]}"
+    [[ "$dup_n" =~ ^[0-9]+$ ]] || continue
+    if (( dup_n > 1 )); then
+      if (( n_dups == 0 )); then
+        ui_status_warn "duplicate container(s): a workspace has >1 running container — connect will refuse it"
+        warn=$((warn+1))
+      fi
+      n_dups=$((n_dups+1))
+      ui_info "         $dup_id · $dup_n running containers"
+    fi
+  done
+  if (( n_dups > 0 )); then
+    ui_info "         inspect: curl -sS --unix-socket <sock> http://localhost/v1/workspaces/<id>/container"
+    ui_info "         a live tmux \`work\` session in the right one breaks the tie; remove the other after checking it"
+  fi
+
   # Orphan containers: labelled devpod containers whose uid isn't claimed
   # by any agent workspace dir. Tier 1 surface: per-orphan name/state/mount
   # status so the user can decide at a glance whether to inspect further.

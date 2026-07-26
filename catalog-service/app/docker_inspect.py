@@ -297,11 +297,18 @@ class DockerInspector:
         # Build a destination -> container map in one pass over devpod
         # containers, then answer each id locally.
         by_dest: dict[str, Container] = {}
+        # Count RUNNING containers per destination. Picking a winner below
+        # discards the fact that there WAS a duplicate, which is how a
+        # workspace could report `running` here while connect refused it as
+        # ambiguous. Count first, report it alongside the winner.
+        running_count: dict[str, int] = {}
         prefix = self._settings.workspace_mount_prefix
         for c in self._devpod_containers():
             wid = _ws_id_from_mounts(c.attrs.get("Mounts", []), prefix)
             if wid is None:
                 continue
+            if c.status == "running":
+                running_count[wid] = running_count.get(wid, 0) + 1
             # Prefer a running container if duplicates share a destination.
             existing = by_dest.get(wid)
             if existing is None or (
@@ -318,6 +325,7 @@ class DockerInspector:
                     liveness=self._liveness(c),
                     container_id=c.id if c else None,
                     devpod_uid=self._uid(c) if c else None,
+                    running_siblings=running_count.get(ws_id, 0),
                 )
             )
         return out
