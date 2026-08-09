@@ -83,6 +83,8 @@ main() {
       shift; cmd_recreate "$@" ;;
     status)
       cmd_status ;;
+    attach)
+      shift; cmd_attach "$@" ;;
     doctor)
       cmd_doctor ;;
     "")

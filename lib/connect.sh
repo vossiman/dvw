@@ -19,14 +19,25 @@ cmd_connect() {
   #   dvw <id> --ssh     — ssh + attach `work` tmux session (same as default)
   #   dvw <id> --cursor  — open in Cursor (devpod up --ide cursor)
   #   dvw <id> --both    — Cursor first, then exec into ssh+tmux
-  local mode="ssh"
-  case "${1:-}" in
-    --ssh)    mode="ssh" ;;
-    --cursor) mode="cursor" ;;
-    --both)   mode="both" ;;
-    "")       : ;;
-    *) ui_error "unknown flag: $1 (expected --ssh, --cursor, or --both)"; return 1 ;;
-  esac
+  #   dvw <id> --window @N — select this tmux window after attaching (ssh path
+  #                          only; consumed by `dvw attach`, see cmd_attach)
+  local mode="ssh" win=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ssh)    mode="ssh"; shift ;;
+      --cursor) mode="cursor"; shift ;;
+      --both)   mode="both"; shift ;;
+      --window)
+        win="${2:-}"
+        if [[ -z "$win" ]]; then
+          ui_error "--window requires an argument"
+          return 1
+        fi
+        shift 2
+        ;;
+      *) ui_error "unknown flag: $1 (expected --ssh, --cursor, --both, or --window <id>)"; return 1 ;;
+    esac
+  done
 
   # Materialize devpod local state from the catalog snapshot if missing,
   # then resolve which container is canonical by direct observation of the
@@ -37,9 +48,9 @@ cmd_connect() {
   _dvw_reap_stale_masters "$ws"
 
   case "$mode" in
-    ssh)    _connect_ssh "$ws" ;;
+    ssh)    _connect_ssh "$ws" "$win" ;;
     cursor) _connect_cursor "$ws" ;;
-    both)   _connect_cursor "$ws" && _connect_ssh "$ws" ;;
+    both)   _connect_cursor "$ws" && _connect_ssh "$ws" "$win" ;;
     *)      ui_error "unknown connect mode: $mode"; return 1 ;;
   esac
 }
@@ -53,7 +64,7 @@ cmd_connect() {
 # below uses default (long) ssh timeouts and no BatchMode, so it retries
 # on its own where the 5s BatchMode probe gave up.
 _connect_ssh() {
-  local ws="$1"
+  local ws="$1" win="${2:-}"
   # Single-initiator ordering (2026-08-09): when the catalog says the
   # workspace has NO container, run the explicit up BEFORE anything touches
   # the <ws>.devpod alias. The alias's ProxyCommand (`devpod ssh --stdio`)
@@ -79,7 +90,7 @@ _connect_ssh() {
     fi
   fi
   catalog_workspace_touch "$ws" 2>/dev/null || true
-  _dvw_ssh_session "$ws"
+  _dvw_ssh_session "$ws" "$win"
 }
 
 # Delay before reconnect attempt N (zero-based). DVW_SSH_RECONNECT_DELAY is an
@@ -176,7 +187,7 @@ _dvw_rm_marker_dir() {
 }
 
 _dvw_ssh_session() {
-  local ws="$1" rc=0 total=0 delay markdir marker established=0
+  local ws="$1" win="${2:-}" rc=0 total=0 delay markdir marker established=0
   local max_total="${DVW_SSH_RECONNECT_TOTAL_MAX:-50}"
   local connect_timeout="${DVW_SSH_RECONNECT_CONNECT_TIMEOUT:-10}"
   local -a retry_opts=()
@@ -191,18 +202,44 @@ _dvw_ssh_session() {
   # fails to hold, an unset var reaches the helper as empty (a no-op) instead of
   # aborting dvw under `set -u`.
   trap 'trap - RETURN; _dvw_rm_marker_dir "${markdir:-}"' RETURN
+
+  # `dvw attach` threads a tmux window id through here so the session lands
+  # directly on the window agent-notify flagged @waiting, instead of just the
+  # `work` session's default view. Validate before embedding: this string
+  # reaches a remote shell via `-t "${ws}.devpod" "$remote_command"`, so a
+  # malformed id must never make it into that command line. tmux window ids
+  # are always `@<digits>` (stable across renames/reordering — never the
+  # positional index), so anything else is rejected outright rather than
+  # quoted defensively.
+  #
+  # Reconnect note: the retry loop below re-runs this same remote_command on
+  # every reattach, so a transport blip mid-session re-selects the window on
+  # reconnect too. Accepted: the flag itself is one-shot (agent-notify clears
+  # it on the first select), so this only ever re-selects a window the user
+  # may have already moved off in the interim — a cosmetic jump, not a
+  # correctness problem, and far simpler than threading "already selected
+  # once" state through the reconnect loop for it.
+  local select_cmd=""
+  if [[ -n "$win" ]]; then
+    if [[ "$win" =~ ^@[0-9]+$ ]]; then
+      select_cmd=" \\; select-window -t '$win'"
+    else
+      ui_error "ignoring malformed window id: $win"
+    fi
+  fi
+
   # Expanded by the remote login shell, not by this client-side assignment.
   # shellcheck disable=SC2016
-  local remote_command='
-    infocmp -1 "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color
+  local remote_command="
+    infocmp -1 \"\$TERM\" >/dev/null 2>&1 || export TERM=xterm-256color
     if command -v tmux >/dev/null 2>&1; then
-      exec bash -lc "tmux new -A -D -s work"
+      exec bash -lc \"tmux new -A -D -s work$select_cmd\"
     fi
-    echo "tmux not found in this workspace. Falling back to plain bash (no resume)." >&2
-    echo "To bootstrap the full toolchain inside the workspace:" >&2
-    echo "  git clone https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh" >&2
+    echo \"tmux not found in this workspace. Falling back to plain bash (no resume).\" >&2
+    echo \"To bootstrap the full toolchain inside the workspace:\" >&2
+    echo \"  git clone https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh\" >&2
     exec bash -l
-  '
+  "
 
   while true; do
     rc=0

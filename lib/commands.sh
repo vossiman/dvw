@@ -884,3 +884,47 @@ cmd_config() {
       ;;
   esac
 }
+
+# dvw attach — jump to the tmux window most recently flagged @waiting by
+# agent-notify (spec: devMachine 2026-08-09-agent-waiting-phone-notify).
+#
+# Zero waiting -> report and fall through to the normal top menu (nothing to
+# jump to, but the user still gets a way in). One -> connect straight in,
+# window pre-selected. More than one -> a picker, newest-first (the service
+# already sorts /v1/containers/waiting that way).
+cmd_attach() {
+  local raw
+  raw=$(_catalog_req GET /v1/containers/waiting 2>/dev/null) || raw=""
+  local count
+  count=$(jq -r 'length' <<<"${raw:-[]}" 2>/dev/null || echo 0)
+  if [[ "$count" -eq 0 ]]; then
+    ui_info "nothing waiting — no window is flagged"
+    ui_top_menu
+    return $?
+  fi
+
+  local ws win
+  if [[ "$count" -eq 1 ]]; then
+    ws=$(jq -r '.[0].workspace_id' <<<"$raw")
+    win=$(jq -r '.[0].window_id' <<<"$raw")
+  else
+    # Rows: "<workspace-id>  <window-name>  <window-id>", newest first (API
+    # order preserved by jq). Workspace id first column, window id last, so
+    # `awk '{print $1}'`/`'{print $NF}'` can pull each back out of the
+    # column-aligned selection regardless of name width.
+    local sel
+    sel=$(jq -r '.[] | "\(.workspace_id)\t\(.window_name)\t\(.window_id)"' <<<"$raw" \
+      | column -t -s $'\t' \
+      | fzf --prompt='attach> ' --height=40% --reverse) || return 1
+    ws=$(awk '{print $1}' <<<"$sel")
+    win=$(awk '{print $NF}' <<<"$sel")
+  fi
+
+  if [[ -z "$ws" || -z "$win" ]]; then
+    ui_error "attach: could not determine a workspace/window to connect to"
+    return 1
+  fi
+
+  ui_action "attach" "$ws ($win)"
+  cmd_connect "$ws" --ssh --window "$win"
+}
