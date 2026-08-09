@@ -893,8 +893,25 @@ cmd_config() {
 # window pre-selected. More than one -> a picker, newest-first (the service
 # already sorts /v1/containers/waiting that way).
 cmd_attach() {
-  local raw
-  raw=$(_catalog_req GET /v1/containers/waiting 2>/dev/null) || raw=""
+  local raw rc=0
+  raw=$(_catalog_req GET /v1/containers/waiting 2>/dev/null) || rc=$?
+  # _catalog_req distinguishes "transport never reached the service" (rc=2)
+  # from "service answered with an HTTP error" (rc=1) — see
+  # lib/catalog-http-lib.sh:23-25. Collapsing either into count=0 would tell
+  # the user "nothing waiting" when the truth is "couldn't check", the same
+  # distinction connect-resolver.sh:72 makes via DVW_PROBE_ERROR. Still fall
+  # through to the top menu in both cases — there's no waiting-list to act on
+  # either way, just a different reason.
+  if [[ "$rc" -eq 2 ]]; then
+    ui_error "attach: catalog service unreachable — can't check for waiting windows"
+    ui_top_menu
+    return $?
+  elif [[ "$rc" -eq 1 ]]; then
+    ui_error "attach: catalog service returned an error checking waiting windows"
+    ui_top_menu
+    return $?
+  fi
+
   local count
   count=$(jq -r 'length' <<<"${raw:-[]}" 2>/dev/null || echo 0)
   if [[ "$count" -eq 0 ]]; then
@@ -912,10 +929,16 @@ cmd_attach() {
     # order preserved by jq). Workspace id first column, window id last, so
     # `awk '{print $1}'`/`'{print $NF}'` can pull each back out of the
     # column-aligned selection regardless of name width.
-    local sel
-    sel=$(jq -r '.[] | "\(.workspace_id)\t\(.window_name)\t\(.window_id)"' <<<"$raw" \
-      | column -t -s $'\t' \
-      | fzf --prompt='attach> ' --height=40% --reverse) || return 1
+    local rows sel
+    rows=$(jq -r '.[] | "\(.workspace_id)\t\(.window_name)\t\(.window_id)"' <<<"$raw" \
+      | column -t -s $'\t')
+    # Same fzf-preferred/gum-fallback convention as ui_pick_workspace
+    # (lib/ui.sh:259-272) — dvw doesn't hard-require fzf anywhere else.
+    if command -v fzf >/dev/null; then
+      sel=$(printf '%s\n' "$rows" | fzf --prompt='attach> ' --height=40% --reverse) || return 1
+    else
+      sel=$(printf '%s\n' "$rows" | gum filter --placeholder='attach> ') || return 1
+    fi
     ws=$(awk '{print $1}' <<<"$sel")
     win=$(awk '{print $NF}' <<<"$sel")
   fi

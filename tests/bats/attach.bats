@@ -103,7 +103,8 @@ _serve_waiting() {
   _install_ssh_stub
   _serve_waiting '[{"workspace_id":"devmachine","container_id":"c1","window_id":"; rm -rf /","window_name":"work","waiting_since":1754700000}]'
   run cmd_attach
-  ! grep -q "rm -rf" "$SSH_ARGS"
+  run grep -q "rm -rf" "$SSH_ARGS"
+  [ "$status" -ne 0 ]
 }
 
 @test "attach with nothing waiting reports and falls through to menu" {
@@ -113,6 +114,60 @@ _serve_waiting() {
   [ "$status" -eq 0 ]
   echo "$output" | grep -qi 'nothing waiting'
   echo "$output" | grep -q 'TOP_MENU_CALLED'
+}
+
+@test "attach reports catalog-unreachable distinctly, not as nothing-waiting" {
+  _load_attach
+  # rc=2 out of _catalog_req is a transport failure (never reached the
+  # service) per lib/catalog-http-lib.sh:23-25 — distinct from an empty
+  # waiting list and from an HTTP-level error (rc=1, covered below).
+  _catalog_req() { return 2; }
+  export -f _catalog_req
+  run cmd_attach
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qi 'catalog service unreachable'
+  echo "$output" | grep -q 'TOP_MENU_CALLED'
+  run grep -qi 'nothing waiting' <<<"$output"
+  [ "$status" -ne 0 ]
+}
+
+@test "attach reports a catalog HTTP error distinctly, not as nothing-waiting" {
+  _load_attach
+  # rc=1 out of _catalog_req is a >=400 HTTP response — service reachable but
+  # answered with an error, still not "the list is empty".
+  _catalog_req() { printf '%s' '{"error":"boom"}'; return 1; }
+  export -f _catalog_req
+  run cmd_attach
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qi 'catalog service returned an error'
+  echo "$output" | grep -q 'TOP_MENU_CALLED'
+  run grep -qi 'nothing waiting' <<<"$output"
+  [ "$status" -ne 0 ]
+}
+
+@test "attach falls back to gum filter when fzf is not installed" {
+  _load_attach
+  export CONNECT_LOG="$HOME/connect-log"
+  : > "$CONNECT_LOG"
+  cmd_connect() { printf '%s\n' "$*" > "$CONNECT_LOG"; }
+  export -f cmd_connect
+  _serve_waiting '[
+    {"workspace_id":"newws","container_id":"c2","window_id":"@9","window_name":"newer","waiting_since":2000},
+    {"workspace_id":"oldws","container_id":"c1","window_id":"@3","window_name":"older","waiting_since":1000}
+  ]'
+  # No fzf stub installed on purpose — PATH has neither a real nor a stub
+  # fzf, so `command -v fzf` must fail and cmd_attach must fall back to gum,
+  # mirroring lib/ui.sh's ui_pick_workspace convention.
+  cat > "$STUB_BIN/gum" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = "filter" ] || { echo "unexpected gum invocation: $*" >&2; exit 99; }
+head -n1
+EOF
+  chmod +x "$STUB_BIN/gum"
+  run cmd_attach
+  [ "$status" -eq 0 ]
+  grep -q "^newws " "$CONNECT_LOG"
+  grep -q '@9' "$CONNECT_LOG"
 }
 
 @test "attach with multiple waiting windows opens a picker, newest-first row wins" {
@@ -134,7 +189,8 @@ EOF
   [ "$status" -eq 0 ]
   grep -q "^newws " "$CONNECT_LOG"
   grep -q '@9' "$CONNECT_LOG"
-  ! grep -q 'oldws' "$CONNECT_LOG"
+  run grep -q 'oldws' "$CONNECT_LOG"
+  [ "$status" -ne 0 ]
 }
 
 @test "dispatch: dvw attach reaches cmd_attach" {
