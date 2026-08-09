@@ -85,13 +85,16 @@ _dvw_load_probe() {
     [[ -n "$siblings" ]] && DVW_PROBE_SIBLINGS["$id"]="$siblings"
   done < <(jq -r '.[] | "\(.id)\t\(.liveness)\t\(.running_siblings // "")"' <<<"$status_body")
 
-  # Orphans -> DVW_PROBE_ORPHAN_INFO (host \t name \t state \t mountstatus \t src \t wsdest)
+  # Orphans -> DVW_PROBE_ORPHAN_INFO (host \t uid \t state \t mountstatus \t src \t wsdest),
+  # keyed by container NAME. Twin containers can share one devpod uid (two
+  # racing `devpod up` runs, 2026-08-09); keying by uid collapsed them so the
+  # doctor printed one twin's name twice and hid the other.
   orphan_body=$(_catalog_req GET /v1/containers/orphans) || return 0
   local uid name state mstatus src wsdest
   while IFS=$'\t' read -r uid name state mstatus src wsdest; do
     [[ -z "$uid" ]] && continue
-    DVW_PROBE_ORPHAN_INFO["$uid"]="${DVW_CATALOG_HOST}"$'\t'"${name}"$'\t'"${state}"$'\t'"${mstatus}"$'\t'"${src}"$'\t'"${wsdest}"
-    DVW_PROBE_ORPHAN_UIDS+="${uid}"$'\n'
+    DVW_PROBE_ORPHAN_INFO["$name"]="${DVW_CATALOG_HOST}"$'\t'"${uid}"$'\t'"${state}"$'\t'"${mstatus}"$'\t'"${src}"$'\t'"${wsdest}"
+    DVW_PROBE_ORPHAN_NAMES+="${name}"$'\n'
   done < <(jq -r '.[] | "\(.devpod_uid)\t\(.container_name)\t\(.state)\t\(.mount_status)\t\(.mount_source // "")\t\(.workspace_id // "")"' <<<"$orphan_body")
 }
 
@@ -103,4 +106,17 @@ _dvw_provider_has_container() {
   body=$(_catalog_req GET "/v1/workspaces/$id/container") || return 1
   cid=$(jq -r '.container_id // empty' <<<"$body")
   [[ -n "$cid" ]]
+}
+
+# Three-way variant for the single-initiator connect ordering: echoes
+# yes | no | unknown. "no" is a definite service answer and licenses an
+# explicit `devpod up` BEFORE any <id>.devpod alias touch; "unknown"
+# (service unreachable) must fall back to the legacy probe path rather
+# than blocking connect on a catalog outage. Always asks fresh: in
+# `--both` mode the cursor leg's up changes the answer for the ssh leg.
+_dvw_ws_container_state() {
+  local id="$1" body cid
+  body=$(_catalog_req GET "/v1/workspaces/$id/container") || { echo unknown; return 0; }
+  cid=$(jq -r '.container_id // empty' <<<"$body")
+  if [[ -n "$cid" ]]; then echo yes; else echo no; fi
 }

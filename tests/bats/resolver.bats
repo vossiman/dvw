@@ -321,3 +321,30 @@ _ws_json() {
   [ "${DVW_PROBE_STATE[b]}" = "stopped" ]
   [ -z "${DVW_PROBE_SIBLINGS[a]:-}" ]
 }
+
+@test "http load_probe: twin orphans sharing a devpod uid are both recorded" {
+  # 2026-08-09: two racing `devpod up` runs created twin containers with the
+  # SAME devpod uid. Keying orphan detail by uid collapsed them — `dvw doctor`
+  # printed one container's name twice and hid the other entirely.
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/containers/status") _stub_emit '[]' 200 ;;
+      "GET /v1/containers/orphans")
+        _stub_emit '[
+          {"devpod_uid":"default-de-54406","container_name":"twin_a","state":"running","mount_status":"alive","mount_source":"/src","workspace_id":"zombie"},
+          {"devpod_uid":"default-de-54406","container_name":"twin_b","state":"running","mount_status":"alive","mount_source":"/src","workspace_id":"zombie"}
+        ]' 200 ;;
+      "GET /v1/catalog")
+        _stub_emit '{ "version":1, "defaults":{}, "repos":[], "workspaces":[] }' 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
+  _load_http_resolver
+  unset DVW_PROBE_LOADED
+  _dvw_load_probe
+  # One entry per CONTAINER, keyed by name — both twins visible.
+  [ -n "${DVW_PROBE_ORPHAN_INFO[twin_a]:-}" ]
+  [ -n "${DVW_PROBE_ORPHAN_INFO[twin_b]:-}" ]
+  [ "$(grep -c . <<<"$DVW_PROBE_ORPHAN_NAMES")" = "2" ]
+}
