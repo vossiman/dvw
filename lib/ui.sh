@@ -293,9 +293,11 @@ ui_top_menu() {
   # Waiting-agent count: fail-open, same call as cmd_attach (lib/commands.sh
   # ~897) but collapsed to a single "0 on any trouble" outcome — the menu
   # must never break or block just because the catalog hiccuped.
-  local n_waiting
-  n_waiting=$(_catalog_req GET /v1/containers/waiting 2>/dev/null | jq -r 'length' 2>/dev/null || echo 0)
-  [[ "$n_waiting" =~ ^[0-9]+$ ]] || n_waiting=0
+  local n_waiting=0 waiting_body
+  if waiting_body=$(_catalog_req GET /v1/containers/waiting 2>/dev/null); then
+    n_waiting=$(jq -r 'length' <<<"$waiting_body" 2>/dev/null || echo 0)
+    [[ "$n_waiting" =~ ^[0-9]+$ ]] || n_waiting=0
+  fi
 
   # Subtitle: include orphan count if any, so the user knows the audit entry
   # below is meaningful before they open the menu.

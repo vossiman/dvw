@@ -51,7 +51,12 @@ fi
 # PATH; in normal use nothing else provides "dvw-install.sh" so this checkout's
 # copy is what runs.
 if (( ! CHECK_ONLY )); then
-  PATH="$PATH:$HERE" dvw-install.sh
+  # Prepend $HOME/.local/bin: on a fresh Raspberry Pi shell it's not yet on
+  # PATH, so without this dvw-install.sh's own `command -v devpod` probe
+  # misses the arm64 binary step 1 just dropped there and sudo-installs its
+  # hardcoded devpod-linux-amd64 to /usr/local/bin instead — permanently
+  # shadowing the working arm64 copy.
+  PATH="$HOME/.local/bin:$PATH:$HERE" dvw-install.sh
   ok "dvw client installed/refreshed"
 fi
 

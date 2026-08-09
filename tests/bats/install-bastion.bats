@@ -39,3 +39,30 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   run bash "$SCRIPT"
   grep -q 'dvw-install' "$HOME/calls"
 }
+
+@test "dvw-install.sh sees a devpod that exists only at ~/.local/bin (fresh-Pi PATH bug)" {
+  # Regression for: install-bastion.sh used to delegate via
+  # `PATH="$PATH:$HERE" dvw-install.sh`, i.e. ~/.local/bin (where step 1
+  # drops a freshly-downloaded arm64 devpod) was never added to PATH. On a
+  # fresh Raspberry Pi shell without ~/.local/bin already on PATH,
+  # dvw-install.sh's own `command -v devpod` probe would then miss the
+  # binary it just installed and sudo-install its hardcoded amd64 build to
+  # /usr/local/bin instead, permanently shadowing the working arm64 one.
+  #
+  # This stub records the PATH it's invoked with and whether `command -v
+  # devpod` can see the ~/.local/bin copy, standing in for dvw-install.sh's
+  # real probe.
+  printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/devpod"; chmod +x "$HOME/.local/bin/devpod"
+  cat > "$HOME/stubs/dvw-install.sh" <<'EOF'
+#!/bin/sh
+echo "PATH=$PATH" >> "$HOME/calls"
+if command -v devpod >/dev/null 2>&1; then
+  echo "dvw-install-sees-devpod: $(command -v devpod)" >> "$HOME/calls"
+else
+  echo "dvw-install-sees-devpod: NONE" >> "$HOME/calls"
+fi
+EOF
+  chmod +x "$HOME/stubs/dvw-install.sh"
+  run bash "$SCRIPT"
+  grep -q "dvw-install-sees-devpod: $HOME/.local/bin/devpod" "$HOME/calls"
+}

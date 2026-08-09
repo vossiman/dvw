@@ -103,8 +103,17 @@ _serve_waiting() {
   _install_ssh_stub
   _serve_waiting '[{"workspace_id":"devmachine","container_id":"c1","window_id":"; rm -rf /","window_name":"work","waiting_since":1754700000}]'
   run cmd_attach
+  local attach_output="$output"
   run grep -q "rm -rf" "$SSH_ARGS"
   [ "$status" -ne 0 ]
+  # Harden against a vacuous pass: the absence of the bad id proves nothing
+  # if the ssh stub never even ran. Assert the session actually proceeded
+  # (base tmux command present, no select-window chained) and that
+  # connect.sh's own malformed-id guard fired.
+  grep -q "tmux new -A -D -s work" "$SSH_ARGS"
+  run grep -q "select-window" "$SSH_ARGS"
+  [ "$status" -ne 0 ]
+  echo "$attach_output" | grep -qi 'ignoring malformed window id'
 }
 
 @test "attach with nothing waiting reports and falls through to menu" {
@@ -260,6 +269,26 @@ _load_top_menu() {
   # whose branch calls ui_pick_workspace against an (unstubbed) empty
   # catalog and fails — expected and irrelevant here, this test only cares
   # that the menu rendered without the waiting entry, not what got picked.
+  run ui_top_menu
+  local menu_output="$output"
+  run grep -q 'Attach waiting agent' <<<"$menu_output"
+  [ "$status" -ne 0 ]
+  echo "$menu_output" | grep -q '❯ Connect to workspace'
+  run grep -q 'waiting' <<<"$menu_output"
+  [ "$status" -ne 0 ]
+}
+
+@test "top menu renders without waiting entry when catalog answers a non-2xx JSON body" {
+  # Guards against the phantom-waiting-entry bug: an OLD catalog-service with
+  # no /waiting route 404s with a JSON *object* body like
+  # {"detail":"Not Found"}. `jq -r 'length'` on an object returns 1 (its key
+  # count), and the numeric guard `^[0-9]+$` happily accepts "1" — so without
+  # capturing _catalog_req's rc, this renders a phantom
+  # "⏸ Attach waiting agent (1)" entry during the normal client-first
+  # rollout window (or on any future 5xx JSON body).
+  _load_top_menu
+  _catalog_req() { printf '%s' '{"detail":"Not Found"}'; return 1; }
+  export -f _catalog_req
   run ui_top_menu
   local menu_output="$output"
   run grep -q 'Attach waiting agent' <<<"$menu_output"
