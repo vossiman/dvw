@@ -192,6 +192,16 @@ class CanonicalContainer(BaseModel):
     ambiguous: bool = False
 
 
+class WaitingWindow(BaseModel):
+    """A tmux window flagged @waiting by agent-notify (spec 2026-08-09)."""
+
+    workspace_id: str
+    container_id: str
+    window_id: str        # tmux #{window_id}, e.g. "@7" — stable, never the index
+    window_name: str
+    waiting_since: int    # epoch set by agent-notify
+
+
 class BindMount(BaseModel):
     source: str
     destination: str

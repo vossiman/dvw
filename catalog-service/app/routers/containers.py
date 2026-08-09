@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from ..deps import InspectorDep, StoreDep, run_inspect
-from ..models import Orphan, WorkspaceStatus
+from ..models import Orphan, WaitingWindow, WorkspaceStatus
 
 router = APIRouter(prefix="/containers", tags=["containers"])
 
@@ -29,3 +29,9 @@ async def orphans(store: StoreDep, inspector: InspectorDep) -> list[Orphan]:
     """Devpod-labelled containers whose workspace id is not in the catalog."""
     catalog_ids = store.workspace_ids()
     return await run_inspect(inspector.orphans, catalog_ids)
+
+
+@router.get("/waiting", response_model=list[WaitingWindow])
+async def waiting(inspector: InspectorDep) -> list[WaitingWindow]:
+    """tmux windows flagged @waiting by agent-notify, newest first."""
+    return await run_inspect(inspector.waiting_windows)

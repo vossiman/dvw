@@ -13,7 +13,13 @@ from app.deps import (
     invalidate_resolve_cache,
 )
 from app.main import create_app
-from app.models import CanonicalContainer, ContainerInspect, Orphan, WorkspaceStatus
+from app.models import (
+    CanonicalContainer,
+    ContainerInspect,
+    Orphan,
+    WaitingWindow,
+    WorkspaceStatus,
+)
 from app.store import CatalogStore
 
 
@@ -27,6 +33,7 @@ class FakeInspector:
         self.statuses: dict[str, WorkspaceStatus] = {}
         self._orphans: list[Orphan] = []
         self.sibling_map: dict[str, list] = {}
+        self.waiting: list[WaitingWindow] = []
 
     def ping(self) -> bool:
         return self.alive
@@ -47,6 +54,9 @@ class FakeInspector:
 
     def orphans(self, catalog_ids):
         return self._orphans
+
+    def waiting_windows(self) -> list:
+        return self.waiting
 
 
 @pytest.fixture
