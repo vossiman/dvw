@@ -193,6 +193,82 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+# ─── ui_top_menu: surfaces waiting agents ──────────────────────────────────
+#
+# ui_top_menu (lib/ui.sh:282+) prepends a "⏸ Attach waiting agent (N)" choice
+# when GET /v1/containers/waiting reports N>0, using the exact same
+# _catalog_req call cmd_attach makes — but fail-open (count 0, no error
+# surfaced) so a catalog hiccup never breaks the menu, unlike cmd_attach's
+# own rc handling above.
+#
+# gum stub below mimics an interactive `gum choose`: it prints every
+# candidate choice to stderr (so `run`'s combined output shows the full
+# menu, which is what these tests grep) and echoes the first choice to
+# stdout as the "selection" so `action=$(gum choose ...)` gets something
+# case-matchable. All flags on the real call take a value, so the
+# `--*) shift 2` loop safely skips past them to the positional choices.
+_load_top_menu() {
+  gum() {
+    case "$1" in
+      choose)
+        shift
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --*) shift 2 ;;
+            *) break ;;
+          esac
+        done
+        printf '%s\n' "$@" >&2
+        printf '%s\n' "$1"
+        ;;
+      style|join)
+        shift
+        printf '%s\n' "${@: -1}"
+        ;;
+      *) : ;;
+    esac
+  }
+  export -f gum
+
+  # _dvw_load_running_ids and catalog_read are exercised elsewhere
+  # (wizard.bats et al); stub them here so this file stays focused on the
+  # waiting-count addition, same isolation approach _load_attach uses above.
+  _dvw_load_running_ids() { DVW_RUNNING_IDS=""; DVW_RUNNING_LOADED=1; }
+  catalog_read() { printf '%s' '{"workspaces":[]}'; }
+  cmd_attach() { echo "CMD_ATTACH_CALLED"; }
+  export -f _dvw_load_running_ids catalog_read cmd_attach
+
+  source "$DVW_ROOT/lib/ui.sh"
+}
+
+@test "top menu surfaces waiting count as first choice" {
+  _load_top_menu
+  _serve_waiting '[{"workspace_id":"a","window_id":"@1"},{"workspace_id":"b","window_id":"@2"}]'
+  run ui_top_menu
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q '⏸ Attach waiting agent (2)'
+  echo "$output" | grep -q '· 2 waiting'
+  echo "$output" | grep -q 'CMD_ATTACH_CALLED'
+}
+
+@test "top menu renders without waiting entry when catalog is unreachable" {
+  _load_top_menu
+  _catalog_req() { return 2; }
+  export -f _catalog_req
+  # gum choose's stub echoes the *first* choice as the selection (see
+  # _load_top_menu); with no waiting entry that's "Connect to workspace",
+  # whose branch calls ui_pick_workspace against an (unstubbed) empty
+  # catalog and fails — expected and irrelevant here, this test only cares
+  # that the menu rendered without the waiting entry, not what got picked.
+  run ui_top_menu
+  local menu_output="$output"
+  run grep -q 'Attach waiting agent' <<<"$menu_output"
+  [ "$status" -ne 0 ]
+  echo "$menu_output" | grep -q '❯ Connect to workspace'
+  run grep -q 'waiting' <<<"$menu_output"
+  [ "$status" -ne 0 ]
+}
+
 @test "dispatch: dvw attach reaches cmd_attach" {
   source "$DVW_ROOT/dvw"
   ui_progress() { shift; "$@"; }
