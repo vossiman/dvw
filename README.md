@@ -23,12 +23,12 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 
 | Command | Effect |
 |--|--|
-| `dvw` | top-level menu (Connect/New/Status/Stop/Start/Remove/Doctor) |
+| `dvw` | opens the TUI (requires `uv` + a tty); errors with the subcommand list if the TUI can't run |
 | `dvw <id>` | connect via SSH (terminal + tmux `work` session) |
 | `dvw <id> --ssh` | same as bare connect (explicit) |
 | `dvw <id> --cursor` | open in Cursor via `devpod up --ide cursor` |
 | `dvw <id> --both` | open in Cursor, then ssh + attach `work` tmux session |
-| `dvw attach` | connect to the tmux window most recently flagged waiting-for-input (picker if several; menu if none) |
+| `dvw attach` | connect to the tmux window most recently flagged waiting-for-input (picker if several; reports and exits if none) |
 | `dvw -l` | list workspaces (MRU order) |
 | `dvw new` | wizard: create a new workspace, append to catalog |
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
@@ -187,7 +187,7 @@ plan to keep up-to-date.
 ### Connect to a workspace
 
 ```bash
-dvw                  # menu, defaults to Connect
+dvw                  # TUI
 dvw <workspace-id>   # direct
 dvw -l               # list and exit
 ```
@@ -314,7 +314,7 @@ When DevPod recreates a workspace (`devpod up --recreate`, or `devpod up` after 
          (run `dvw` and pick "Audit orphan containers" for git status / unpushed / stashes inside each)
 ```
 
-The `dvw` top menu shows **⚠ Audit orphan containers (N)** when N > 0. Choosing it runs a deeper audit per orphan: branch, modified file count, unpushed commit count, stash count, verdict. Removal is always manual — `dvw` prints the `ssh <host> 'docker rm -f <name>'` template; you type it after deciding.
+The `dvw` TUI's `o` key runs a deeper audit per orphan: branch, modified file count, unpushed commit count, stash count, verdict. Removal is always manual — `dvw` prints the `ssh <host> 'docker rm -f <name>'` template; you type it after deciding.
 
 ## SSH config sync
 
@@ -417,8 +417,9 @@ Editing `.devcontainer/devcontainer.json` after a container exists doesn't updat
 
 ## TUI
 
-Bare `dvw` opens a lazydocker-style TUI (requires [uv](https://docs.astral.sh/uv/);
-falls back to the gum menu without it, or with `DVW_NO_TUI=1`).
+Bare `dvw` opens a lazydocker-style TUI (requires [uv](https://docs.astral.sh/uv/)
+and a tty). Without `uv`, without a tty, or with `DVW_NO_TUI=1`, bare `dvw`
+errors with the subcommand list instead — there's no menu fallback.
 
 - left: workspaces with live state (● running / ⚠ stale / ○ stopped / ✗ absent)
 - right: inspect detail (health, mounts, cpu/mem, disk) for the focused workspace

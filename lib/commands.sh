@@ -888,10 +888,10 @@ cmd_config() {
 # dvw attach — jump to the tmux window most recently flagged @waiting by
 # agent-notify (spec: devMachine 2026-08-09-agent-waiting-phone-notify).
 #
-# Zero waiting -> report and fall through to the normal top menu (nothing to
-# jump to, but the user still gets a way in). One -> connect straight in,
-# window pre-selected. More than one -> a picker, newest-first (the service
-# already sorts /v1/containers/waiting that way).
+# Zero waiting -> report and return 0 — no menu, TUI-only since 2026-08-10.
+# One -> connect straight in, window pre-selected. More than one -> a
+# picker, newest-first (the service already sorts /v1/containers/waiting
+# that way).
 cmd_attach() {
   local raw rc=0
   raw=$(_catalog_req GET /v1/containers/waiting 2>/dev/null) || rc=$?
@@ -899,25 +899,22 @@ cmd_attach() {
   # from "service answered with an HTTP error" (rc=1) — see
   # lib/catalog-http-lib.sh:23-25. Collapsing either into count=0 would tell
   # the user "nothing waiting" when the truth is "couldn't check", the same
-  # distinction connect-resolver.sh:72 makes via DVW_PROBE_ERROR. Still fall
-  # through to the top menu in both cases — there's no waiting-list to act on
-  # either way, just a different reason.
+  # distinction connect-resolver.sh:72 makes via DVW_PROBE_ERROR. Report and
+  # return the matching code in both cases — no menu, TUI-only since
+  # 2026-08-10.
   if [[ "$rc" -eq 2 ]]; then
     ui_error "attach: catalog service unreachable — can't check for waiting windows"
-    ui_top_menu
-    return $?
+    return 2
   elif [[ "$rc" -eq 1 ]]; then
     ui_error "attach: catalog service returned an error checking waiting windows"
-    ui_top_menu
-    return $?
+    return 1
   fi
 
   local count
   count=$(jq -r 'length' <<<"${raw:-[]}" 2>/dev/null || echo 0)
   if [[ "$count" -eq 0 ]]; then
     ui_info "nothing waiting — no window is flagged"
-    ui_top_menu
-    return $?
+    return 0
   fi
 
   local ws win
@@ -932,8 +929,8 @@ cmd_attach() {
     local rows sel
     rows=$(jq -r '.[] | "\(.workspace_id)\t\(.window_name)\t\(.window_id)"' <<<"$raw" \
       | column -t -s $'\t')
-    # Same fzf-preferred/gum-fallback convention as ui_pick_workspace
-    # (lib/ui.sh:259-272) — dvw doesn't hard-require fzf anywhere else.
+    # fzf-preferred/gum-fallback convention — dvw doesn't hard-require fzf
+    # anywhere else.
     if command -v fzf >/dev/null; then
       sel=$(printf '%s\n' "$rows" | fzf --prompt='attach> ' --height=40% --reverse) || return 1
     else

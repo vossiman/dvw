@@ -52,8 +52,7 @@ _load_attach() {
   ui_info()        { printf 'INFO: %s\n' "$*"; }
   ui_error()       { printf 'ERROR: %s\n' "$*" >&2; }
   ui_action()      { :; }
-  ui_top_menu()    { echo "TOP_MENU_CALLED"; return "${TOP_MENU_RC:-0}"; }
-  export -f ui_status_warn ui_status_ok ui_info ui_error ui_action ui_top_menu
+  export -f ui_status_warn ui_status_ok ui_info ui_error ui_action
 
   source "$DVW_ROOT/lib/catalog.sh"
   source "$DVW_ROOT/lib/connect.sh"
@@ -116,41 +115,60 @@ _serve_waiting() {
   echo "$attach_output" | grep -qi 'ignoring malformed window id'
 }
 
-@test "attach with nothing waiting reports and falls through to menu" {
+# All three no-menu tests stub gum to fail loudly (nonzero exit + a marker on
+# stderr) so a regression that resurrects a `ui_top_menu`/gum call anywhere in
+# cmd_attach's three non-attach branches shows up as a spurious "GUM SHOULD
+# NOT RUN" in $output, not just a silently-wrong exit code.
+_stub_gum_must_not_run() {
+  cat > "$STUB_BIN/gum" <<'EOF'
+#!/usr/bin/env bash
+echo "GUM SHOULD NOT RUN" >&2
+exit 97
+EOF
+  chmod +x "$STUB_BIN/gum"
+}
+
+@test "attach with nothing waiting reports and exits 0 without any menu" {
   _load_attach
+  _stub_gum_must_not_run
   _serve_waiting '[]'
   run cmd_attach
   [ "$status" -eq 0 ]
   echo "$output" | grep -qi 'nothing waiting'
-  echo "$output" | grep -q 'TOP_MENU_CALLED'
+  run grep -q 'GUM SHOULD NOT RUN' <<<"$output"
+  [ "$status" -ne 0 ]
 }
 
 @test "attach reports catalog-unreachable distinctly, not as nothing-waiting" {
   _load_attach
+  _stub_gum_must_not_run
   # rc=2 out of _catalog_req is a transport failure (never reached the
   # service) per lib/catalog-http-lib.sh:23-25 — distinct from an empty
   # waiting list and from an HTTP-level error (rc=1, covered below).
   _catalog_req() { return 2; }
   export -f _catalog_req
   run cmd_attach
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 2 ]
   echo "$output" | grep -qi 'catalog service unreachable'
-  echo "$output" | grep -q 'TOP_MENU_CALLED'
   run grep -qi 'nothing waiting' <<<"$output"
+  [ "$status" -ne 0 ]
+  run grep -q 'GUM SHOULD NOT RUN' <<<"$output"
   [ "$status" -ne 0 ]
 }
 
 @test "attach reports a catalog HTTP error distinctly, not as nothing-waiting" {
   _load_attach
+  _stub_gum_must_not_run
   # rc=1 out of _catalog_req is a >=400 HTTP response — service reachable but
   # answered with an error, still not "the list is empty".
   _catalog_req() { printf '%s' '{"error":"boom"}'; return 1; }
   export -f _catalog_req
   run cmd_attach
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   echo "$output" | grep -qi 'catalog service returned an error'
-  echo "$output" | grep -q 'TOP_MENU_CALLED'
   run grep -qi 'nothing waiting' <<<"$output"
+  [ "$status" -ne 0 ]
+  run grep -q 'GUM SHOULD NOT RUN' <<<"$output"
   [ "$status" -ne 0 ]
 }
 
@@ -165,8 +183,8 @@ _serve_waiting() {
     {"workspace_id":"oldws","container_id":"c1","window_id":"@3","window_name":"older","waiting_since":1000}
   ]'
   # No fzf stub installed on purpose — PATH has neither a real nor a stub
-  # fzf, so `command -v fzf` must fail and cmd_attach must fall back to gum,
-  # mirroring lib/ui.sh's ui_pick_workspace convention.
+  # fzf, so `command -v fzf` must fail and cmd_attach must fall back to the
+  # gum filter convention (lib/commands.sh, cmd_attach's picker branch).
   cat > "$STUB_BIN/gum" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" = "filter" ] || { echo "unexpected gum invocation: $*" >&2; exit 99; }
@@ -199,102 +217,6 @@ EOF
   grep -q "^newws " "$CONNECT_LOG"
   grep -q '@9' "$CONNECT_LOG"
   run grep -q 'oldws' "$CONNECT_LOG"
-  [ "$status" -ne 0 ]
-}
-
-# ─── ui_top_menu: surfaces waiting agents ──────────────────────────────────
-#
-# ui_top_menu (lib/ui.sh:282+) prepends a "⏸ Attach waiting agent (N)" choice
-# when GET /v1/containers/waiting reports N>0, using the exact same
-# _catalog_req call cmd_attach makes — but fail-open (count 0, no error
-# surfaced) so a catalog hiccup never breaks the menu, unlike cmd_attach's
-# own rc handling above.
-#
-# gum stub below mimics an interactive `gum choose`: it prints every
-# candidate choice to stderr (so `run`'s combined output shows the full
-# menu, which is what these tests grep) and echoes the first choice to
-# stdout as the "selection" so `action=$(gum choose ...)` gets something
-# case-matchable. All flags on the real call take a value, so the
-# `--*) shift 2` loop safely skips past them to the positional choices.
-_load_top_menu() {
-  gum() {
-    case "$1" in
-      choose)
-        shift
-        while [[ $# -gt 0 ]]; do
-          case "$1" in
-            --*) shift 2 ;;
-            *) break ;;
-          esac
-        done
-        printf '%s\n' "$@" >&2
-        printf '%s\n' "$1"
-        ;;
-      style|join)
-        shift
-        printf '%s\n' "${@: -1}"
-        ;;
-      *) : ;;
-    esac
-  }
-  export -f gum
-
-  # _dvw_load_running_ids and catalog_read are exercised elsewhere
-  # (wizard.bats et al); stub them here so this file stays focused on the
-  # waiting-count addition, same isolation approach _load_attach uses above.
-  _dvw_load_running_ids() { DVW_RUNNING_IDS=""; DVW_RUNNING_LOADED=1; }
-  catalog_read() { printf '%s' '{"workspaces":[]}'; }
-  cmd_attach() { echo "CMD_ATTACH_CALLED"; }
-  export -f _dvw_load_running_ids catalog_read cmd_attach
-
-  source "$DVW_ROOT/lib/ui.sh"
-}
-
-@test "top menu surfaces waiting count as first choice" {
-  _load_top_menu
-  _serve_waiting '[{"workspace_id":"a","window_id":"@1"},{"workspace_id":"b","window_id":"@2"}]'
-  run ui_top_menu
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -q '⏸ Attach waiting agent (2)'
-  echo "$output" | grep -q '· 2 waiting'
-  echo "$output" | grep -q 'CMD_ATTACH_CALLED'
-}
-
-@test "top menu renders without waiting entry when catalog is unreachable" {
-  _load_top_menu
-  _catalog_req() { return 2; }
-  export -f _catalog_req
-  # gum choose's stub echoes the *first* choice as the selection (see
-  # _load_top_menu); with no waiting entry that's "Connect to workspace",
-  # whose branch calls ui_pick_workspace against an (unstubbed) empty
-  # catalog and fails — expected and irrelevant here, this test only cares
-  # that the menu rendered without the waiting entry, not what got picked.
-  run ui_top_menu
-  local menu_output="$output"
-  run grep -q 'Attach waiting agent' <<<"$menu_output"
-  [ "$status" -ne 0 ]
-  echo "$menu_output" | grep -q '❯ Connect to workspace'
-  run grep -q 'waiting' <<<"$menu_output"
-  [ "$status" -ne 0 ]
-}
-
-@test "top menu renders without waiting entry when catalog answers a non-2xx JSON body" {
-  # Guards against the phantom-waiting-entry bug: an OLD catalog-service with
-  # no /waiting route 404s with a JSON *object* body like
-  # {"detail":"Not Found"}. `jq -r 'length'` on an object returns 1 (its key
-  # count), and the numeric guard `^[0-9]+$` happily accepts "1" — so without
-  # capturing _catalog_req's rc, this renders a phantom
-  # "⏸ Attach waiting agent (1)" entry during the normal client-first
-  # rollout window (or on any future 5xx JSON body).
-  _load_top_menu
-  _catalog_req() { printf '%s' '{"detail":"Not Found"}'; return 1; }
-  export -f _catalog_req
-  run ui_top_menu
-  local menu_output="$output"
-  run grep -q 'Attach waiting agent' <<<"$menu_output"
-  [ "$status" -ne 0 ]
-  echo "$menu_output" | grep -q '❯ Connect to workspace'
-  run grep -q 'waiting' <<<"$menu_output"
   [ "$status" -ne 0 ]
 }
 
