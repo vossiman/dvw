@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
-# cmd_doctor reports uv presence (warn-only: TUI degrades to menu without it).
+# cmd_doctor reports uv presence (warn-only: bare `dvw` errors out — no TUI,
+# no menu fallback — without it).
 
 setup() {
   DVW_ROOT="${BATS_TEST_DIRNAME}/../.."
@@ -21,5 +22,5 @@ setup() {
   for t in printf grep sed; do ln -s "$(command -v $t)" "$STUB/$t" 2>/dev/null || true; done
   PATH="$STUB" run _dvw_doctor_check_uv
   [ "$status" -eq 1 ]
-  [[ "$output" == *"[WARN]"* ]] && [[ "$output" == *"gum menu"* ]]
+  [[ "$output" == *"[WARN]"* ]] && [[ "$output" == *"will error without it"* ]]
 }

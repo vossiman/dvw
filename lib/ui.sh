@@ -11,7 +11,6 @@ DVW_BLUE="#81a1c1"          # frost blue (vscode-ish)
 DVW_TEAL="#8fbcbb"          # frost teal (cursor-ish)
 DVW_YELLOW="#ebcb8b"        # aurora yellow / sand (ssh)
 DVW_PEACH="#d08770"         # aurora copper (jetbrains)
-DVW_BG_HL="#3b4252"         # polar2 (fzf highlighted-row bg)
 
 # ─── UI helpers ─────────────────────────────────────────────────────────────
 # All printers below assume an ANSI-capable terminal (true-color). Used by

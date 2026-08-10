@@ -38,6 +38,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw update` | Update to the latest released tooling and refresh the version marker. Standalone checkout: pull `main` + reinstall. Submodule checkout: follow the parent's pins (ff the parent, check out pinned submodules, reinstall) — never commits or pushes. Startup/`dvw doctor` nudge when behind `origin/main`. |
 | `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
 | `dvw doctor` | health check: catalog endpoint + transport note, provider probe, catalog service, ssh-sync, devpod, gum, per-orphan summary, duplicate-sibling containers |
+| `dvw audit` | deeper per-orphan git audit (branch, modified file count, unpushed commit count, stash count, verdict) — one ssh per provider host |
 | `dvw config` / `dvw config set KEY VALUE` | show or persist the per-machine config (catalog host, provider — see [Configuration](#configuration-host-user-provider)); runs even when the service is unreachable |
 | `dvw <anything> --dry-run` | print would-be `devpod ...` / `docker ...` invocations without executing — works on any mutating subcommand |
 
@@ -311,10 +312,10 @@ When DevPod recreates a workspace (`devpod up --recreate`, or `devpod up` after 
 [WARN]  2 orphan container(s) on provider — may contain data, verify before removing
           default-da-89c70 · heuristic_spence · running · /workspaces/dataenv-git-devpod mount alive (may contain data)
           default-fi-2bae9 · jolly_lovelace  · exited  · /workspaces/financepdfs-git-main mount stale (deleted inode — workspaces data unrecoverable)
-         (run `dvw` and pick "Audit orphan containers" for git status / unpushed / stashes inside each)
+         (run `dvw audit` for git status / unpushed / stashes inside each)
 ```
 
-The `dvw` TUI's `o` key runs a deeper audit per orphan: branch, modified file count, unpushed commit count, stash count, verdict. Removal is always manual — `dvw` prints the `ssh <host> 'docker rm -f <name>'` template; you type it after deciding.
+The `dvw` TUI's `o` key lists orphan containers and lets you remove one (confirm, then a suspended `docker rm -f` you see before it runs). For the deeper per-orphan git audit — branch, modified file count, unpushed commit count, stash count, verdict — run `dvw audit` from a shell; it does one ssh per provider host and reports before you decide what to remove.
 
 ## SSH config sync
 

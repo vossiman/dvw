@@ -256,13 +256,14 @@ cmd_status() {
 }
 
 # uv check, extracted for testability. Returns 0 (ok) / 1 (warn).
-# Warn-only: without uv, bare `dvw` falls back to the gum menu.
+# Warn-only: without uv, bare `dvw` can't launch the TUI and errors out
+# instead (no menu fallback — TUI-only since 2026-08-10).
 _dvw_doctor_check_uv() {
   if command -v uv >/dev/null; then
     ui_status_ok "uv: $(uv --version 2>/dev/null)"
     return 0
   fi
-  ui_status_warn "uv: not on PATH — bare \`dvw\` falls back to the gum menu (install: https://docs.astral.sh/uv/)"
+  ui_status_warn "uv: not on PATH — bare \`dvw\` will error without it (install: https://docs.astral.sh/uv/)"
   return 1
 }
 
@@ -394,7 +395,7 @@ cmd_doctor() {
         ui_info "          $orphan_name (no detail available)"
       fi
     done <<<"$DVW_PROBE_ORPHAN_NAMES"
-    ui_info "         (run \`dvw\` and pick \"Audit orphan containers\" for git status / unpushed / stashes inside each)"
+    ui_info "         (run \`dvw audit\` for git status / unpushed / stashes inside each)"
   fi
 
   # catalog readable (served by the catalog service)
@@ -568,14 +569,14 @@ cmd_doctor() {
       "$(_ansi "$DVW_RED")" "$fail" "$(ui_reset)" \
       "$(_ansi "$DVW_YELLOW")" "$warn" "$(ui_reset)"
     if [[ -n "${DVW_PROBE_ORPHAN_NAMES:-}" ]]; then
-      ui_info "  audit orphans for unsaved work via \`dvw\` menu → \"Audit orphan containers\""
+      ui_info "  audit orphans for unsaved work: \`dvw audit\`"
     fi
   elif (( warn > 0 )); then
     printf '%s⚠%s %s%d warning(s)%s\n' \
       "$(_ansi "$DVW_YELLOW" bold)" "$(ui_reset)" \
       "$(_ansi "$DVW_YELLOW")" "$warn" "$(ui_reset)"
     if [[ -n "${DVW_PROBE_ORPHAN_NAMES:-}" ]]; then
-      ui_info "  audit orphans for unsaved work via \`dvw\` menu → \"Audit orphan containers\""
+      ui_info "  audit orphans for unsaved work: \`dvw audit\`"
     fi
   else
     printf '%s✓%s %sall checks passed%s\n' \
@@ -587,9 +588,9 @@ cmd_doctor() {
 
 # Tier-2 orphan audit: for each orphan container, surface git state inside
 # its /workspaces bind mount so the user can decide whether to copy
-# anything out before removing. Triggered from the top menu (not from
-# `dvw doctor` directly) because it does docker exec per orphan and can
-# be slow if there are many.
+# anything out before removing. Its own subcommand (`dvw audit`, not run
+# automatically from `dvw doctor`) because it does docker exec per orphan
+# and can be slow if there are many.
 #
 # Container-safety: read-only. The remote script never invokes docker
 # rm/stop/restart, never writes to any bind mount, never touches the

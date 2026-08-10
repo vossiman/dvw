@@ -96,7 +96,7 @@ This was previously `universal:2` (Ubuntu 20.04 focal). Most workarounds below o
 
   **Detection (Tier 1, in `dvw doctor`):** the provider-side probe emits per orphan: uid, container name, state, and `/workspaces/<id>` bind-mount status (`alive` / `deleted` / `nomount`). Surfaced in `dvw doctor` as one warning line per orphan. Bind-mount `deleted` means the host source path is gone (the stale-bind-mount fingerprint from item above) — data unrecoverable from that container. `alive` means the bind-mount source is still on disk and may contain uncommitted edits or unpushed commits.
 
-  **Audit (Tier 2, via the top menu):** when orphans exist, the `dvw` top menu surfaces an "⚠ Audit orphan containers (N)" entry. Choosing it triggers `cmd_orphans_audit` which does one ssh per provider host bundling all that host's orphans. Per orphan it reports:
+  **Audit (Tier 2, via `dvw audit`):** running `dvw audit` calls `cmd_orphans_audit`, which does one ssh per provider host bundling all that host's orphans. Per orphan it reports:
   - For running orphans: `docker exec` into the container and run `git status / git rev-list @{u}.. / git stash list` inside `/workspaces/<id>`.
   - For exited orphans: same git read-only commands against the bind-mount source path on the provider host directly (no docker exec — the container is stopped).
 

@@ -87,12 +87,14 @@ main() {
       shift; cmd_attach "$@" ;;
     doctor)
       cmd_doctor ;;
+    audit)
+      cmd_orphans_audit ;;
     "")
       if _dvw_tui_available && dvw_tui_launch; then
         :
       else
         ui_error "the dvw TUI is unavailable (needs uv + a tty; DVW_NO_TUI unset)"
-        ui_info "subcommands: <id> | attach | new | rm | stop | start | recreate | update | status | doctor | config | -l"
+        ui_info "subcommands: <id> | attach | new | rm | stop | start | recreate | update | status | doctor | audit | config | -l"
         exit 1
       fi ;;
     *)
