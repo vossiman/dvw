@@ -1,7 +1,11 @@
 import os
 
 from dvw_tui.app import DvwApp
+from dvw_tui.client import WaitingWindow
 from dvw_tui.screens.main import MainScreen, WorkspaceTable
+
+W1 = WaitingWindow("alpha", "@7", "claude", 1754800000)
+W2 = WaitingWindow("beta", "@3", "codex", 1754790000)
 
 
 async def test_q_quits_the_app(fake_client):
@@ -112,6 +116,46 @@ async def test_status_header_unreachable(fake_client, monkeypatch):
         text = str(header.content)
         assert "testhost" in text
         assert "unreachable" in text
+
+
+async def test_waiting_section_hidden_when_empty(fake_client):
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.screen.query_one("#waiting-table").display is False
+
+
+async def test_waiting_section_lists_rows_newest_first(fake_client):
+    fake_client.waiting_windows = [W1, W2]
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.screen.query_one("#waiting-table")
+        assert table.display is True
+        assert table.row_count == 2   # order asserted via first row's cells
+        first = table.get_row_at(0)
+        assert "alpha" in str(first[0]) and "claude" in str(first[1])
+
+
+async def test_a_key_attaches_newest(fake_client):
+    fake_client.waiting_windows = [W1, W2]
+    app = DvwApp(client=fake_client)
+    calls = []
+    app.do_attach = lambda w: calls.append(w)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        assert calls == [W1]
+
+
+async def test_a_key_noop_when_nothing_waiting(fake_client):
+    app = DvwApp(client=fake_client)
+    calls = []
+    app.do_attach = lambda w: calls.append(w)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        assert calls == []
 
 
 async def test_filter_narrows_rows(fake_client):
