@@ -158,6 +158,86 @@ async def test_a_key_noop_when_nothing_waiting(fake_client):
         assert calls == []
 
 
+async def test_enter_on_waiting_table_attaches_that_row_not_workspace(fake_client):
+    fake_client.waiting_windows = [W1, W2]
+    app = DvwApp(client=fake_client)
+    attach_calls = []
+    connect_calls = []
+    app.do_attach = lambda w: attach_calls.append(w)
+    app.do_connect = lambda w, mode: connect_calls.append((w, mode))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        waiting_table = app.screen.query_one("#waiting-table")
+        waiting_table.focus()
+        waiting_table.move_cursor(row=1)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        # W2 (beta) is the focused waiting row, not the workspace table's
+        # cursor row (alpha) — do_connect must not have been called at all.
+        assert attach_calls == [W2]
+        assert connect_calls == []
+
+
+async def test_enter_on_workspace_table_still_connects(fake_client):
+    fake_client.waiting_windows = [W1, W2]
+    app = DvwApp(client=fake_client)
+    attach_calls = []
+    connect_calls = []
+    app.do_attach = lambda w: attach_calls.append(w)
+    app.do_connect = lambda w, mode: connect_calls.append((w, mode))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one(WorkspaceTable).focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert attach_calls == []
+        assert len(connect_calls) == 1
+        assert connect_calls[0][0].id == "alpha"
+        assert connect_calls[0][1] == "ssh"
+
+
+async def test_waiting_row_selected_handler_attaches_clicked_row(fake_client):
+    # No feasible pilot-click path found for a DataTable row (rows aren't
+    # exposed as separately clickable widgets), so this drives
+    # on_data_table_row_selected directly with a synthetic RowSelected event
+    # — the same event Textual posts for a mouse click or the DataTable's
+    # own default Enter binding.
+    from textual.widgets import DataTable
+
+    fake_client.waiting_windows = [W1, W2]
+    app = DvwApp(client=fake_client)
+    attach_calls = []
+    app.do_attach = lambda w: attach_calls.append(w)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        waiting_table = app.screen.query_one("#waiting-table", DataTable)
+        row_key = waiting_table.coordinate_to_cell_key((1, 0)).row_key
+        event = DataTable.RowSelected(waiting_table, cursor_row=1, row_key=row_key)
+        app.screen.on_data_table_row_selected(event)
+        assert attach_calls == [W2]
+
+
+async def test_waiting_hidden_and_a_key_noop_after_workspace_fetch_fails(fake_client):
+    fake_client.waiting_windows = [W1, W2]
+    app = DvwApp(client=fake_client)
+    calls = []
+    app.do_attach = lambda w: calls.append(w)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.screen.query_one("#waiting-table")
+        assert table.display is True  # sanity: waiting was populated first
+
+        fake_client.fail = True
+        app.screen.refresh_data()
+        await pilot.pause()
+
+        assert table.display is False
+        await pilot.press("a")
+        assert calls == []
+
+
 async def test_filter_narrows_rows(fake_client):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:

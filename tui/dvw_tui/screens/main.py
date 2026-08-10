@@ -134,6 +134,10 @@ class MainScreen(Screen):
         except CatalogError as exc:
             self._show_error(f"catalog unreachable — {exc} — R to retry")
             self._update_header(connected=False)
+            # Fail closed: don't leave stale waiting rows visible (or
+            # attachable via `a`) once the workspace fetch itself failed.
+            self._waiting = []
+            self._render_waiting_table()
             return
         self._hide_error()
         self._update_header(connected=True)
@@ -329,6 +333,19 @@ class MainScreen(Screen):
         # input has focus — commit the filter there instead of connecting.
         if self.query_one("#filter-input", Input).has_focus:
             self._commit_filter()
+            return
+        # Priority bindings dispatch before the focused widget ever sees the
+        # key, so if the waiting table has focus, Enter must attach *that*
+        # row — not fall through to the workspace table's cursor row.
+        waiting_table = self.query_one("#waiting-table", DataTable)
+        # Guard on non-empty rather than just `.has_focus`: the waiting
+        # table is the first focusable widget mounted, so it silently holds
+        # initial app focus even while hidden/empty (no waiting rows) — that
+        # shouldn't hijack Enter away from the workspace table.
+        if waiting_table.has_focus and self._waiting:
+            row_index = waiting_table.cursor_row
+            if row_index is not None and 0 <= row_index < len(self._waiting):
+                self.app.do_attach(self._waiting[row_index])
             return
         self.app.do_connect(self.focused_workspace(), "ssh")
 
