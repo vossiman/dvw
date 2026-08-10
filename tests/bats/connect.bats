@@ -141,3 +141,114 @@ STUB
   [ "$status" -eq 0 ]
   grep -q "devpod up myws" "$MODES_LOG"
 }
+
+# --- single-initiator ordering --------------------------------------------
+# 2026-08-09: on a COLD workspace, touching the <id>.devpod alias (probe or
+# Cursor remote-ssh) fires DevPod's implicit `devpod up` via the ProxyCommand
+# (`devpod ssh --stdio`, no flag to disable), racing our explicit up across
+# the image pull — twin containers ~350µs apart. The per-id up-lock cannot
+# see the implicit initiator, so ordering is the fix: when the catalog says
+# "no container", up FIRST and only then open ssh/Cursor.
+
+_load_order() {
+  ui_status_warn() { :; }
+  ui_status_ok()   { :; }
+  ui_info()        { :; }
+  ui_error()       { echo "$*" >&2; }
+  ui_action()      { :; }
+  export -f ui_status_warn ui_status_ok ui_info ui_error ui_action
+
+  source "$DVW_ROOT/lib/connect.sh"
+
+  _dvw_alias_defined() { return 0; }
+  _dvw_safe_devpod_up() { echo "up:$1:${3:-}" >> "$MODES_LOG"; }
+  _dvw_ssh_session() { echo "session:$1" >> "$MODES_LOG"; }
+  _dvw_cursor_open() { echo "cursoropen:$1" >> "$MODES_LOG"; }
+  _dvw_workspace_health() { echo "health:$1" >> "$MODES_LOG"; echo alive; }
+  catalog_workspace_touch() { :; }
+  catalog_workspace_set_devpod_state() { :; }
+  export -f _dvw_alias_defined _dvw_safe_devpod_up _dvw_ssh_session \
+    _dvw_cursor_open _dvw_workspace_health catalog_workspace_touch \
+    catalog_workspace_set_devpod_state
+
+  # Any `ssh` invocation is an alias touch — log it. Exit 0 = probe succeeds.
+  cat > "$STUB_BIN/ssh" <<'EOF'
+#!/bin/bash
+echo "sshprobe" >> "$MODES_LOG"
+exit 0
+EOF
+  chmod +x "$STUB_BIN/ssh"
+}
+
+@test "_connect_ssh: cold workspace ups before any alias touch" {
+  _load_order
+  _dvw_ws_container_state() { echo no; }
+  run _connect_ssh myws
+  [ "$status" -eq 0 ]
+  [ "$(cat "$MODES_LOG")" = "up:myws:none
+session:myws" ]
+}
+
+@test "_connect_ssh: warm workspace keeps probe-then-session, no up" {
+  _load_order
+  _dvw_ws_container_state() { echo yes; }
+  run _connect_ssh myws
+  [ "$status" -eq 0 ]
+  [ "$(cat "$MODES_LOG")" = "sshprobe
+session:myws" ]
+}
+
+@test "_connect_ssh: catalog unreachable falls back to legacy probe path" {
+  _load_order
+  _dvw_ws_container_state() { echo unknown; }
+  run _connect_ssh myws
+  [ "$status" -eq 0 ]
+  [ "$(cat "$MODES_LOG")" = "sshprobe
+session:myws" ]
+}
+
+@test "_connect_cursor: cold workspace ups before health check or open" {
+  _load_order
+  _dvw_ws_container_state() { echo no; }
+  run _connect_cursor myws
+  [ "$status" -eq 0 ]
+  [ "$(cat "$MODES_LOG")" = "up:myws:cursor" ]
+}
+
+@test "_connect_cursor: warm workspace keeps health-then-open" {
+  _load_order
+  _dvw_ws_container_state() { echo yes; }
+  run _connect_cursor myws
+  [ "$status" -eq 0 ]
+  [ "$(cat "$MODES_LOG")" = "health:myws
+cursoropen:myws" ]
+}
+
+# --- non-catalog id guard --------------------------------------------------
+# 2026-08-09: a workspace purged from the catalog but still in the local
+# DevPod registry ("zombie") stayed dvw-selectable and up-able. `devpod up`
+# on such an id resurrects it. Refuse: the catalog is the authority.
+
+@test "_dvw_safe_devpod_up: refuses an id absent from the catalog" {
+  _load_up_guard
+  catalog_workspace_ids() { printf 'realws\n'; }
+  run _dvw_safe_devpod_up zombiews --ide none
+  [ "$status" -ne 0 ]
+  ! grep -q "devpod up zombiews" "$MODES_LOG"
+}
+
+@test "_dvw_safe_devpod_up: catalog-listed id proceeds" {
+  _load_up_guard
+  catalog_workspace_ids() { printf 'myws\nrealws\n'; }
+  run _dvw_safe_devpod_up myws --ide none
+  [ "$status" -eq 0 ]
+  grep -q "devpod up myws --ide none" "$MODES_LOG"
+}
+
+@test "_dvw_safe_devpod_up: empty/unreachable catalog fails open" {
+  _load_up_guard
+  catalog_workspace_ids() { return 1; }
+  run _dvw_safe_devpod_up myws --ide none
+  [ "$status" -eq 0 ]
+  grep -q "devpod up myws --ide none" "$MODES_LOG"
+}

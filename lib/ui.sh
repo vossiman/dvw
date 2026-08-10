@@ -294,8 +294,8 @@ ui_top_menu() {
   # below is meaningful before they open the menu.
   local subtitle="$total total · $running running"
   local n_orphans=0
-  if [[ -n "${DVW_PROBE_ORPHAN_UIDS:-}" ]]; then
-    n_orphans=$(grep -c . <<<"$DVW_PROBE_ORPHAN_UIDS" || true)
+  if [[ -n "${DVW_PROBE_ORPHAN_NAMES:-}" ]]; then
+    n_orphans=$(grep -c . <<<"$DVW_PROBE_ORPHAN_NAMES" || true)
     subtitle+=" · $n_orphans orphan"
   fi
   ui_banner "dvw — devpod workspaces" "$subtitle"

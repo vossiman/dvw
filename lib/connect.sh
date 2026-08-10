@@ -54,7 +54,19 @@ cmd_connect() {
 # on its own where the 5s BatchMode probe gave up.
 _connect_ssh() {
   local ws="$1"
-  if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "${ws}.devpod" true 2>/dev/null; then
+  # Single-initiator ordering (2026-08-09): when the catalog says the
+  # workspace has NO container, run the explicit up BEFORE anything touches
+  # the <ws>.devpod alias. The alias's ProxyCommand (`devpod ssh --stdio`)
+  # starts its own implicit `devpod up` on a cold workspace — no flag can
+  # disable that — and it raced our explicit up across the image pull,
+  # creating twin containers. The per-id up-lock below cannot see that
+  # initiator; only this ordering can. "unknown" (catalog unreachable)
+  # falls through to the legacy probe path rather than blocking connect.
+  if [[ "$(_dvw_ws_container_state "$ws")" == "no" ]]; then
+    ui_action "starting" "$ws (ide=none)"
+    _dvw_safe_devpod_up "$ws" --ide none || { ui_error "devpod up failed for $ws"; return 1; }
+    catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
+  elif ! ssh -o ConnectTimeout=5 -o BatchMode=yes "${ws}.devpod" true 2>/dev/null; then
     if ! _dvw_alias_defined "$ws"; then
       ui_status_warn "$ws: ssh alias not registered on this machine — registering now"
       _dvw_ensure_ssh_alias "$ws" || { ui_error "could not register ssh alias for $ws"; return 1; }
@@ -259,6 +271,21 @@ _connect_cursor() {
   local ws="$1"
   catalog_workspace_touch "$ws" 2>/dev/null || true
 
+  # Single-initiator ordering (2026-08-09): a definitively cold workspace is
+  # brought up here, before the health check — _dvw_workspace_health probes
+  # via the <ws>.devpod alias, whose ProxyCommand implicitly ups a cold
+  # workspace and races this explicit up (twin containers). `devpod up
+  # --ide cursor` opens the Cursor window itself when done.
+  if [[ "$(_dvw_ws_container_state "$ws")" == "no" ]]; then
+    ui_action "starting" "$ws in Cursor"
+    if ! _dvw_safe_devpod_up "$ws" --ide cursor; then
+      ui_error "devpod up --ide cursor failed for $ws"
+      return 1
+    fi
+    catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
+    return 0
+  fi
+
   case "$(_dvw_workspace_health "$ws")" in
     alive)
       ui_action "opening" "$ws in Cursor"
@@ -409,11 +436,13 @@ _dvw_workspace_health() {
 declare -gA DVW_PROBE_STATE=()
 DVW_PROBE_ERROR=""
 DVW_PROBE_LOADED=""
-# Orphan container detection: uids found in docker that are not claimed by any
-# agent workspace directory. Surfaced as warnings in `dvw doctor`. Read-only.
-DVW_PROBE_ORPHAN_UIDS=""
-# Per-orphan details, keyed by uid. Value is a tab-separated record:
-#   "<host>\t<name>\t<state>\t<mountstatus>\t<mountsrc>\t<workspace_id_inside_mount>"
+# Orphan container detection: containers found in docker whose uid is not
+# claimed by any agent workspace directory. Surfaced as warnings in
+# `dvw doctor`. Read-only. One entry per CONTAINER (not per uid — twin
+# containers from racing `devpod up` runs share a uid, 2026-08-09).
+DVW_PROBE_ORPHAN_NAMES=""
+# Per-orphan details, keyed by container name. Value is a tab-separated record:
+#   "<host>\t<uid>\t<state>\t<mountstatus>\t<mountsrc>\t<workspace_id_inside_mount>"
 # Populated by connect-resolver.sh from GET /v1/containers/orphans.
 declare -gA DVW_PROBE_ORPHAN_INFO=()
 # Count of RUNNING containers mounting /workspaces/<id>, keyed by workspace id.
@@ -442,6 +471,20 @@ declare -gA DVW_PROBE_SIBLINGS=()
 _dvw_safe_devpod_up() {
   local id="$1"
   shift
+  # Zombie guard (2026-08-09): an id purged from the catalog but still in
+  # the local DevPod registry stays `devpod list`-visible and up-able, and
+  # `devpod up` silently resurrects it as an orphan container. The catalog
+  # is the authority on what may be brought up. Fail-open when the catalog
+  # cannot answer (empty/unreachable): blocking every up on a catalog
+  # outage would hurt more than the zombie risk.
+  local _catalog_ids
+  _catalog_ids=$(catalog_workspace_ids 2>/dev/null) || _catalog_ids=""
+  if [[ -n "$_catalog_ids" ]] && ! grep -qxF -- "$id" <<<"$_catalog_ids"; then
+    ui_error "$id is not in the catalog — refusing \`devpod up\`"
+    ui_info "  an id in \`devpod list\` but not the catalog is a stale/zombie registry entry."
+    ui_info "  adopt it as a real workspace via \`dvw new\`, or drop it: devpod delete $id"
+    return 1
+  fi
   if _dvw_provider_has_container "$id"; then
     ui_status_warn "$id is unreachable via SSH but a container exists on its provider"
     ui_info "  running \`devpod up\` against an already-running container can wipe"

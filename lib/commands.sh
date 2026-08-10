@@ -365,35 +365,35 @@ cmd_doctor() {
   # its bind-mounted /workspaces dir — never recommend automatic cleanup.
   # The deeper git-state audit (Tier 2) is reachable from the menu when any
   # orphan exists.
-  if [[ -n "${DVW_PROBE_ORPHAN_UIDS:-}" ]]; then
-    local n_orphans orphan_uid
-    n_orphans=$(grep -c . <<<"$DVW_PROBE_ORPHAN_UIDS" || true)
+  if [[ -n "${DVW_PROBE_ORPHAN_NAMES:-}" ]]; then
+    local n_orphans orphan_name
+    n_orphans=$(grep -c . <<<"$DVW_PROBE_ORPHAN_NAMES" || true)
     ui_status_warn "$n_orphans orphan container(s) on provider — may contain data, verify before removing"
     warn=$((warn+1))
-    while IFS= read -r orphan_uid; do
-      [[ -z "$orphan_uid" ]] && continue
-      local info="${DVW_PROBE_ORPHAN_INFO[$orphan_uid]:-}"
+    while IFS= read -r orphan_name; do
+      [[ -z "$orphan_name" ]] && continue
+      local info="${DVW_PROBE_ORPHAN_INFO[$orphan_name]:-}"
       if [[ -n "$info" ]]; then
-        local o_host o_name o_state o_mstatus o_msrc o_wsdest
-        IFS=$'\t' read -r o_host o_name o_state o_mstatus o_msrc o_wsdest <<<"$info"
+        local o_host o_uid o_state o_mstatus o_msrc o_wsdest
+        IFS=$'\t' read -r o_host o_uid o_state o_mstatus o_msrc o_wsdest <<<"$info"
         case "$o_mstatus" in
           alive)
-            ui_info "          container $o_name · uid $orphan_uid · $o_state · /workspaces/$o_wsdest mount alive (may contain data)"
+            ui_info "          container $orphan_name · uid $o_uid · $o_state · /workspaces/$o_wsdest mount alive (may contain data)"
             ;;
           deleted)
-            ui_info "          container $o_name · uid $orphan_uid · $o_state · /workspaces/$o_wsdest mount stale (deleted inode — workspaces data unrecoverable)"
+            ui_info "          container $orphan_name · uid $o_uid · $o_state · /workspaces/$o_wsdest mount stale (deleted inode — workspaces data unrecoverable)"
             ;;
           nomount)
-            ui_info "          container $o_name · uid $orphan_uid · $o_state · no /workspaces mount"
+            ui_info "          container $orphan_name · uid $o_uid · $o_state · no /workspaces mount"
             ;;
           *)
-            ui_info "          container $o_name · uid $orphan_uid · $o_state · mount status unknown"
+            ui_info "          container $orphan_name · uid $o_uid · $o_state · mount status unknown"
             ;;
         esac
       else
-        ui_info "          $orphan_uid (no detail available)"
+        ui_info "          $orphan_name (no detail available)"
       fi
-    done <<<"$DVW_PROBE_ORPHAN_UIDS"
+    done <<<"$DVW_PROBE_ORPHAN_NAMES"
     ui_info "         (run \`dvw\` and pick \"Audit orphan containers\" for git status / unpushed / stashes inside each)"
   fi
 
@@ -567,14 +567,14 @@ cmd_doctor() {
       "$(_ansi "$DVW_RED" bold)" "$(ui_reset)" \
       "$(_ansi "$DVW_RED")" "$fail" "$(ui_reset)" \
       "$(_ansi "$DVW_YELLOW")" "$warn" "$(ui_reset)"
-    if [[ -n "${DVW_PROBE_ORPHAN_UIDS:-}" ]]; then
+    if [[ -n "${DVW_PROBE_ORPHAN_NAMES:-}" ]]; then
       ui_info "  audit orphans for unsaved work via \`dvw\` menu → \"Audit orphan containers\""
     fi
   elif (( warn > 0 )); then
     printf '%s⚠%s %s%d warning(s)%s\n' \
       "$(_ansi "$DVW_YELLOW" bold)" "$(ui_reset)" \
       "$(_ansi "$DVW_YELLOW")" "$warn" "$(ui_reset)"
-    if [[ -n "${DVW_PROBE_ORPHAN_UIDS:-}" ]]; then
+    if [[ -n "${DVW_PROBE_ORPHAN_NAMES:-}" ]]; then
       ui_info "  audit orphans for unsaved work via \`dvw\` menu → \"Audit orphan containers\""
     fi
   else
@@ -599,22 +599,22 @@ cmd_orphans_audit() {
   ui_banner "audit orphan containers" "git status / unpushed / stashes inside each"
 
   _dvw_load_probe
-  if [[ -z "${DVW_PROBE_ORPHAN_UIDS:-}" ]]; then
+  if [[ -z "${DVW_PROBE_ORPHAN_NAMES:-}" ]]; then
     ui_info "no orphan containers detected"
     return 0
   fi
 
   # Group orphans by host so we can do one ssh per host.
   declare -A host_orphans=()
-  local uid info host
-  while IFS= read -r uid; do
-    [[ -z "$uid" ]] && continue
-    info="${DVW_PROBE_ORPHAN_INFO[$uid]:-}"
+  local name info host
+  while IFS= read -r name; do
+    [[ -z "$name" ]] && continue
+    info="${DVW_PROBE_ORPHAN_INFO[$name]:-}"
     [[ -z "$info" ]] && continue
     host=$(awk -F'\t' '{print $1}' <<<"$info")
     [[ -z "$host" ]] && continue
-    host_orphans["$host"]+="$uid"$'\n'
-  done <<<"$DVW_PROBE_ORPHAN_UIDS"
+    host_orphans["$host"]+="$name"$'\n'
+  done <<<"$DVW_PROBE_ORPHAN_NAMES"
 
   local h
   for h in "${!host_orphans[@]}"; do
@@ -627,16 +627,16 @@ cmd_orphans_audit() {
 # positional args (groups of 6). The remote loops, emits a structured
 # block per orphan. Output is parsed and rendered client-side.
 _dvw_audit_orphans_on_host() {
-  local host="$1" uids="$2"
-  local args=() uid info
-  while IFS= read -r uid; do
-    [[ -z "$uid" ]] && continue
-    info="${DVW_PROBE_ORPHAN_INFO[$uid]:-}"
+  local host="$1" names="$2"
+  local args=() name info
+  while IFS= read -r name; do
+    [[ -z "$name" ]] && continue
+    info="${DVW_PROBE_ORPHAN_INFO[$name]:-}"
     [[ -z "$info" ]] && continue
-    local _h o_name o_state o_mstatus o_msrc o_wsdest
-    IFS=$'\t' read -r _h o_name o_state o_mstatus o_msrc o_wsdest <<<"$info"
-    args+=("$uid" "$o_name" "$o_state" "$o_mstatus" "$o_msrc" "$o_wsdest")
-  done <<<"$uids"
+    local _h o_uid o_state o_mstatus o_msrc o_wsdest
+    IFS=$'\t' read -r _h o_uid o_state o_mstatus o_msrc o_wsdest <<<"$info"
+    args+=("$o_uid" "$name" "$o_state" "$o_mstatus" "$o_msrc" "$o_wsdest")
+  done <<<"$names"
 
   if (( ${#args[@]} == 0 )); then
     return 0
