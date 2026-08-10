@@ -94,3 +94,35 @@ async def test_bearer_token_header_sent():
                       transport=httpx.MockTransport(handler))
     await c.workspaces()
     assert seen["auth"] == "Bearer sekrit"
+
+
+WAITING = [
+    {"workspace_id": "alpha", "container_id": "c1", "window_id": "@7",
+     "window_name": "claude", "waiting_since": 1754800000},
+    {"workspace_id": "beta", "container_id": "c2", "window_id": "@3",
+     "window_name": "codex", "waiting_since": 1754790000},
+]
+
+
+@pytest.mark.asyncio
+async def test_waiting_parses_rows_in_api_order():
+    def handler(request):
+        assert request.url.path == "/v1/containers/waiting"
+        return httpx.Response(200, json=WAITING)
+    ws = await make_client(handler).waiting()
+    assert [(w.workspace_id, w.window_id) for w in ws] == [("alpha", "@7"), ("beta", "@3")]
+    assert ws[0].window_name == "claude" and ws[0].waiting_since == 1754800000
+
+
+@pytest.mark.asyncio
+async def test_waiting_fail_closed_on_http_error_and_bad_body():
+    async def check(json_or_status):
+        def handler(request):
+            if isinstance(json_or_status, int):
+                return httpx.Response(json_or_status, json={"detail": "x"})
+            return httpx.Response(200, json=json_or_status)
+        assert await make_client(handler).waiting() == []
+    await check(500)
+    await check(404)
+    await check({"detail": "not a list"})
+    await check([{"workspace_id": "a"}])   # missing fields → row skipped ⇒ []

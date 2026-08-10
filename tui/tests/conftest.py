@@ -10,6 +10,7 @@ class FakeClient:
     def __init__(self):
         self.fail = False
         self.inspect_calls = []
+        self.waiting_windows = []
         self._workspaces = [
             Workspace(id="alpha", repo="git@github.com:vossiman/alpha.git",
                       branch="main", ide="cursor", provider="vossisrv",
@@ -50,6 +51,11 @@ class FakeClient:
     async def orphans(self):
         self._check()
         return list(self._orphans)
+
+    async def waiting(self):
+        if self.fail:
+            return []
+        return list(self.waiting_windows)
 
     async def health(self):
         self._check()
