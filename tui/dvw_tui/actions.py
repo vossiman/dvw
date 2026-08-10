@@ -34,9 +34,13 @@ def remove(workspace_id: str) -> list[str]:
     return [dvw_bin(), "rm", workspace_id]
 
 
-def connect(workspace_id: str, mode: str | None = None) -> list[str]:
-    """Connect argv. Bare id (mode=None) and mode=\"ssh\" both SSH; pass
-    \"cursor\" / \"both\" for the other modes."""
+def connect(workspace_id: str, mode: str | None = None,
+            window: str | None = None) -> list[str]:
+    """Connect argv. Bare id (mode=None) and mode="ssh" both SSH; pass
+    "cursor" / "both" for the other modes. A window target implies ssh —
+    only the ssh path can select a tmux window."""
+    if window:
+        return [dvw_bin(), workspace_id, "--ssh", "--window", window]
     if mode is None:
         return [dvw_bin(), workspace_id]
     return [dvw_bin(), workspace_id, f"--{mode}"]

@@ -30,6 +30,21 @@ def test_connect_with_explicit_mode(monkeypatch):
     assert actions.connect("alpha", None) == ["dvw", "alpha"]
 
 
+def test_connect_with_window_forces_ssh_and_appends_flag(monkeypatch):
+    monkeypatch.setenv("DVW_BIN", "dvw")
+    assert actions.connect("alpha", "ssh", window="@7") == \
+        ["dvw", "alpha", "--ssh", "--window", "@7"]
+    # window implies ssh even when mode is None
+    assert actions.connect("alpha", window="@7") == \
+        ["dvw", "alpha", "--ssh", "--window", "@7"]
+
+
+def test_connect_without_window_unchanged(monkeypatch):
+    monkeypatch.setenv("DVW_BIN", "dvw")
+    assert actions.connect("alpha") == ["dvw", "alpha"]
+    assert actions.connect("alpha", "cursor") == ["dvw", "alpha", "--cursor"]
+
+
 def test_connect_mode_maps_mode_to_execution_style():
     assert actions.connect_mode("cursor") == "background"
     assert actions.connect_mode("ssh") == "suspend"
