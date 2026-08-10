@@ -57,3 +57,21 @@ setup() {
   [ "$status" -eq 0 ]
   grep -q 'UV-TUI' "$BATS_TEST_TMPDIR/uv-ran"
 }
+
+@test "bare dvw with TUI crash reports rc, not unavailability" {
+  export DVW_TUI_FORCE=1
+
+  local sock="$BATS_TEST_TMPDIR/catalog.sock"
+  python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])" "$sock"
+  export DVW_CATALOG_SOCK="$sock"
+
+  # uv "ran" (the TUI launched) but exited nonzero — e.g. crash or Ctrl-C.
+  printf '#!/bin/sh\nexit 3\n' > "$STUB_DIR/uv"
+  chmod +x "$STUB_DIR/uv"
+  export PATH="$STUB_DIR:$PATH"
+
+  run main
+  [ "$status" -eq 3 ]
+  echo "$output" | grep -qi 'exited with rc=3'
+  ! echo "$output" | grep -qi 'unavailable'
+}

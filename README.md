@@ -28,7 +28,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw <id> --ssh` | same as bare connect (explicit) |
 | `dvw <id> --cursor` | open in Cursor via `devpod up --ide cursor` |
 | `dvw <id> --both` | open in Cursor, then ssh + attach `work` tmux session |
-| `dvw attach` | connect to the tmux window most recently flagged waiting-for-input (picker if several; reports and exits if none) |
+| `dvw attach` | connect to the tmux window most recently flagged waiting-for-input (picker if several; reports and exits if none) — TUI equivalent: `a` (newest) or Enter on a waiting row (that row) |
 | `dvw -l` | list workspaces (MRU order) |
 | `dvw new` | wizard: create a new workspace, append to catalog |
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
@@ -423,8 +423,11 @@ and a tty). Without `uv`, without a tty, or with `DVW_NO_TUI=1`, bare `dvw`
 errors with the subcommand list instead — there's no menu fallback.
 
 - left: workspaces with live state (● running / ⚠ stale / ○ stopped / ✗ absent)
+- above the workspace table, a waiting section (⏸ rows, newest first) lists
+  tmux windows flagged waiting-for-input; hidden when nothing's waiting
 - right: inspect detail (health, mounts, cpu/mem, disk) for the focused workspace
-- `enter` / double-click → ssh · `x` menu (ssh / cursor / both + lifecycle)
+- `enter` / double-click → ssh (on a waiting row: attach to that window instead)
+- `a` attach to the newest waiting window · `x` menu (ssh / cursor / both + lifecycle)
 - `s`/`S` stop/start · `r` rebuild · `X` remove · `n` new
 - `d` doctor · `o` orphans · `/` filter · `R` refresh · `q` quit
 

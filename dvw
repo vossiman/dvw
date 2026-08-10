@@ -90,8 +90,13 @@ main() {
     audit)
       cmd_orphans_audit ;;
     "")
-      if _dvw_tui_available && dvw_tui_launch; then
-        :
+      if _dvw_tui_available; then
+        local tui_rc=0
+        dvw_tui_launch || tui_rc=$?
+        if [[ $tui_rc -ne 0 ]]; then
+          ui_error "TUI exited with rc=$tui_rc"
+        fi
+        exit "$tui_rc"
       else
         ui_error "the dvw TUI is unavailable (needs uv + a tty; DVW_NO_TUI unset)"
         ui_info "subcommands: <id> | attach | new | rm | stop | start | recreate | update | status | doctor | audit | config | -l"
