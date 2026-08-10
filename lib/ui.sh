@@ -290,6 +290,15 @@ ui_top_menu() {
   total=$(catalog_read 2>/dev/null | jq -r '.workspaces | length' 2>/dev/null || echo 0)
   running=$(printf '%s\n' "$DVW_RUNNING_IDS" | grep -c . || true)
 
+  # Waiting-agent count: fail-open, same call as cmd_attach (lib/commands.sh
+  # ~897) but collapsed to a single "0 on any trouble" outcome — the menu
+  # must never break or block just because the catalog hiccuped.
+  local n_waiting=0 waiting_body
+  if waiting_body=$(_catalog_req GET /v1/containers/waiting 2>/dev/null); then
+    n_waiting=$(jq -r 'length' <<<"$waiting_body" 2>/dev/null || echo 0)
+    [[ "$n_waiting" =~ ^[0-9]+$ ]] || n_waiting=0
+  fi
+
   # Subtitle: include orphan count if any, so the user knows the audit entry
   # below is meaningful before they open the menu.
   local subtitle="$total total · $running running"
@@ -298,10 +307,15 @@ ui_top_menu() {
     n_orphans=$(grep -c . <<<"$DVW_PROBE_ORPHAN_NAMES" || true)
     subtitle+=" · $n_orphans orphan"
   fi
+  if (( n_waiting > 0 )); then
+    subtitle+=" · $n_waiting waiting"
+  fi
   ui_banner "dvw — devpod workspaces" "$subtitle"
 
   # Build the choice list. "Audit orphan containers" only shows when
   # orphans exist — otherwise it's a no-op entry that just clutters.
+  # "Attach waiting agent" is prepended (not appended) when any windows are
+  # flagged @waiting, so it's the first thing the user sees.
   local -a choices=(
     "❯ Connect to workspace"
     "+ Create new workspace"
@@ -314,6 +328,9 @@ ui_top_menu() {
   )
   if (( n_orphans > 0 )); then
     choices+=("⚠ Audit orphan containers ($n_orphans)")
+  fi
+  if (( n_waiting > 0 )); then
+    choices=("⏸ Attach waiting agent ($n_waiting)" "${choices[@]}")
   fi
 
   local action
@@ -357,6 +374,9 @@ ui_top_menu() {
       ;;
     *"Audit orphan containers"*)
       cmd_orphans_audit
+      ;;
+    *"Attach waiting agent"*)
+      cmd_attach
       ;;
     *)
       return 1
