@@ -65,6 +65,30 @@ async def test_workspace_missing_from_status_is_unknown():
     assert all(w.liveness == "unknown" for w in ws)
 
 
+async def test_workspaces_with_status_merges_attached():
+    def handler(request):
+        if request.url.path == "/v1/containers/status":
+            return httpx.Response(200, json=[
+                {"id": "alpha", "liveness": "alive", "attached": 2},
+                {"id": "beta", "liveness": "stopped"},
+            ])
+        return ok_handler(request)
+    ws = await make_client(handler).workspaces_with_status()
+    assert {w.id: w.attached for w in ws} == {"alpha": 2, "beta": 0}
+
+
+async def test_workspaces_with_status_attached_defaults_to_zero_on_old_server():
+    def handler(request):
+        if request.url.path == "/v1/containers/status":
+            return httpx.Response(200, json=[
+                {"id": "alpha", "liveness": "alive"},
+                {"id": "beta", "liveness": "stopped"},
+            ])
+        return ok_handler(request)
+    ws = await make_client(handler).workspaces_with_status()
+    assert all(w.attached == 0 for w in ws)
+
+
 async def test_inspect_and_orphans_return_dicts():
     c = make_client(ok_handler)
     assert (await c.inspect("alpha"))["cpu_pct"] == 1.5
