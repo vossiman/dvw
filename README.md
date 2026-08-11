@@ -199,7 +199,7 @@ dvw -l               # list and exit
 dvw new
 ```
 
-Bare `dvw new` opens the TUI's new-workspace wizard (same requirements as bare `dvw`: `uv` + a tty; `DVW_NO_TUI=1` makes it error out naming the reason instead). In the wizard: pick repo (from the catalog's saved list, or enter a new URL) → branch (defaults to last-used per repo, picker of branches that exist on the remote) → workspace name (auto-suggested) → IDE (defaults to `cursor`) → confirm. On success, `devpod up` runs and the catalog is updated.
+Bare `dvw new` opens the TUI's new-workspace wizard (same requirements as bare `dvw`: `uv` + a tty; `DVW_NO_TUI=1` makes it error out naming the reason instead). In the wizard: pick repo (from the catalog's saved list, or enter a new URL) → branch (picker of the branches that exist on the remote, sorted, first one highlighted) → workspace name (auto-suggested) → IDE (defaults to the catalog's `ide` default, `cursor` when unset) → confirm. On success, `devpod up` runs and the catalog is updated.
 
 For scripting, or when the TUI can't run, drive it with flags instead — no prompts, no tty required:
 

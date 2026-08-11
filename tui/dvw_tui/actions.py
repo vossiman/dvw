@@ -100,6 +100,25 @@ def run_captured(argv: list[str]) -> ActionResult:
                         output=proc.stdout or "")
 
 
+def run_captured_split(argv: list[str]) -> ActionResult:
+    """Run quietly capturing STDOUT ONLY; stderr is discarded.
+
+    For the machine-read plumbing calls (`dvw new --list-branches` /
+    `--check-devcontainer`) whose stdout is a contract — line 1 is the
+    resolved repo URL. `ui_progress` markers and other bash chatter go to
+    stderr, so merging the streams (run_captured) would corrupt the parse.
+    Keep run_captured for human-facing output (doctor)."""
+    try:
+        proc = subprocess.run(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, stdin=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        return ActionResult(ok=False, returncode=127, output=str(exc))
+    return ActionResult(ok=proc.returncode == 0, returncode=proc.returncode,
+                        output=proc.stdout or "")
+
+
 def run_background(argv: list[str]) -> None:
     """Fire-and-forget (GUI IDE connect). Output discarded; the IDE window
     is the feedback."""

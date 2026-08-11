@@ -13,6 +13,9 @@ class FakeClient:
         self.fail = False
         self.inspect_calls = []
         self.waiting_windows = []
+        # Global catalog defaults, shaped like GET /v1/defaults. Tests mutate
+        # this to exercise the wizard's IDE preselection.
+        self.defaults_body = {"ide": "cursor", "provider": "vossisrv"}
         self._workspaces = [
             Workspace(id="alpha", repo="git@github.com:vossiman/alpha.git",
                       branch="main", ide="cursor", provider="vossisrv",
@@ -63,6 +66,10 @@ class FakeClient:
         return ["https://github.com/vossiman/alpha.git",
                 "https://github.com/vossiman/beta.git"]
 
+    async def defaults(self):
+        self._check()
+        return dict(self.defaults_body)
+
     async def waiting(self):
         if self.fail:
             return []
@@ -86,9 +93,10 @@ def fake_client():
 def fake_new_cli(monkeypatch):
     """Canned `dvw new --list-branches/--check-devcontainer` results.
 
-    Monkeypatches actions.run_captured so the wizard's subprocess calls
-    resolve instantly. Tests mutate state["branches"]/["devcontainer_rc"]
-    before driving the pilot; state["calls"] records every argv.
+    Monkeypatches actions.run_captured_split (the split-capture path the
+    wizard uses) so the wizard's subprocess calls resolve instantly. Tests
+    mutate state["branches"]/["devcontainer_rc"] before driving the pilot;
+    state["calls"] records every argv.
     """
     state = {"branches": (0, "git@github.com:vossiman/alpha.git\nmain\ndev\n"),
              "devcontainer_rc": 0, "calls": []}
@@ -103,5 +111,5 @@ def fake_new_cli(monkeypatch):
             return ActionResult(ok=rc == 0, returncode=rc, output="")
         raise AssertionError(f"unexpected argv: {argv}")
 
-    monkeypatch.setattr(actions, "run_captured", fake_run_captured)
+    monkeypatch.setattr(actions, "run_captured_split", fake_run_captured)
     return state

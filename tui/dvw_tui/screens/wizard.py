@@ -141,7 +141,9 @@ class WizardScreen(ModalScreen["WizardResult | None"]):
         result back. `done` runs on the message pump, never in the thread."""
 
         def work() -> None:
-            result = actions.run_captured(argv)
+            # Split capture: these probes' stdout is a contract (line 1 = the
+            # resolved URL); stderr carries ui_progress markers and chatter.
+            result = actions.run_captured_split(argv)
             if self._done:
                 return
             try:
@@ -239,11 +241,29 @@ class WizardScreen(ModalScreen["WizardResult | None"]):
 
     # ---- step: ide ---------------------------------------------------------
 
+    async def _default_ide(self) -> str:
+        """The catalog's global `ide` default (what the old gum wizard's
+        `catalog_default ide` read), falling back to IDES[0] on any error,
+        absence, or unknown value."""
+        try:
+            value = (await self.app.client.defaults()).get("ide", "")
+        except Exception:
+            return IDES[0]
+        return value if value in IDES else IDES[0]
+
     async def _step_ide(self) -> None:
+        default = await self._default_ide()
         await self._swap(
             Static("ide", classes="wizard-label"),
             OptionList(*[Option(ide, id=ide) for ide in IDES],
                        id="wizard-ide-list"))
+        # _swap highlights row 0; move to the catalog default if different.
+        if default != IDES[0]:
+            try:
+                self.query_one("#wizard-ide-list",
+                               OptionList).highlighted = IDES.index(default)
+            except NoMatches:
+                pass
 
     # ---- step: summary -----------------------------------------------------
 

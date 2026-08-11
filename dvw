@@ -47,6 +47,18 @@ main() {
     fi
   done
   set -- "${filtered[@]}"
+
+  # TUI plumbing: `dvw new --list-branches|--check-devcontainer` are pure git
+  # probes whose STDOUT is a machine-read contract (line 1 = the resolved URL)
+  # and whose exit code carries meaning (0/1/2/3). Dispatch them BEFORE the
+  # update nudge (which printfs to stdout when the checkout is behind main)
+  # and before the three ui_progress pre-flights (catalog/ssh/wsl: they emit
+  # progress markers and can exit 1, which would masquerade as "devcontainer
+  # missing"). Same shape as the `dvw config` special case below.
+  if [[ "${1:-}" == new && ( "${2:-}" == "--list-branches" || "${2:-}" == "--check-devcontainer" ) ]]; then
+    shift; cmd_new "$@"; return $?
+  fi
+
   if [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
     ui_info "[dry-run] no commands will be executed; would-be invocations are printed"
   fi

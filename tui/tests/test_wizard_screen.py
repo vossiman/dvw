@@ -1,9 +1,12 @@
-"""WizardScreen pilot tests. actions.run_captured is monkeypatched (see the
-fake_new_cli fixture in conftest.py) — the wizard's subprocess calls resolve
-instantly from canned results, so no `dvw` binary is ever executed."""
+"""WizardScreen pilot tests. actions.run_captured_split is monkeypatched (see
+the fake_new_cli fixture in conftest.py) — the wizard's subprocess calls
+resolve instantly from canned results, so no `dvw` binary is ever executed.
+One test deliberately opts out and drives a real `dvw` stand-in script to
+pin the stdout-only contract end to end."""
 
-from textual.widgets import Input
+from textual.widgets import Input, OptionList
 
+from dvw_tui import actions
 from dvw_tui.app import DvwApp
 from dvw_tui.screens.wizard import NEW_REPO_OPTION, WizardScreen
 
@@ -87,7 +90,6 @@ async def test_escape_during_fetch_survives_late_worker(
     once — the worker's late result may not resurrect or re-dismiss."""
     import time
 
-    from dvw_tui import actions
     from dvw_tui.actions import ActionResult
 
     def slow_run_captured(argv):
@@ -95,7 +97,7 @@ async def test_escape_during_fetch_survives_late_worker(
         return ActionResult(ok=True, returncode=0,
                             output="git@github.com:vossiman/alpha.git\nmain\n")
 
-    monkeypatch.setattr(actions, "run_captured", slow_run_captured)
+    monkeypatch.setattr(actions, "run_captured_split", slow_run_captured)
 
     app = DvwApp(client=fake_client)
     results = []
@@ -362,3 +364,115 @@ async def test_summary_decline_returns_to_ide_step(fake_client, fake_new_cli):
         await pilot.press("y")
         await pilot.pause()
     assert results[0] is not None
+
+
+# ---- IDE default from the catalog ------------------------------------------
+
+
+async def _drive_to_ide(pilot):
+    """repo -> branch -> name, leaving the IDE OptionList on screen."""
+    await pilot.press("down")
+    await pilot.press("enter")            # repo
+    await pilot.pause(0.2)
+    await pilot.press("enter")            # branch
+    await pilot.pause(0.2)
+    await pilot.press("enter")            # accept default name
+    await pilot.pause()
+
+
+async def test_ide_step_preselects_catalog_default(fake_client, fake_new_cli):
+    """Spec parity with the old gum wizard's `catalog_default ide`."""
+    fake_client.defaults_body = {"ide": "ssh", "provider": "vossisrv"}
+    app = DvwApp(client=fake_client)
+    results = []
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(WizardScreen(), results.append)
+        await pilot.pause()
+        await _drive_to_ide(pilot)
+        ide_list = app.screen.query_one("#wizard-ide-list", OptionList)
+        assert ide_list.highlighted == 1                       # "ssh" row
+        await pilot.press("enter")        # accept the preselected default
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+    assert results[0].ide == "ssh"
+
+
+async def test_ide_step_falls_back_to_cursor_when_catalog_fails(
+    fake_client, fake_new_cli
+):
+    async def boom():
+        raise RuntimeError("catalog down")
+
+    fake_client.defaults = boom
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(WizardScreen())
+        await pilot.pause()
+        await _drive_to_ide(pilot)
+        ide_list = app.screen.query_one("#wizard-ide-list", OptionList)
+        assert ide_list.highlighted == 0                       # "cursor"
+
+
+async def test_ide_step_ignores_unknown_catalog_default(fake_client,
+                                                        fake_new_cli):
+    fake_client.defaults_body = {"ide": "emacs"}
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(WizardScreen())
+        await pilot.pause()
+        await _drive_to_ide(pilot)
+        assert app.screen.query_one("#wizard-ide-list",
+                                    OptionList).highlighted == 0
+
+
+# ---- stdout contract vs. stderr noise (real subprocess, no canned result) ---
+
+
+async def test_branch_parse_ignores_stderr_noise(fake_client, tmp_path,
+                                                 monkeypatch):
+    """The wizard reads `dvw new --list-branches` STDOUT only.
+
+    A real subprocess stands in for `dvw`: it dumps update-nudge / progress
+    chatter to stderr and the contract (resolved URL, then branches) to
+    stdout. With merged capture the first line would be noise and the
+    resolved repo would be garbage.
+    """
+    fake_dvw = tmp_path / "dvw"
+    fake_dvw.write_text(
+        "#!/bin/sh\n"
+        "echo '⬆ dvw is 3 behind main — run: dvw update' >&2\n"
+        "echo '  › fetching branches for R…' >&2\n"
+        "case \"$2\" in\n"
+        "  --list-branches) printf 'git@github.com:vossiman/alpha.git\\nmain\\ndev\\n'; exit 0 ;;\n"
+        "  --check-devcontainer) exit 0 ;;\n"
+        "esac\n"
+        "exit 1\n"
+    )
+    fake_dvw.chmod(0o755)
+    monkeypatch.setenv("DVW_BIN", str(fake_dvw))
+
+    app = DvwApp(client=fake_client)
+    results = []
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(WizardScreen(), results.append)
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.press("enter")        # repo -> real subprocess probe
+        await pilot.pause(0.5)
+        branch_list = app.screen.query_one("#wizard-branch-list", OptionList)
+        assert [str(o.prompt) for o in branch_list.options] == ["main", "dev"]
+        await pilot.press("enter")        # branch "main"
+        await pilot.pause(0.5)
+        await pilot.press("enter")        # name
+        await pilot.pause()
+        await pilot.press("enter")        # ide
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+    assert results[0].repo == "git@github.com:vossiman/alpha.git"
+    assert results[0].branch == "main"
