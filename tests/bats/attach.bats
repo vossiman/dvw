@@ -215,6 +215,48 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+@test "attach picker: leading-zero out-of-range selection errors out (not octal parse noise)" {
+  _load_attach
+  export CONNECT_LOG="$HOME/connect-log"
+  : > "$CONNECT_LOG"
+  cmd_connect() { printf 'connect: %s\n' "$*" > "$CONNECT_LOG"; }
+  export -f cmd_connect
+  _serve_waiting '[
+    {"workspace_id":"newws","container_id":"c2","window_id":"@9","window_name":"newer","waiting_since":2000},
+    {"workspace_id":"oldws","container_id":"c1","window_id":"@3","window_name":"older","waiting_since":1000}
+  ]'
+  export DVW_ASSUME_TTY=1
+  command() { [[ "$1" == "-v" && "$2" == "fzf" ]] && return 1; builtin command "$@"; }
+  export -f command
+  run cmd_attach <<< "08"
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -qi "invalid selection"
+  run grep -qi "value too great" <<<"$output"
+  [ "$status" -ne 0 ]
+  run grep -q "connect:" "$CONNECT_LOG"
+  [ "$status" -ne 0 ]
+}
+
+@test "attach picker: leading-zero valid selection connects (base-10, not octal)" {
+  _load_attach
+  export CONNECT_LOG="$HOME/connect-log"
+  : > "$CONNECT_LOG"
+  cmd_connect() { printf 'connect: %s\n' "$*" > "$CONNECT_LOG"; }
+  export -f cmd_connect
+  _serve_waiting '[
+    {"workspace_id":"newws","container_id":"c2","window_id":"@9","window_name":"newer","waiting_since":2000},
+    {"workspace_id":"oldws","container_id":"c1","window_id":"@3","window_name":"older","waiting_since":1000}
+  ]'
+  export DVW_ASSUME_TTY=1
+  command() { [[ "$1" == "-v" && "$2" == "fzf" ]] && return 1; builtin command "$@"; }
+  export -f command
+  run cmd_attach <<< "02"
+  [ "$status" -eq 0 ]
+  grep -q "connect:" "$CONNECT_LOG"
+  grep -q 'oldws' "$CONNECT_LOG"
+  grep -q '@3' "$CONNECT_LOG"
+}
+
 @test "attach with multiple waiting windows opens a picker, newest-first row wins" {
   _load_attach
   export CONNECT_LOG="$HOME/connect-log"

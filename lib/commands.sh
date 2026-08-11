@@ -954,7 +954,14 @@ cmd_attach() {
       fi
       printf 'attach #> ' >&2
       IFS= read -r pick || pick=""
-      if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > n )); then
+      if [[ ! "$pick" =~ ^[0-9]+$ ]]; then
+        ui_error "invalid selection: ${pick:-<empty>}"
+        return 1
+      fi
+      # Base-10, not bash's default (leading-zero digits like "08"/"09" would
+      # otherwise be parsed as octal and throw "value too great for base").
+      pick=$((10#$pick))
+      if (( pick < 1 || pick > n )); then
         ui_error "invalid selection: ${pick:-<empty>}"
         return 1
       fi
