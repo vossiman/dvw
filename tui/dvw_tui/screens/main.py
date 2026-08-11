@@ -34,6 +34,7 @@ from ..render import (
     state_cell,
     window_label,
 )
+from .splash import SplashOverlay
 
 _CATALOG_HOST = os.environ.get("DVW_CATALOG_HOST", "vossisrv")
 
@@ -100,6 +101,12 @@ class MainScreen(Screen):
         # highlight, freshened by a debounced re-fetch.
         self._inspect_cache: dict[str, dict] = {}
         self._inspect_timer: Timer | None = None
+        # Flips True once the first refresh_data() has painted the tree (or
+        # the error banner) — the splash screen polls this to know when the
+        # back-buffer is safe to reveal. Set at every return point below,
+        # success or CatalogError, so a failed first fetch still hands over
+        # on schedule instead of holding the splash forever.
+        self.data_ready = False
 
     # ---- layout -----------------------------------------------------------
 
@@ -115,6 +122,10 @@ class MainScreen(Screen):
                 yield Static(" inspect", id="right-title")
                 yield Static(id="inspect-body")
         yield Footer()
+        # Boot splash: layered above everything else in this screen while
+        # refresh_data() paints the tree behind it (see splash.py). Mounted
+        # here, not pushed as a Screen, so `app.screen` never changes.
+        yield SplashOverlay(ready=lambda: self.data_ready)
 
     def on_mount(self) -> None:
         self._update_header(connected=False)
@@ -139,6 +150,7 @@ class MainScreen(Screen):
             self._windows = {}
             self._update_header(connected=False)
             self._render_tree()
+            self.data_ready = True
             return
         # Fail-open by contract: an old server (no /containers/windows)
         # yields {} and the folders simply render childless.
@@ -146,6 +158,7 @@ class MainScreen(Screen):
         self._hide_error()
         self._update_header(connected=True)
         self._render_tree()
+        self.data_ready = True
 
     def _visible_workspaces(self) -> list[Workspace]:
         if not self._filter:

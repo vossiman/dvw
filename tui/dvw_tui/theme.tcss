@@ -124,6 +124,19 @@ ConfirmScreen {
     margin: 0 1;
 }
 
+MainScreen {
+    layers: base splash;
+}
+
+#splash-overlay {
+    layer: splash;
+    dock: top;
+    width: 100%;
+    height: 100%;
+    background: $bg;
+    content-align: center middle;
+}
+
 #doctor-title {
     color: $accent;
     text-style: bold;

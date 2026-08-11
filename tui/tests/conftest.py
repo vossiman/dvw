@@ -112,6 +112,19 @@ def fake_client():
     return FakeClient()
 
 
+@pytest.fixture(autouse=True)
+def _no_splash_motion(monkeypatch):
+    """Disable the boot splash's animation for the whole suite by default.
+
+    With motion off the splash drops its MIN_SPLASH_MS floor entirely (see
+    splash.py) and flips on the first tick after the data lands — one small
+    shared change instead of teaching every screen/action test about the
+    splash. test_splash.py overrides this per-test to exercise the
+    animated path for real.
+    """
+    monkeypatch.setenv("DVW_TUI_MOTION", "0")
+
+
 @pytest.fixture
 def fake_new_cli(monkeypatch):
     """Canned `dvw new --list-branches/--check-devcontainer` results.
