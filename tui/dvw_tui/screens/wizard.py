@@ -115,6 +115,8 @@ class WizardScreen(ModalScreen["WizardResult | None"]):
             repos = await self.app.client.repos()
         except Exception:
             repos = []
+            self.app.notify("catalog unreachable — enter a repo URL manually",
+                            title="dvw", severity="warning")
         options = [Option(NEW_REPO_OPTION, id=NEW_REPO_ID)]
         options += [Option(repo, id=repo) for repo in repos]
         await self._swap(Static("repo", classes="wizard-label"),

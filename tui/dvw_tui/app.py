@@ -6,6 +6,7 @@ and the main screen both invoke them.
 
 from __future__ import annotations
 
+import os
 import re
 
 from textual.app import App
@@ -17,6 +18,7 @@ from .screens.doctor import DoctorScreen
 from .screens.main import MainScreen
 from .screens.menu import MenuScreen
 from .screens.orphans import OrphansScreen
+from .screens.wizard import WizardResult, WizardScreen
 
 
 class DvwApp(App):
@@ -35,6 +37,11 @@ class DvwApp(App):
         # the default screen from App.query_*, so pushing in on_mount would
         # leave a blank default screen underneath).
         return MainScreen()
+
+    def on_mount(self) -> None:
+        # `dvw new` (bare, TUI available) lands directly in the wizard.
+        if os.environ.get("DVW_TUI_START") == "new":
+            self.do_new()
 
     async def on_unmount(self) -> None:
         await self.client.aclose()
@@ -143,7 +150,15 @@ class DvwApp(App):
         self.push_screen(ConfirmScreen(message, danger=danger), on_result)
 
     def do_new(self) -> None:
-        self._run_suspended(actions.new())
+        def on_result(result: WizardResult | None) -> None:
+            if result is None:
+                return
+            self._run_suspended(actions.new_create(
+                result.repo, result.branch, result.name, result.ide,
+                init_empty=result.init_empty,
+                seed_devcontainer=result.seed_devcontainer))
+
+        self.push_screen(WizardScreen(), on_result)
 
     def do_remove_orphan(self, host: str, container_name: str) -> None:
         """Guarded orphan removal — suspended so the user sees exactly

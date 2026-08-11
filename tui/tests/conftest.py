@@ -56,8 +56,12 @@ class FakeClient:
 
     async def repos(self):
         self._check()
-        return ["git@github.com:vossiman/alpha.git",
-                "git@github.com:vossiman/beta.git"]
+        # Deliberately a different form than fake_new_cli's --list-branches
+        # resolved URL (git@…) — proves the wizard adopts the RESOLVED
+        # value from `dvw new --list-branches`, not the catalog entry
+        # picked from the OptionList.
+        return ["https://github.com/vossiman/alpha.git",
+                "https://github.com/vossiman/beta.git"]
 
     async def waiting(self):
         if self.fail:

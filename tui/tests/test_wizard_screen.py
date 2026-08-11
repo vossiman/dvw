@@ -46,7 +46,7 @@ async def test_repo_step_lists_new_option_first(fake_client, fake_new_cli):
         option_list = screen.query_one("#wizard-repo-list")
         labels = [str(o.prompt) for o in option_list.options]
         assert labels[0] == NEW_REPO_OPTION
-        assert "git@github.com:vossiman/alpha.git" in labels
+        assert "https://github.com/vossiman/alpha.git" in labels
 
 
 async def test_escape_dismisses_none(fake_client, fake_new_cli):

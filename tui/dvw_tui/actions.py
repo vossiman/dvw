@@ -48,10 +48,6 @@ def connect(workspace_id: str, mode: str | None = None,
     return [dvw_bin(), workspace_id, f"--{mode}"]
 
 
-def new() -> list[str]:
-    return [dvw_bin(), "new"]
-
-
 def new_list_branches(repo: str) -> list[str]:
     return [dvw_bin(), "new", "--list-branches", repo]
 
