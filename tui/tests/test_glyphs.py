@@ -18,8 +18,13 @@ def test_emoji_presentation_marks_get_two_spaces(mark):
 
 
 def test_the_wide_set_is_curated_not_derived():
-    # Guards the reasoning: if someone "simplifies" this to east_asian_width,
-    # this test fails, because Unicode calls both of these Neutral.
+    # Guards against deriving WIDE_MARKS from east_asian_width or width APIs.
+    # These marks are all Unicode Neutral (not W/F), so a derived set based on
+    # east_asian_width(mark) in ("W", "F") would be empty and pass vacuously.
+    # The explicit assertion ensures the set contains the right marks.
+    assert WIDE_MARKS == {"⚠", "⏸"}
+    # Verify each mark is not Wide/Fullwidth so someone can't justify deriving
+    # the set from an east_asian_width comparison.
     for mark in WIDE_MARKS:
         assert unicodedata.east_asian_width(mark) not in ("W", "F")
 
