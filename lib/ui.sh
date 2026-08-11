@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Top-level interactive menu for bare `dvw`.
+# Shared ANSI UI helpers (colors, banners, prompts).
 
 # Nord palette — used across banner / picker / chooser chrome.
 DVW_ACCENT="#88c0d0"        # frost cyan (primary accent)
@@ -73,6 +73,26 @@ ui_info() {
 ui_error() {
   printf '%s✗%s %s%s%s\n' "$(_ansi "$DVW_RED" bold)" "$(ui_reset)" \
     "$(_ansi "$DVW_RED")" "$1" "$(ui_reset)" >&2
+}
+
+# ui_confirm "prompt" — plain yes/no, default no. Reads one line from stdin;
+# only y/Y/yes counts as yes. Prompt goes to stderr so callers capturing
+# stdout stay clean. Non-TTY stdin fails closed (rc 1) — headless callers
+# take a --yes flag instead. DVW_ASSUME_TTY=1 is the test hook (same idea
+# as DVW_TUI_FORCE) so bats can pipe answers.
+ui_confirm() {
+  local prompt="$1" reply
+  if [[ ! -t 0 && "${DVW_ASSUME_TTY:-}" != "1" ]]; then
+    ui_error "non-interactive: assuming no — $prompt"
+    return 1
+  fi
+  printf '%s%s%s [y/N] ' \
+    "$(_ansi "$DVW_ACCENT" bold)" "$prompt" "$(ui_reset)" >&2
+  IFS= read -r reply || return 1
+  case "$reply" in
+    y|Y|yes|Yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # ui_progress LABEL CMD [ARGS...]
