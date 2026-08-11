@@ -15,7 +15,7 @@ from textual.timer import Timer
 from textual.widgets import DataTable, Footer, Input, Static
 
 from ..client import CatalogError, WaitingWindow, Workspace
-from ..render import ACCENT, GREEN, RED, SUBTLE, ide_cell, inspect_lines, liveness_cell
+from ..render import ACCENT, GREEN, RED, SUBTLE, ide_cell, inspect_lines, state_cell
 
 _CATALOG_HOST = os.environ.get("DVW_CATALOG_HOST", "vossisrv")
 
@@ -172,7 +172,7 @@ class MainScreen(Screen):
                 Text(w.id, style=f"bold {ACCENT}"),
                 Text(f"{w.short_repo}@{w.branch}", style=SUBTLE),
                 ide_cell(w.ide),
-                liveness_cell(w.liveness),
+                state_cell(w.liveness, w.attached),
                 key=w.id,
             )
         if prev is not None:
@@ -232,6 +232,12 @@ class MainScreen(Screen):
         self._inspect_timer = self.set_timer(
             0.3, lambda ws_id=ws_id: self._fetch_inspect(ws_id))
 
+    def _row_attached(self, ws_id: str) -> int:
+        for w in self._workspaces:
+            if w.id == ws_id:
+                return w.attached
+        return 0
+
     def _render_inspect_placeholder(self, ws_id: str) -> None:
         """Instant stand-in while no cached inspect data exists yet."""
         liveness = "unknown"
@@ -242,8 +248,13 @@ class MainScreen(Screen):
         text = Text()
         text.append(f" {ws_id}\n", style=f"bold {ACCENT}")
         text.append(" ")
-        text.append_text(liveness_cell(liveness))
-        text.append("\n\n")
+        text.append_text(state_cell(liveness, self._row_attached(ws_id)))
+        text.append("\n")
+        attached = self._row_attached(ws_id)
+        if attached >= 1:
+            text.append(" attached  ", style=SUBTLE)
+            text.append(f"{attached} clients\n" if attached != 1 else "1 client\n")
+        text.append("\n")
         text.append(" loading…", style=SUBTLE)
         self.query_one("#inspect-body", Static).update(text)
 
@@ -251,8 +262,13 @@ class MainScreen(Screen):
         text = Text()
         text.append(f" {ws_id}\n", style=f"bold {ACCENT}")
         text.append(" ")
-        text.append_text(liveness_cell(data.get("liveness", "unknown")))
-        text.append("\n\n")
+        text.append_text(state_cell(data.get("liveness", "unknown"), self._row_attached(ws_id)))
+        text.append("\n")
+        attached = self._row_attached(ws_id)
+        if attached >= 1:
+            text.append(" attached  ", style=SUBTLE)
+            text.append(f"{attached} clients\n" if attached != 1 else "1 client\n")
+        text.append("\n")
         for label, value in inspect_lines(data):
             text.append(f" {label:<10}", style=SUBTLE)
             text.append(f"{value}\n")
