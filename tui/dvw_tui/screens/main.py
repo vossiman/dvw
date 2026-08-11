@@ -1,4 +1,11 @@
-"""Main screen: workspace table (left) + inspect pane (right)."""
+"""Main screen: workspace tree (left) + inspect pane (right).
+
+The tree is one level deep: each visible workspace is a folder node, each of
+its tmux windows a child row. Node `data` is the routing key —
+`("ws", workspace_id)` or `("win", workspace_id, window_id)` — every action
+reads it rather than a row index, so window rows resolve to their parent
+workspace for free.
+"""
 
 from __future__ import annotations
 
@@ -12,56 +19,55 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.timer import Timer
-from textual.widgets import DataTable, Footer, Input, Static
+from textual.widgets import Footer, Input, Static, Tree
+from textual.widgets.tree import TreeNode
 
-from ..client import CatalogError, WaitingWindow, Workspace
-from ..render import ACCENT, GREEN, RED, SUBTLE, age, ide_cell, inspect_lines, state_cell
+from ..client import CatalogError, Workspace, WorkspaceWindows
+from ..render import (
+    ACCENT,
+    GREEN,
+    RED,
+    SUBTLE,
+    ide_cell,
+    inspect_lines,
+    state_cell,
+    window_label,
+)
 
 _CATALOG_HOST = os.environ.get("DVW_CATALOG_HOST", "vossisrv")
 
+# Node data discriminators.
+NodeData = tuple  # ("ws", ws_id) | ("win", ws_id, window_id)
 
-class WorkspaceTable(DataTable):
-    """Left panel — one row per workspace, MRU order from the API.
 
-    Single-click focuses a row. Double-click SSHs. Enter (MainScreen) also SSHs.
+class WorkspaceTree(Tree[NodeData]):
+    """Left panel — workspaces as folders, tmux windows as child rows.
 
-    Overrides DataTable._on_click so a second slow click on the already-focused
-    row does *not* count as select — only event.chain == 2 (double-click).
+    Single-click moves the cursor. Double-click activates the node (connect /
+    attach), mirroring the old table's `event.chain == 2` rule — a second slow
+    click on the already-focused row must *not* count as a select. Clicks on
+    the expand arrow still toggle.
     """
 
     async def _on_click(self, event: events.Click) -> None:
-        from textual.coordinate import Coordinate
-
-        self._set_hover_cursor(True)
-        meta = event.style.meta
-        if "row" not in meta or "column" not in meta:
-            return
-        row_index = meta["row"]
-        column_index = meta["column"]
-        if self.show_header and row_index == -1:
-            # Preserve header-click behaviour from DataTable.
-            await super()._on_click(event)
-            return
-        if self.show_row_labels and column_index == -1:
-            await super()._on_click(event)
-            return
-        if not (self.show_cursor and self.cursor_type != "none"):
-            return
-        if self.cursor_type != "row" and meta.get("out_of_bounds", False):
-            return
-
-        self.cursor_coordinate = Coordinate(row_index, column_index)
-        self._scroll_cursor_into_view(animate=True)
-        event.stop()
-
-        if event.chain != 2:
-            return
-        screen = self.screen
-        if not isinstance(screen, MainScreen):
-            return
-        workspace = screen.focused_workspace()
-        if workspace is not None:
-            self.app.do_connect(workspace, "ssh")
+        async with self.lock:
+            meta = event.style.meta
+            if "line" not in meta:
+                return
+            line = meta["line"]
+            node = self.get_node_at_line(line)
+            if node is None:
+                return
+            if meta.get("toggle", False):
+                self._toggle_node(node)
+                return
+            self.cursor_line = line
+            event.stop()
+            if event.chain != 2:
+                return
+            screen = self.screen
+            if isinstance(screen, MainScreen):
+                screen.activate_node(node)
 
 
 class MainScreen(Screen):
@@ -84,7 +90,10 @@ class MainScreen(Screen):
     def __init__(self) -> None:
         super().__init__()
         self._workspaces: list[Workspace] = []
-        self._waiting: list[WaitingWindow] = []
+        self._windows: dict[str, WorkspaceWindows] = {}
+        # Workspace ids the user collapsed by hand — nodes are rebuilt from
+        # scratch on every refresh, so the expanded state has to live here.
+        self._collapsed: set[str] = set()
         self._filter = ""
         # Last inspect response per workspace id; rendered instantly on
         # highlight, freshened by a debounced re-fetch.
@@ -99,8 +108,7 @@ class MainScreen(Screen):
         with Horizontal(id="panes"):
             with Vertical(id="left"):
                 yield Static(" dvw — workspaces", id="left-title")
-                yield DataTable(id="waiting-table", cursor_type="row")
-                yield WorkspaceTable(id="ws-table")
+                yield WorkspaceTree("workspaces", id="ws-tree")
                 yield Input(placeholder="filter…", id="filter-input")
             with VerticalScroll(id="right"):
                 yield Static(" inspect", id="right-title")
@@ -111,12 +119,9 @@ class MainScreen(Screen):
         self._update_header(connected=False)
         self.query_one("#error-banner", Static).display = False
         self.query_one("#filter-input", Input).display = False
-        table = self.query_one(WorkspaceTable)
-        table.cursor_type = "row"
-        table.add_columns("workspace", "repo@branch", "ide", "state")
-        waiting_table = self.query_one("#waiting-table", DataTable)
-        waiting_table.add_columns("workspace", "window", "age")
-        waiting_table.display = False
+        tree = self.query_one(WorkspaceTree)
+        tree.show_root = False
+        tree.guide_depth = 2
         self.set_interval(10.0, self.refresh_data)
         self.refresh_data()
 
@@ -128,28 +133,18 @@ class MainScreen(Screen):
             self._workspaces = await self.app.client.workspaces_with_status()
         except CatalogError as exc:
             self._show_error(f"catalog unreachable — {exc} — R to retry")
-            self._update_header(connected=False)
-            # Fail closed: don't leave stale waiting rows visible (or
+            # Fail closed: don't leave stale waiting badges visible (or
             # attachable via `a`) once the workspace fetch itself failed.
-            self._waiting = []
-            self._render_waiting_table()
+            self._windows = {}
+            self._update_header(connected=False)
+            self._render_tree()
             return
+        # Fail-open by contract: an old server (no /containers/windows)
+        # yields {} and the folders simply render childless.
+        self._windows = await self.app.client.windows()
         self._hide_error()
         self._update_header(connected=True)
-        self._render_table()
-        self._waiting = await self.app.client.waiting()
-        self._render_waiting_table()
-
-    def _render_waiting_table(self) -> None:
-        table = self.query_one("#waiting-table", DataTable)
-        table.clear()
-        for w in self._waiting:
-            table.add_row(
-                Text(w.workspace_id, style=f"bold {ACCENT}"),
-                Text(w.window_name, style=SUBTLE),
-                age(w.waiting_since, now=int(time.time())),
-            )
-        table.display = bool(self._waiting)
+        self._render_tree()
 
     def _visible_workspaces(self) -> list[Workspace]:
         if not self._filter:
@@ -158,35 +153,78 @@ class MainScreen(Screen):
         return [w for w in self._workspaces
                 if needle in w.id.lower() or needle in w.short_repo.lower()]
 
-    def _render_table(self) -> None:
-        table = self.query_one(WorkspaceTable)
-        prev = self.focused_workspace_id()
-        table.clear()
+    def _workspace_label(self, w: Workspace, expandable: bool) -> Text:
+        # Textual only draws the ▼/▶ toggle for expandable nodes; pad the
+        # childless ones so every workspace name starts in the same column.
+        text = Text("" if expandable else "  ")
+        text.append(w.id, style=f"bold {ACCENT}")
+        text.append(f"  {w.short_repo}@{w.branch}", style=SUBTLE)
+        text.append("  ")
+        text.append_text(ide_cell(w.ide))
+        text.append("  ")
+        text.append_text(state_cell(w.liveness, w.attached))
+        return text
+
+    def _render_tree(self) -> None:
+        tree = self.query_one(WorkspaceTree)
+        prev = self._cursor_key()
+        now = int(time.time())
+        tree.clear()
+        if not tree.root.is_expanded:
+            tree.root.expand()
         for w in self._visible_workspaces():
-            table.add_row(
-                Text(w.id, style=f"bold {ACCENT}"),
-                Text(f"{w.short_repo}@{w.branch}", style=SUBTLE),
-                ide_cell(w.ide),
-                state_cell(w.liveness, w.attached),
-                key=w.id,
+            snapshot = self._windows.get(w.id)
+            windows = snapshot.windows if snapshot is not None else []
+            node = tree.root.add(
+                self._workspace_label(w, bool(windows)),
+                data=("ws", w.id),
+                expand=bool(windows) and w.id not in self._collapsed,
+                allow_expand=bool(windows),
             )
-        if prev is not None:
-            try:
-                row = table.get_row_index(prev)
-                table.move_cursor(row=row)
-            except Exception:
-                pass
+            for win in windows:
+                node.add_leaf(window_label(win, now),
+                              data=("win", w.id, win.window_id))
+        self._restore_cursor(tree, prev)
         self._update_inspect()
 
+    # ---- cursor -----------------------------------------------------------
+
+    def _cursor_key(self) -> NodeData | None:
+        node = self.query_one(WorkspaceTree).cursor_node
+        return node.data if node is not None else None
+
+    def _restore_cursor(self, tree: WorkspaceTree, prev: NodeData | None) -> None:
+        """Put the cursor back on the same node after a rebuild.
+
+        Falls back to the parent workspace when the exact window row is gone
+        (or hidden behind a collapsed folder), and to the first node when the
+        workspace itself vanished — never leaves the tree cursor-less.
+        """
+        target: TreeNode[NodeData] | None = None
+        if prev is not None:
+            for node in tree.root.children:
+                if node.data[1] != prev[1]:
+                    continue
+                target = node
+                if prev[0] == "win" and node.is_expanded:
+                    for child in node.children:
+                        if child.data[2] == prev[2]:
+                            target = child
+                            break
+                break
+        if target is None and tree.root.children:
+            target = tree.root.children[0]
+        # move_cursor() addresses nodes by their line number, which Tree only
+        # assigns while (re)building its line cache — freshly added nodes are
+        # still at -1. Touching `last_line` forces that build first, otherwise
+        # every restore would clamp to line 0.
+        tree.last_line  # noqa: B018
+        tree.move_cursor(target)
+
     def focused_workspace_id(self) -> str | None:
-        table = self.query_one(WorkspaceTable)
-        if table.row_count == 0 or table.cursor_row is None:
-            return None
-        try:
-            return str(table.coordinate_to_cell_key(
-                table.cursor_coordinate).row_key.value)
-        except Exception:
-            return None
+        """Workspace id under the cursor — a window row resolves to its parent."""
+        key = self._cursor_key()
+        return None if key is None else str(key[1])
 
     def focused_workspace(self) -> Workspace | None:
         ws_id = self.focused_workspace_id()
@@ -195,16 +233,32 @@ class MainScreen(Screen):
                 return w
         return None
 
-    def on_data_table_row_highlighted(self, _event) -> None:
+    # ---- tree events ------------------------------------------------------
+
+    def on_tree_node_highlighted(self, _event) -> None:
         self._update_inspect()
 
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if event.data_table.id != "waiting-table":
-            return
-        row_index = event.cursor_row
-        if not (0 <= row_index < len(self._waiting)):
-            return
-        self.app.do_attach(self._waiting[row_index])
+    def on_tree_node_collapsed(self, event) -> None:
+        data = event.node.data
+        if data is not None and data[0] == "ws":
+            self._collapsed.add(data[1])
+
+    def on_tree_node_expanded(self, event) -> None:
+        data = event.node.data
+        if data is not None and data[0] == "ws":
+            self._collapsed.discard(data[1])
+
+    # ---- waiting windows --------------------------------------------------
+
+    def _waiting_windows(self) -> list[tuple[str, str, int]]:
+        """(workspace_id, window_id, waiting_since) for every waiting window
+        across all workspaces, newest first."""
+        out = [(ws_id, win.window_id, win.waiting_since)
+               for ws_id, snapshot in self._windows.items()
+               for win in snapshot.windows
+               if win.waiting_since is not None]
+        out.sort(key=lambda t: t[2], reverse=True)
+        return out
 
     def _update_inspect(self) -> None:
         if self._inspect_timer is not None:
@@ -299,6 +353,9 @@ class MainScreen(Screen):
             text.append(" · connected", style=GREEN)
         else:
             text.append(" · unreachable", style=RED)
+        waiting = len(self._waiting_windows())
+        if waiting:
+            text.append(f" · ⏸ {waiting} waiting", style=f"bold {ACCENT}")
         self.query_one("#status-header", Static).update(text)
 
     # ---- error banner -----------------------------------------------------
@@ -327,12 +384,12 @@ class MainScreen(Screen):
         box = self.query_one("#filter-input", Input)
         self._filter = box.value.strip()
         box.display = False
-        self.query_one(WorkspaceTable).focus()
-        self._render_table()
+        self.query_one(WorkspaceTree).focus()
+        self._render_tree()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         self._filter = event.value.strip()
-        self._render_table()
+        self._render_tree()
 
     # ---- actions ----------------------------------------------------------
 
@@ -345,18 +402,19 @@ class MainScreen(Screen):
         if self.query_one("#filter-input", Input).has_focus:
             self._commit_filter()
             return
-        # Priority bindings dispatch before the focused widget ever sees the
-        # key, so if the waiting table has focus, Enter must attach *that*
-        # row — not fall through to the workspace table's cursor row.
-        waiting_table = self.query_one("#waiting-table", DataTable)
-        # Guard on non-empty rather than just `.has_focus`: the waiting
-        # table is the first focusable widget mounted, so it silently holds
-        # initial app focus even while hidden/empty (no waiting rows) — that
-        # shouldn't hijack Enter away from the workspace table.
-        if waiting_table.has_focus and self._waiting:
-            row_index = waiting_table.cursor_row
-            if row_index is not None and 0 <= row_index < len(self._waiting):
-                self.app.do_attach(self._waiting[row_index])
+        # Enter must stay a *priority* binding: Tree binds enter to
+        # select_cursor, which (auto_expand) would toggle the folder instead.
+        # Because priority bindings dispatch before the focused widget sees
+        # the key, the node's data kind is the only thing that decides where
+        # Enter goes — same class of bug as the waiting-table fix in PR #36.
+        self.activate_node(self.query_one(WorkspaceTree).cursor_node)
+
+    def activate_node(self, node: TreeNode[NodeData] | None) -> None:
+        """Enter / double-click on a tree node: window rows attach that
+        window, workspace nodes ssh into the workspace."""
+        data = node.data if node is not None else None
+        if data is not None and data[0] == "win":
+            self.app.do_attach(data[1], data[2])
             return
         self.app.do_connect(self.focused_workspace(), "ssh")
 
@@ -385,7 +443,9 @@ class MainScreen(Screen):
         self.app.open_context_menu()
 
     def action_attach_waiting(self) -> None:
-        if not self._waiting:
+        waiting = self._waiting_windows()
+        if not waiting:
             self.notify("nothing waiting", title="dvw")
             return
-        self.app.do_attach(self._waiting[0])
+        ws_id, window_id, _ = waiting[0]
+        self.app.do_attach(ws_id, window_id)

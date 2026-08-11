@@ -1,11 +1,20 @@
-import os
+"""Main screen — tree view: workspaces are folders, tmux windows are rows."""
 
 from dvw_tui.app import DvwApp
-from dvw_tui.client import WaitingWindow
-from dvw_tui.screens.main import MainScreen, WorkspaceTable
+from dvw_tui.client import WindowInfo, WorkspaceWindows
+from dvw_tui.screens.main import WorkspaceTree
 
-W1 = WaitingWindow("alpha", "@7", "claude", 1754800000)
-W2 = WaitingWindow("beta", "@3", "codex", 1754790000)
+
+def _tree(app):
+    return app.screen.query_one(WorkspaceTree)
+
+
+def _ws_nodes(app):
+    return list(_tree(app).root.children)
+
+
+def _label(node):
+    return str(node.label)
 
 
 async def test_q_quits_the_app(fake_client):
@@ -17,74 +26,252 @@ async def test_q_quits_the_app(fake_client):
         assert not app.is_running
 
 
-async def test_table_lists_workspaces(fake_client):
+# ---------------------------------------------------------------------------
+# 1. one node per workspace; running nodes auto-expand with a row per window
+# ---------------------------------------------------------------------------
+
+async def test_tree_lists_workspaces_as_nodes(fake_client):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one(WorkspaceTable)
-        assert table.row_count == 2
-        first = table.get_row_at(0)
-        assert "alpha" in str(first[0])
+        nodes = _ws_nodes(app)
+        assert len(nodes) == 2
+        assert nodes[0].data == ("ws", "alpha")
+        assert nodes[1].data == ("ws", "beta")
 
 
-async def test_table_shows_attached_suffix(fake_client):
+async def test_workspace_node_label_has_repo_ide_and_state(fake_client):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one(WorkspaceTable)
-        first = table.get_row_at(0)
-        assert "⇄ 2" in str(first[3])      # alpha: alive, attached=2
-        second = table.get_row_at(1)
-        assert "⇄" not in str(second[3])   # beta: stopped
+        alpha, beta = _ws_nodes(app)
+        text = _label(alpha)
+        assert "alpha" in text
+        assert "vossiman/alpha@main" in text
+        assert "cursor" in text
+        assert "● running" in text
+        assert "⇄ 2" in text          # attached indicator survives the rewrite
+        assert "○ stopped" in _label(beta)
+        assert "⇄" not in _label(beta)
 
 
-async def test_inspect_pane_shows_attached_line(fake_client):
+async def test_running_node_expands_with_one_row_per_window(fake_client):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
-        await pilot.pause(0.4)             # inspect debounce
-        pane = app.query_one("#inspect-body")
-        assert "attached" in str(pane.content)
-        assert "2 clients" in str(pane.content)
+        await pilot.pause()
+        alpha, beta = _ws_nodes(app)
+        assert alpha.is_expanded is True
+        assert alpha.allow_expand is True
+        assert [c.data for c in alpha.children] == [
+            ("win", "alpha", "@1"), ("win", "alpha", "@2")]
+        assert "claude" in _label(alpha.children[0])
+        assert "⏸ waiting" in _label(alpha.children[0])
+        # beta has no windows: childless and not expandable
+        assert list(beta.children) == []
+        assert beta.allow_expand is False
 
 
-async def test_inspect_pane_shows_focused_workspace(fake_client):
+# ---------------------------------------------------------------------------
+# 2. waiting count in the status header
+# ---------------------------------------------------------------------------
+
+async def test_header_shows_waiting_count(fake_client):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
-        # The inspect fetch is debounced (0.3 s) — wait for it to fire.
-        await pilot.pause(0.4)
-        pane = app.query_one("#inspect-body")
-        text = str(pane.content)
-        assert "devpod-alpha" in text
+        await pilot.pause()
+        assert "⏸ 1 waiting" in str(app.query_one("#status-header").content)
 
 
-async def test_inspect_debounced_while_scrolling(fake_client):
+async def test_header_has_no_waiting_marker_when_none_waiting(fake_client):
+    fake_client.window_map["alpha"].windows[0].waiting_since = None
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
-        await pilot.pause(0.4)  # initial debounce elapses, alpha fetched
-        baseline = len(fake_client.inspect_calls)
+        await pilot.pause()
+        assert "⏸" not in str(app.query_one("#status-header").content)
+
+
+# ---------------------------------------------------------------------------
+# 3. Enter routing: window row attaches, workspace node connects
+# ---------------------------------------------------------------------------
+
+async def test_enter_on_window_row_attaches_that_window(fake_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        DvwApp, "_run_suspended",
+        lambda self, argv, pause_on_fail=True: calls.append(argv) or 0)
+    monkeypatch.setenv("DVW_BIN", "dvw")
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("down")        # alpha -> its first window row
+        await pilot.pause()
+        assert _tree(app).cursor_node.data == ("win", "alpha", "@1")
+        await pilot.press("enter")
+        await pilot.pause()
+    assert calls == [["dvw", "alpha", "--ssh", "--window", "@1"]]
+
+
+async def test_enter_on_workspace_node_connects(fake_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        DvwApp, "_run_suspended",
+        lambda self, argv, pause_on_fail=True: calls.append(argv) or 0)
+    monkeypatch.setenv("DVW_BIN", "dvw")
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+    assert calls == [["dvw", "alpha", "--ssh"]]
+
+
+async def test_enter_does_not_toggle_the_node(fake_client, monkeypatch):
+    """Tree's default enter-select (auto_expand) must not fire — Enter is a
+    screen priority binding that routes instead."""
+    monkeypatch.setattr(
+        DvwApp, "_run_suspended", lambda self, argv, pause_on_fail=True: 0)
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert _ws_nodes(app)[0].is_expanded is True
+
+
+# ---------------------------------------------------------------------------
+# 4. workspace actions from a focused window row act on the parent
+# ---------------------------------------------------------------------------
+
+async def test_stop_from_window_row_targets_parent_workspace(fake_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        DvwApp, "_run_suspended",
+        lambda self, argv, pause_on_fail=True: calls.append(argv) or 0)
+    monkeypatch.setenv("DVW_BIN", "dvw")
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("down", "down")   # second window row of alpha
+        await pilot.pause()
+        assert _tree(app).cursor_node.data == ("win", "alpha", "@2")
+        await pilot.press("s")
+        await pilot.pause()
+    assert calls == [["dvw", "stop", "alpha"]]
+
+
+async def test_focused_workspace_resolves_from_window_row(fake_client):
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
         await pilot.press("down")
-        await pilot.press("up")
-        await pilot.pause()  # well under the 0.3 s debounce
-        assert len(fake_client.inspect_calls) == baseline
-        await pilot.pause(0.4)  # past the debounce
-        assert len(fake_client.inspect_calls) == baseline + 1
-        assert fake_client.inspect_calls[-1] == "alpha"
+        await pilot.pause()
+        assert app.screen.focused_workspace().id == "alpha"
+        assert app.screen.focused_workspace_id() == "alpha"
 
 
-async def test_inspect_renders_from_cache_instantly(fake_client):
+# ---------------------------------------------------------------------------
+# 5. `a` attaches the newest waiting window across all workspaces
+# ---------------------------------------------------------------------------
+
+async def test_a_key_attaches_newest_waiting_across_workspaces(fake_client):
+    fake_client.window_map["beta"] = WorkspaceWindows(
+        "beta", attached=0,
+        windows=[WindowInfo("@3", "codex", waiting_since=1754900000)])
+    app = DvwApp(client=fake_client)
+    calls = []
+    app.do_attach = lambda ws, win: calls.append((ws, win))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+    assert calls == [("beta", "@3")]   # newer waiting_since than alpha's @1
+
+
+async def test_a_key_notifies_when_nothing_waiting(fake_client):
+    fake_client.window_map = {}
+    app = DvwApp(client=fake_client)
+    calls = []
+    notes = []
+    app.do_attach = lambda ws, win: calls.append((ws, win))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.screen.notify = lambda msg, **kw: notes.append(msg)
+        await pilot.press("a")
+        await pilot.pause()
+    assert calls == []
+    assert notes == ["nothing waiting"]
+
+
+async def test_a_key_noop_after_workspace_fetch_fails(fake_client):
+    app = DvwApp(client=fake_client)
+    calls = []
+    app.do_attach = lambda ws, win: calls.append((ws, win))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "⏸ 1 waiting" in str(app.query_one("#status-header").content)
+        fake_client.fail = True
+        app.screen.refresh_data()
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# 6. manual collapse survives a refresh
+# ---------------------------------------------------------------------------
+
+async def test_manual_collapse_survives_refresh(fake_client):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
-        # Prime the cache: let the debounced fetch for alpha complete.
-        await pilot.pause(0.4)
-        assert "devpod-alpha" in str(app.query_one("#inspect-body").content)
-        baseline = len(fake_client.inspect_calls)
-        await pilot.press("down")
-        await pilot.press("up")
-        await pilot.pause()  # before the debounce — no fetch yet
-        text = str(app.query_one("#inspect-body").content)
-        assert "devpod-alpha" in text  # rendered straight from cache
-        assert len(fake_client.inspect_calls) == baseline
+        await pilot.pause()
+        await pilot.press("space")          # collapse alpha
+        await pilot.pause()
+        assert _ws_nodes(app)[0].is_expanded is False
+        app.screen.refresh_data()
+        await pilot.pause()
+        assert _ws_nodes(app)[0].is_expanded is False
+        await pilot.press("space")          # expand again
+        await pilot.pause()
+        app.screen.refresh_data()
+        await pilot.pause()
+        assert _ws_nodes(app)[0].is_expanded is True
 
+
+# ---------------------------------------------------------------------------
+# 7. filter
+# ---------------------------------------------------------------------------
+
+async def test_filter_narrows_workspace_nodes(fake_client):
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("/")
+        await pilot.press("b", "e", "t")
+        await pilot.press("enter")
+        await pilot.pause()
+        nodes = _ws_nodes(app)
+        assert len(nodes) == 1
+        assert nodes[0].data == ("ws", "beta")
+
+
+async def test_filter_keeps_windows_with_their_parent(fake_client):
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("/")
+        await pilot.press("a", "l", "p")
+        await pilot.press("enter")
+        await pilot.pause()
+        nodes = _ws_nodes(app)
+        assert len(nodes) == 1
+        assert [c.data for c in nodes[0].children] == [
+            ("win", "alpha", "@1"), ("win", "alpha", "@2")]
+
+
+# ---------------------------------------------------------------------------
+# 8. catalog outage / old server
+# ---------------------------------------------------------------------------
 
 async def test_error_banner_on_catalog_failure(fake_client):
     fake_client.fail = True
@@ -105,7 +292,21 @@ async def test_retry_clears_banner(fake_client):
         await pilot.press("R")
         await pilot.pause()
         assert app.query_one("#error-banner").display is False
-        assert app.query_one(WorkspaceTable).row_count == 2
+        assert len(_ws_nodes(app)) == 2
+
+
+async def test_old_server_without_windows_endpoint_renders_folders(fake_client):
+    fake_client.window_map = {}
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        nodes = _ws_nodes(app)
+        assert len(nodes) == 2
+        assert all(list(n.children) == [] for n in nodes)
+        assert all(n.allow_expand is False for n in nodes)
+        header = str(app.query_one("#status-header").content)
+        assert "⏸" not in header
+        assert "connected" in header
 
 
 async def test_status_header_connected(fake_client, monkeypatch):
@@ -117,8 +318,7 @@ async def test_status_header_connected(fake_client, monkeypatch):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
         await pilot.pause()
-        header = app.query_one("#status-header")
-        text = str(header.content)
+        text = str(app.query_one("#status-header").content)
         assert "testhost" in text
         assert "connected" in text
 
@@ -132,140 +332,92 @@ async def test_status_header_unreachable(fake_client, monkeypatch):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
         await pilot.pause()
-        header = app.query_one("#status-header")
-        text = str(header.content)
+        text = str(app.query_one("#status-header").content)
         assert "testhost" in text
         assert "unreachable" in text
 
 
-async def test_waiting_section_hidden_when_empty(fake_client):
+# ---------------------------------------------------------------------------
+# 9. cursor preservation across a refresh
+# ---------------------------------------------------------------------------
+
+async def test_cursor_stays_on_workspace_across_refresh(fake_client):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.screen.query_one("#waiting-table").display is False
-
-
-async def test_waiting_section_lists_rows_newest_first(fake_client):
-    fake_client.waiting_windows = [W1, W2]
-    app = DvwApp(client=fake_client)
-    async with app.run_test() as pilot:
+        await pilot.press("down", "down", "down")   # @1, @2, beta
         await pilot.pause()
-        table = app.screen.query_one("#waiting-table")
-        assert table.display is True
-        assert table.row_count == 2   # order asserted via first row's cells
-        first = table.get_row_at(0)
-        assert "alpha" in str(first[0]) and "claude" in str(first[1])
-
-
-async def test_a_key_attaches_newest(fake_client):
-    fake_client.waiting_windows = [W1, W2]
-    app = DvwApp(client=fake_client)
-    calls = []
-    app.do_attach = lambda w: calls.append(w)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("a")
-        assert calls == [W1]
-
-
-async def test_a_key_noop_when_nothing_waiting(fake_client):
-    app = DvwApp(client=fake_client)
-    calls = []
-    app.do_attach = lambda w: calls.append(w)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("a")
-        assert calls == []
-
-
-async def test_enter_on_waiting_table_attaches_that_row_not_workspace(fake_client):
-    fake_client.waiting_windows = [W1, W2]
-    app = DvwApp(client=fake_client)
-    attach_calls = []
-    connect_calls = []
-    app.do_attach = lambda w: attach_calls.append(w)
-    app.do_connect = lambda w, mode: connect_calls.append((w, mode))
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        waiting_table = app.screen.query_one("#waiting-table")
-        waiting_table.focus()
-        waiting_table.move_cursor(row=1)
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        # W2 (beta) is the focused waiting row, not the workspace table's
-        # cursor row (alpha) — do_connect must not have been called at all.
-        assert attach_calls == [W2]
-        assert connect_calls == []
-
-
-async def test_enter_on_workspace_table_still_connects(fake_client):
-    fake_client.waiting_windows = [W1, W2]
-    app = DvwApp(client=fake_client)
-    attach_calls = []
-    connect_calls = []
-    app.do_attach = lambda w: attach_calls.append(w)
-    app.do_connect = lambda w, mode: connect_calls.append((w, mode))
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.query_one(WorkspaceTable).focus()
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        assert attach_calls == []
-        assert len(connect_calls) == 1
-        assert connect_calls[0][0].id == "alpha"
-        assert connect_calls[0][1] == "ssh"
-
-
-async def test_waiting_row_selected_handler_attaches_clicked_row(fake_client):
-    # No feasible pilot-click path found for a DataTable row (rows aren't
-    # exposed as separately clickable widgets), so this drives
-    # on_data_table_row_selected directly with a synthetic RowSelected event
-    # — the same event Textual posts for a mouse click or the DataTable's
-    # own default Enter binding.
-    from textual.widgets import DataTable
-
-    fake_client.waiting_windows = [W1, W2]
-    app = DvwApp(client=fake_client)
-    attach_calls = []
-    app.do_attach = lambda w: attach_calls.append(w)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        waiting_table = app.screen.query_one("#waiting-table", DataTable)
-        row_key = waiting_table.coordinate_to_cell_key((1, 0)).row_key
-        event = DataTable.RowSelected(waiting_table, cursor_row=1, row_key=row_key)
-        app.screen.on_data_table_row_selected(event)
-        assert attach_calls == [W2]
-
-
-async def test_waiting_hidden_and_a_key_noop_after_workspace_fetch_fails(fake_client):
-    fake_client.waiting_windows = [W1, W2]
-    app = DvwApp(client=fake_client)
-    calls = []
-    app.do_attach = lambda w: calls.append(w)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        table = app.screen.query_one("#waiting-table")
-        assert table.display is True  # sanity: waiting was populated first
-
-        fake_client.fail = True
+        assert _tree(app).cursor_node.data == ("ws", "beta")
         app.screen.refresh_data()
         await pilot.pause()
-
-        assert table.display is False
-        await pilot.press("a")
-        assert calls == []
+        assert _tree(app).cursor_node.data == ("ws", "beta")
 
 
-async def test_filter_narrows_rows(fake_client):
+async def test_cursor_stays_on_window_row_across_refresh(fake_client):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("/")
-        await pilot.press("b", "e", "t")
-        await pilot.press("enter")
+        await pilot.press("down", "down")
         await pilot.pause()
-        table = app.query_one(WorkspaceTable)
-        assert table.row_count == 1
-        assert "beta" in str(table.get_row_at(0)[0])
+        app.screen.refresh_data()
+        await pilot.pause()
+        assert _tree(app).cursor_node.data == ("win", "alpha", "@2")
+
+
+async def test_cursor_falls_back_to_parent_when_window_disappears(fake_client):
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("down", "down")
+        await pilot.pause()
+        fake_client.window_map["alpha"].windows.pop()   # @2 goes away
+        app.screen.refresh_data()
+        await pilot.pause()
+        assert _tree(app).cursor_node.data == ("ws", "alpha")
+
+
+# ---------------------------------------------------------------------------
+# inspect pane (unchanged behaviour, driven from tree highlights)
+# ---------------------------------------------------------------------------
+
+async def test_inspect_pane_shows_attached_line(fake_client):
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.4)             # inspect debounce
+        pane = app.query_one("#inspect-body")
+        assert "attached" in str(pane.content)
+        assert "2 clients" in str(pane.content)
+
+
+async def test_inspect_pane_shows_focused_workspace(fake_client):
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.4)
+        assert "devpod-alpha" in str(app.query_one("#inspect-body").content)
+
+
+async def test_inspect_debounced_while_scrolling(fake_client):
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.4)  # initial debounce elapses, alpha fetched
+        baseline = len(fake_client.inspect_calls)
+        await pilot.press("down")
+        await pilot.press("up")
+        await pilot.pause()  # well under the 0.3 s debounce
+        assert len(fake_client.inspect_calls) == baseline
+        await pilot.pause(0.4)  # past the debounce
+        assert len(fake_client.inspect_calls) == baseline + 1
+        assert fake_client.inspect_calls[-1] == "alpha"
+
+
+async def test_inspect_renders_from_cache_instantly(fake_client):
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.4)
+        assert "devpod-alpha" in str(app.query_one("#inspect-body").content)
+        baseline = len(fake_client.inspect_calls)
+        await pilot.press("down")
+        await pilot.press("up")
+        await pilot.pause()  # before the debounce — no fetch yet
+        assert "devpod-alpha" in str(app.query_one("#inspect-body").content)
+        assert len(fake_client.inspect_calls) == baseline

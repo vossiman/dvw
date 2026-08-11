@@ -2,7 +2,12 @@ import pytest
 
 from dvw_tui import actions
 from dvw_tui.actions import ActionResult
-from dvw_tui.client import CatalogError, Workspace, WorkspaceWindows
+from dvw_tui.client import (
+    CatalogError,
+    Workspace,
+    WindowInfo,
+    WorkspaceWindows,
+)
 
 
 class FakeClient:
@@ -13,7 +18,22 @@ class FakeClient:
         self.fail = False
         self.inspect_calls = []
         self.waiting_windows = []
-        self.window_map: dict[str, WorkspaceWindows] = {}
+        # tmux window snapshot, shaped like GET /v1/containers/windows.
+        # alpha (running) has two windows, the first one @waiting; beta
+        # (stopped) has none — the tree's two shapes in one fixture.
+        self.window_map: dict[str, WorkspaceWindows] = {
+            "alpha": WorkspaceWindows(
+                workspace_id="alpha",
+                attached=2,
+                windows=[
+                    WindowInfo(window_id="@1", name="claude", active=True,
+                               activity=1754800000, waiting_since=1754800000,
+                               command="claude"),
+                    WindowInfo(window_id="@2", name="shell", active=False,
+                               activity=1754799000, command="bash"),
+                ],
+            ),
+        }
         # Global catalog defaults, shaped like GET /v1/defaults. Tests mutate
         # this to exercise the wizard's IDE preselection.
         self.defaults_body = {"ide": "cursor", "provider": "vossisrv"}

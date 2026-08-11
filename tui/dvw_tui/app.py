@@ -12,7 +12,7 @@ import re
 from textual.app import App
 
 from . import actions
-from .client import CatalogClient, WaitingWindow, Workspace
+from .client import CatalogClient, Workspace
 from .screens.confirm import ConfirmScreen
 from .screens.doctor import DoctorScreen
 from .screens.main import MainScreen
@@ -104,18 +104,18 @@ class DvwApp(App):
         else:
             self._run_suspended(argv)
 
-    def do_attach(self, w: WaitingWindow | None) -> None:
-        """Attach to a waiting tmux window via the bash ssh path. Window ids
+    def do_attach(self, workspace_id: str | None, window_id: str | None) -> None:
+        """Attach to a specific tmux window via the bash ssh path. Window ids
         come from the catalog; re-validate before argv (defense in depth —
         _dvw_ssh_session validates again)."""
-        if w is None:
+        if not workspace_id or not window_id:
             return
-        if not re.fullmatch(r"@[0-9]+", w.window_id):
-            self.notify(f"bad window id from catalog: {w.window_id!r}",
+        if not re.fullmatch(r"@[0-9]+", window_id):
+            self.notify(f"bad window id from catalog: {window_id!r}",
                         title="dvw", severity="error")
             return
-        self._run_suspended(actions.connect(w.workspace_id, "ssh",
-                                            window=w.window_id))
+        self._run_suspended(actions.connect(workspace_id, "ssh",
+                                            window=window_id))
 
     def do_simple_action(self, name: str, workspace: Workspace | None) -> None:
         if workspace is None:
