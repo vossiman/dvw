@@ -70,7 +70,19 @@ main() {
     -l|--list)
       cmd_list ;;
     new)
-      shift; cmd_new "$@" ;;
+      shift
+      if (($# == 0)); then
+        if _dvw_tui_available; then
+          local tui_rc=0
+          DVW_TUI_START=new dvw_tui_launch || tui_rc=$?
+          [[ $tui_rc -ne 0 ]] && ui_error "TUI exited with rc=$tui_rc"
+          exit "$tui_rc"
+        fi
+        ui_error "dvw new without flags opens the TUI wizard — unavailable here: $(_dvw_tui_unavailable_reason)"
+        _new_usage
+        exit 1
+      fi
+      cmd_new "$@" ;;
     rm)
       shift; cmd_rm "$@" ;;
     update)
@@ -98,7 +110,7 @@ main() {
         fi
         exit "$tui_rc"
       else
-        ui_error "the dvw TUI is unavailable (needs uv + a tty; DVW_NO_TUI unset)"
+        ui_error "the dvw TUI is unavailable — $(_dvw_tui_unavailable_reason)"
         ui_info "subcommands: <id> | attach | new | rm | stop | start | recreate | update | status | doctor | audit | config | -l"
         exit 1
       fi ;;
