@@ -16,16 +16,6 @@ class CatalogError(Exception):
     """Catalog unreachable or returned an error response."""
 
 
-@dataclass(frozen=True)
-class WaitingWindow:
-    """A tmux window flagged @waiting (newest-first from the catalog)."""
-
-    workspace_id: str
-    window_id: str
-    window_name: str
-    waiting_since: int
-
-
 @dataclass
 class WindowInfo:
     """A single tmux window in a container's snapshot from
@@ -140,28 +130,6 @@ class CatalogClient:
 
     async def repos(self) -> list[str]:
         return [d["url"] for d in await self._get("/repos")]
-
-    async def waiting(self) -> list[WaitingWindow]:
-        """@waiting-flagged windows, newest first. Fail-closed: any catalog
-        error or malformed body yields [] — the TUI renders normally with a
-        dead catalog (spec 2026-08-10)."""
-        try:
-            body = await self._get("/containers/waiting")
-        except CatalogError:
-            return []
-        if not isinstance(body, list):
-            return []
-        out: list[WaitingWindow] = []
-        for d in body:
-            try:
-                out.append(WaitingWindow(
-                    workspace_id=d["workspace_id"], window_id=d["window_id"],
-                    window_name=d["window_name"],
-                    waiting_since=int(d["waiting_since"]),
-                ))
-            except (KeyError, TypeError, ValueError):
-                continue
-        return out
 
     async def windows(self) -> dict[str, WorkspaceWindows]:
         """Per-workspace tmux window snapshots. Fail-open: any catalog

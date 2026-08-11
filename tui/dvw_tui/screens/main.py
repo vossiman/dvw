@@ -172,6 +172,10 @@ class MainScreen(Screen):
         tree.clear()
         if not tree.root.is_expanded:
             tree.root.expand()
+        # Drop collapse memory for workspaces that no longer exist, so a
+        # since-removed id doesn't silently pre-collapse a later workspace
+        # that happens to reuse it.
+        self._collapsed &= {w.id for w in self._workspaces}
         for w in self._visible_workspaces():
             snapshot = self._windows.get(w.id)
             windows = snapshot.windows if snapshot is not None else []
@@ -185,7 +189,6 @@ class MainScreen(Screen):
                 node.add_leaf(window_label(win, now),
                               data=("win", w.id, win.window_id))
         self._restore_cursor(tree, prev)
-        self._update_inspect()
 
     # ---- cursor -----------------------------------------------------------
 
@@ -235,15 +238,15 @@ class MainScreen(Screen):
 
     # ---- tree events ------------------------------------------------------
 
-    def on_tree_node_highlighted(self, _event) -> None:
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted[NodeData]) -> None:
         self._update_inspect()
 
-    def on_tree_node_collapsed(self, event) -> None:
+    def on_tree_node_collapsed(self, event: Tree.NodeCollapsed[NodeData]) -> None:
         data = event.node.data
         if data is not None and data[0] == "ws":
             self._collapsed.add(data[1])
 
-    def on_tree_node_expanded(self, event) -> None:
+    def on_tree_node_expanded(self, event: Tree.NodeExpanded[NodeData]) -> None:
         data = event.node.data
         if data is not None and data[0] == "ws":
             self._collapsed.discard(data[1])
@@ -411,12 +414,21 @@ class MainScreen(Screen):
 
     def activate_node(self, node: TreeNode[NodeData] | None) -> None:
         """Enter / double-click on a tree node: window rows attach that
-        window, workspace nodes ssh into the workspace."""
+        window, workspace nodes ssh into the workspace.
+
+        Reads the workspace id from `node.data[1]` in both branches — never
+        the cursor — so activation always targets the node that was
+        actually clicked/entered, not wherever the cursor happens to sit.
+        """
         data = node.data if node is not None else None
-        if data is not None and data[0] == "win":
+        if data is None:
+            return
+        if data[0] == "win":
             self.app.do_attach(data[1], data[2])
             return
-        self.app.do_connect(self.focused_workspace(), "ssh")
+        ws_id = data[1]
+        ws = next((w for w in self._workspaces if w.id == ws_id), None)
+        self.app.do_connect(ws, "ssh")
 
     def action_stop(self) -> None:
         self.app.do_simple_action("stop", self.focused_workspace())

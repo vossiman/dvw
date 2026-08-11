@@ -43,6 +43,24 @@ async def test_double_click_sshs(fake_client, monkeypatch):
         assert calls["suspended"] == ["dvw", "alpha", "--ssh"]
 
 
+async def test_double_click_on_window_row_attaches_that_window(fake_client, monkeypatch):
+    """Double-click on a child (window) row attaches that window, mirroring
+    the enter-on-window-row route — not the workspace-node ssh route."""
+    calls = {}
+    monkeypatch.setattr(
+        DvwApp, "_run_suspended", lambda self, argv, pause_on_fail=True:
+            calls.setdefault("suspended", argv))
+    monkeypatch.setenv("DVW_BIN", "dvw")
+    app = DvwApp(client=fake_client)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        # offset (10, 1): alpha auto-expands with its windows, so line 1 is
+        # its first child row (window @1, "claude").
+        await pilot.click(WorkspaceTree, offset=(10, 1), times=2)
+        await pilot.pause()
+        assert calls["suspended"] == ["dvw", "alpha", "--ssh", "--window", "@1"]
+
+
 async def test_single_click_does_not_ssh(fake_client, monkeypatch):
     calls = {}
     monkeypatch.setattr(

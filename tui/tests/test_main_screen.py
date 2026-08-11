@@ -310,11 +310,13 @@ async def test_old_server_without_windows_endpoint_renders_folders(fake_client):
 
 
 async def test_status_header_connected(fake_client, monkeypatch):
-    monkeypatch.setenv("DVW_CATALOG_HOST", "testhost")
-    # Re-import so the module-level constant picks up the patched env var.
-    import importlib
+    # main_mod._CATALOG_HOST is read once at import time; patch the module
+    # attribute directly rather than reloading the module — a reload swaps
+    # in a fresh MainScreen class object, breaking isinstance checks (e.g.
+    # WorkspaceTree._on_click) for any test that imports the *original*
+    # class and runs later in the same process (see PR #36-class bug).
     import dvw_tui.screens.main as main_mod
-    importlib.reload(main_mod)
+    monkeypatch.setattr(main_mod, "_CATALOG_HOST", "testhost")
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -324,10 +326,8 @@ async def test_status_header_connected(fake_client, monkeypatch):
 
 
 async def test_status_header_unreachable(fake_client, monkeypatch):
-    monkeypatch.setenv("DVW_CATALOG_HOST", "testhost")
-    import importlib
     import dvw_tui.screens.main as main_mod
-    importlib.reload(main_mod)
+    monkeypatch.setattr(main_mod, "_CATALOG_HOST", "testhost")
     fake_client.fail = True
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:

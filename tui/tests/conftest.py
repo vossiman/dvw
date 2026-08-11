@@ -17,7 +17,6 @@ class FakeClient:
     def __init__(self):
         self.fail = False
         self.inspect_calls = []
-        self.waiting_windows = []
         # tmux window snapshot, shaped like GET /v1/containers/windows.
         # alpha (running) has two windows, the first one @waiting; beta
         # (stopped) has none — the tree's two shapes in one fixture.
@@ -91,11 +90,6 @@ class FakeClient:
     async def defaults(self):
         self._check()
         return dict(self.defaults_body)
-
-    async def waiting(self):
-        if self.fail:
-            return []
-        return list(self.waiting_windows)
 
     async def windows(self):
         # Mirrors the real client's fail-open degradation: errors yield {}
