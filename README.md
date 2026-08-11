@@ -30,14 +30,14 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw <id> --both` | open in Cursor, then ssh + attach `work` tmux session |
 | `dvw attach` | connect to the tmux window most recently flagged waiting-for-input (picker if several; reports and exits if none) — TUI equivalent: `a` (newest) or Enter on a waiting row (that row) |
 | `dvw -l` | list workspaces (MRU order) |
-| `dvw new` | wizard: create a new workspace, append to catalog |
+| `dvw new` | bare: opens the TUI's new-workspace wizard (same requirements as bare `dvw`). Flag-driven (no TUI/tty needed): `dvw new --repo <url> --name <name> --ide cursor\|ssh [--branch <b>] [--init-empty] [--seed-devcontainer] [--yes]` — creates the workspace and appends it to the catalog. See [Create a new workspace](#create-a-new-workspace). |
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
 | `dvw stop <id>` | `devpod stop` |
 | `dvw start <id>` | `devpod up` with the workspace's saved IDE |
 | `dvw recreate <id>` (alias `rebuild`) | rebuild the container (`devpod up --recreate`) — needed to pick up a changed `devcontainer.json` (mounts/hooks) |
 | `dvw update` | Update to the latest released tooling and refresh the version marker. Standalone checkout: pull `main` + reinstall. Submodule checkout: follow the parent's pins (ff the parent, check out pinned submodules, reinstall) — never commits or pushes. Startup/`dvw doctor` nudge when behind `origin/main`. |
 | `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
-| `dvw doctor` | health check: catalog endpoint + transport note, provider probe, catalog service, ssh-sync, devpod, gum, per-orphan summary, duplicate-sibling containers |
+| `dvw doctor` | health check: catalog endpoint + transport note, provider probe, catalog service, ssh-sync, devpod, per-orphan summary, duplicate-sibling containers |
 | `dvw audit` | deeper per-orphan git audit (branch, modified file count, unpushed commit count, stash count, verdict) — one ssh per provider host |
 | `dvw config` / `dvw config set KEY VALUE` | show or persist the per-machine config (catalog host, provider — see [Configuration](#configuration-host-user-provider)); runs even when the service is unreachable |
 | `dvw <anything> --dry-run` | print would-be `devpod ...` / `docker ...` invocations without executing — works on any mutating subcommand |
@@ -69,7 +69,7 @@ ssh vossisrv -- curl --unix-socket /run/dvw-catalog/catalog.sock http://localhos
 ```bash
 git clone https://github.com/vossiman/dvw
 cd dvw
-./dvw-install.sh     # installs jq/gum/devpod, symlinks dvw into ~/.local/bin
+./dvw-install.sh     # installs jq/devpod, symlinks dvw into ~/.local/bin
 dvw doctor
 ```
 
@@ -199,7 +199,22 @@ dvw -l               # list and exit
 dvw new
 ```
 
-Wizard: pick repo (from saved list, or enter new) → branch (defaults to last-used per repo) → workspace name (auto-suggested) → IDE (defaults to `cursor`) → confirm. On success, `devpod up` runs and the catalog is updated.
+Bare `dvw new` opens the TUI's new-workspace wizard (same requirements as bare `dvw`: `uv` + a tty; `DVW_NO_TUI=1` makes it error out naming the reason instead). In the wizard: pick repo (from the catalog's saved list, or enter a new URL) → branch (defaults to last-used per repo, picker of branches that exist on the remote) → workspace name (auto-suggested) → IDE (defaults to `cursor`) → confirm. On success, `devpod up` runs and the catalog is updated.
+
+For scripting, or when the TUI can't run, drive it with flags instead — no prompts, no tty required:
+
+```bash
+dvw new --repo <url> --name <name> --ide cursor|ssh \
+  [--branch <branch>] [--init-empty] [--seed-devcontainer] [--yes]
+```
+
+- `--repo` (required) — clone URL. An `https://github.com/...` URL that fails over HTTPS (no credential helper in the devbox) is retried as its SSH form automatically; `dvw new` reports the swap.
+- `--name` (required) — workspace ID; sanitized, capped at DevPod's 48-char limit, and rejected if it collides with an existing catalog or DevPod entry.
+- `--ide` (required) — `cursor` or `ssh`.
+- `--branch` — defaults to `main` when combined with `--init-empty`; otherwise required.
+- `--init-empty` — if the repo has no branches yet, create an initial commit (seeded with the aiCodingBaseSetup blueprint `devcontainer.json` when reachable) instead of erroring.
+- `--seed-devcontainer` — if the target branch has no `devcontainer.json` DevPod would find, commit the blueprint one before `devpod up`.
+- `--yes` — skip the confirmation prompt (needed for non-interactive/scripted runs; without it, `dvw new` fails closed on a non-tty).
 
 ### Recreate a workspace cleanly
 

@@ -164,12 +164,6 @@ catalog_repo_upsert() {
   [[ "$DVW_CAT_STATUS" =~ ^2 ]]
 }
 
-catalog_repo_list() {
-  local body
-  body=$(_catalog_req GET /v1/repos) || return 1
-  jq -r '.[].url' <<<"$body"
-}
-
 catalog_repo_last_branch() {
   local url="$1" enc body rc
   enc=$(jq -rn --arg u "$url" '$u|@uri')

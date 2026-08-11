@@ -289,22 +289,6 @@ teardown() {
   jq -e '.last_branch == "main"'               "$capture"
 }
 
-@test "catalog_repo_list: extracts repo URLs in the server's (MRU) order" {
-  catalog_route() {
-    case "$1 $2" in
-      "GET /v1/repos")
-        _stub_emit '[{"url":"git@github.com:owner/myrepo.git"},{"url":"git@github.com:owner/other.git"}]' 200 ;;
-      *) _stub_emit '{}' 404 ;;
-    esac
-  }
-  catalog_stub_install
-  source "$DVW_ROOT/lib/catalog.sh"
-  run catalog_repo_list
-  [ "$status" -eq 0 ]
-  [ "${lines[0]}" = "git@github.com:owner/myrepo.git" ]
-  [ "${lines[1]}" = "git@github.com:owner/other.git" ]
-}
-
 @test "catalog_repo_last_branch: returns last_branch for a known URL, empty for unknown" {
   catalog_route() {
     # by-url carries the url as a query string; match on the path prefix.

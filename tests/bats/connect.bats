@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 #
-# cmd_connect mode selection: bare `dvw <id>` defaults to SSH (no gum
-# chooser). Flags still force cursor/both/ssh.
+# cmd_connect mode selection: bare `dvw <id>` defaults to SSH (no
+# interactive chooser). Flags still force cursor/both/ssh.
 
 setup() {
   TMPDIR=$(mktemp -d)
@@ -37,16 +37,8 @@ _load_connect() {
     _connect_ssh _connect_cursor
 }
 
-@test "cmd_connect: bare id defaults to ssh (no gum)" {
+@test "cmd_connect: bare id defaults to ssh (no chooser)" {
   _load_connect
-  # Poison gum — if the chooser were still called, this would fail loudly.
-  cat > "$STUB_BIN/gum" <<'EOF'
-#!/bin/bash
-echo "gum should not be invoked for bare connect" >&2
-exit 99
-EOF
-  chmod +x "$STUB_BIN/gum"
-
   run cmd_connect myws
   [ "$status" -eq 0 ]
   [ "$(cat "$MODES_LOG")" = "ssh:myws" ]

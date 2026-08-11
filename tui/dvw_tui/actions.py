@@ -3,7 +3,7 @@ action shells out to the battle-tested bash `dvw` paths.
 
 Two execution styles, chosen by the app layer:
   - suspend: Textual suspends, the command runs interactively in the real
-    terminal (gum confirms, progress output, ssh sessions all work).
+    terminal (confirm prompts, progress output, ssh sessions all work).
   - background: fire-and-forget Popen for GUI IDE connects.
   - captured: run quietly, collect output (doctor report rendering).
 """

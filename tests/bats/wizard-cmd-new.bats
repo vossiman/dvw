@@ -53,6 +53,32 @@ setup() {
   echo "$output" | grep -q "ide"
 }
 
+@test "cmd_new: --repo followed by a flag-shaped value errors with usage" {
+  run cmd_new --repo --name x --ide ssh --yes
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "usage: dvw new"
+}
+
+# _new_resolve_branches retries the SSH form when the HTTPS form fails (no
+# credential helper in the devbox). Stub _fetch_remote_branches directly —
+# fail for the https URL, succeed for its ssh equivalent — which matches
+# what _github_https_to_ssh would actually produce, and confirms cmd_new
+# surfaces the swap to the user instead of silently using a different URL
+# than the one they passed.
+@test "cmd_new: notes the HTTPS->SSH swap when the resolved repo URL differs from the one passed" {
+  _fetch_remote_branches() {
+    case "$1" in
+      https://github.com/foo/bar.git) return 1 ;;
+      git@github.com:foo/bar.git) printf 'main\n'; return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  run cmd_new --repo https://github.com/foo/bar.git --branch main --name wsx --ide ssh --yes
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "using SSH form for github"
+  echo "$output" | grep -q "git@github.com:foo/bar.git"
+}
+
 @test "cmd_new: happy path creates workspace non-interactively" {
   run cmd_new --repo "$REMOTE" --branch main --name wsx --ide ssh --yes
   [ "$status" -eq 0 ]

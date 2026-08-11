@@ -6,11 +6,6 @@ _sanitize_ws_name() {
   echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9-]+#-#g; s#^-+|-+$##g'
 }
 
-# Extract the leaf name from a git URL (e.g., git@github.com:foo/bar.git -> bar).
-_repo_leaf() {
-  echo "$1" | sed -E 's#.*[/:]([^/:]+?)(\.git)?$#\1#'
-}
-
 # Parse `git ls-remote --heads` output (on stdin) into a sorted list of branch
 # names, stripping the leading "<sha>\trefs/heads/" from each line. Pure (no
 # network) so the branch flow's only testable part can be unit-tested.
@@ -194,19 +189,6 @@ _parse_devpod_ids() {
 # unless we clip up front.
 DEVPOD_NAME_MAX=48
 
-# Truncate to fit DevPod's name length cap; trim any trailing dash left by
-# the cut so the result is still a clean valid identifier. Idempotent on
-# names already short enough.
-_truncate_for_devpod() {
-  local name="$1"
-  local max="${2:-$DEVPOD_NAME_MAX}"
-  if (( ${#name} > max )); then
-    name="${name:0:max}"
-    name="${name%-}"
-  fi
-  echo "$name"
-}
-
 _new_usage() {
   ui_info "usage: dvw new --repo <url> --name <name> --ide cursor|ssh [--branch <b>] [--init-empty] [--seed-devcontainer] [--yes]"
 }
@@ -250,13 +232,20 @@ cmd_new() {
 
   command -v devpod >/dev/null || { ui_error "devpod not installed; run dvw doctor"; return 1; }
 
+  # Reject a value that's missing or looks like the next flag (e.g. `--repo
+  # --name x`, a common typo when a value is accidentally omitted) rather
+  # than silently swallowing the following flag as this one's value.
   local repo="" branch="" name="" ide="" init_empty=0 seed_devc=0 yes=0
   while (($#)); do
     case "$1" in
-      --repo)   repo="${2:-}";   shift 2 || { _new_usage; return 1; } ;;
-      --branch) branch="${2:-}"; shift 2 || { _new_usage; return 1; } ;;
-      --name)   name="${2:-}";   shift 2 || { _new_usage; return 1; } ;;
-      --ide)    ide="${2:-}";    shift 2 || { _new_usage; return 1; } ;;
+      --repo)   [[ -n "${2:-}" && "$2" != --* ]] || { ui_error "dvw new: --repo requires a value"; _new_usage; return 1; }
+                repo="$2";   shift 2 ;;
+      --branch) [[ -n "${2:-}" && "$2" != --* ]] || { ui_error "dvw new: --branch requires a value"; _new_usage; return 1; }
+                branch="$2"; shift 2 ;;
+      --name)   [[ -n "${2:-}" && "$2" != --* ]] || { ui_error "dvw new: --name requires a value"; _new_usage; return 1; }
+                name="$2";   shift 2 ;;
+      --ide)    [[ -n "${2:-}" && "$2" != --* ]] || { ui_error "dvw new: --ide requires a value"; _new_usage; return 1; }
+                ide="$2";    shift 2 ;;
       --init-empty)         init_empty=1; shift ;;
       --seed-devcontainer)  seed_devc=1;  shift ;;
       --yes)                yes=1;        shift ;;
@@ -275,7 +264,7 @@ cmd_new() {
   fi
 
   # Resolve branches; handle empty/unreachable.
-  local resolved rc=0 branches did_init=0
+  local resolved rc=0 branches did_init=0 repo_in="$repo"
   if resolved=$(_new_resolve_branches "$repo"); then rc=0; else rc=$?; fi
   if [[ $rc -eq 2 ]]; then
     ui_error "couldn't list branches for $repo — check the URL, your network, or SSH auth"
@@ -283,6 +272,9 @@ cmd_new() {
   fi
   repo=$(head -n1 <<<"$resolved")
   branches=$(tail -n +2 <<<"$resolved")
+  if [[ "$repo" != "$repo_in" ]]; then
+    ui_info "using SSH form for github (HTTPS has no credential helper here): $repo"
+  fi
   if [[ $rc -eq 3 ]]; then
     if (( ! init_empty )); then
       ui_error "repo is empty (no branches): $repo — rerun with --init-empty to create an initial commit (with the blueprint devcontainer.json) on '$branch'"
@@ -328,7 +320,7 @@ cmd_new() {
   fi
 
   # Name: sanitize + cap + collision checks (verbatim from the old body,
-  # minus the gum input — the name now arrives via --name).
+  # minus the interactive prompt — the name now arrives via --name).
   name=$(_sanitize_ws_name "$name")
   [[ -z "$name" ]] && { ui_error "dvw new: --name sanitized to empty"; return 1; }
   if (( ${#name} > DEVPOD_NAME_MAX )); then

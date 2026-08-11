@@ -49,8 +49,8 @@ class DvwApp(App):
     # ---- execution helpers --------------------------------------------------
 
     def _run_suspended(self, argv: list[str], pause_on_fail: bool = True) -> int:
-        """Hand the real terminal to an interactive bash dvw command (gum
-        confirms, progress output, ssh sessions). On failure, hold the
+        """Hand the real terminal to an interactive bash dvw command (confirm
+        prompts, progress output, ssh sessions). On failure, hold the
         terminal so the user can read the error before the alt screen
         swallows it.
 

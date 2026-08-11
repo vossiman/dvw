@@ -472,14 +472,6 @@ cmd_doctor() {
     fail=$((fail+1))
   fi
 
-  # gum
-  if command -v gum >/dev/null; then
-    ui_status_ok "gum: $(gum --version 2>/dev/null)"
-  else
-    ui_status_fail "gum: not on PATH (install: https://github.com/charmbracelet/gum)"
-    fail=$((fail+1))
-  fi
-
   # jq
   if command -v jq >/dev/null; then
     ui_status_ok "jq: $(jq --version)"
@@ -936,8 +928,8 @@ cmd_attach() {
     local rows sel
     rows=$(jq -r '.[] | "\(.workspace_id)\t\(.window_name)\t\(.window_id)"' <<<"$raw" \
       | column -t -s $'\t')
-    # fzf-preferred, numbered-list fallback (gum removed 2026-08-11) — dvw
-    # doesn't hard-require fzf anywhere else.
+    # fzf-preferred, numbered-list fallback (no interactive picker is
+    # required — dvw doesn't hard-require fzf anywhere else).
     if command -v fzf >/dev/null; then
       sel=$(printf '%s\n' "$rows" | fzf --prompt='attach> ' --height=40% --reverse) || return 1
     else

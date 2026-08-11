@@ -115,33 +115,16 @@ _serve_waiting() {
   echo "$attach_output" | grep -qi 'ignoring malformed window id'
 }
 
-# All three no-menu tests stub gum to fail loudly (nonzero exit + a marker on
-# stderr) so a regression that resurrects a `ui_top_menu`/gum call anywhere in
-# cmd_attach's three non-attach branches shows up as a spurious "GUM SHOULD
-# NOT RUN" in $output, not just a silently-wrong exit code.
-_stub_gum_must_not_run() {
-  cat > "$STUB_BIN/gum" <<'EOF'
-#!/usr/bin/env bash
-echo "GUM SHOULD NOT RUN" >&2
-exit 97
-EOF
-  chmod +x "$STUB_BIN/gum"
-}
-
 @test "attach with nothing waiting reports and exits 0 without any menu" {
   _load_attach
-  _stub_gum_must_not_run
   _serve_waiting '[]'
   run cmd_attach
   [ "$status" -eq 0 ]
   echo "$output" | grep -qi 'nothing waiting'
-  run grep -q 'GUM SHOULD NOT RUN' <<<"$output"
-  [ "$status" -ne 0 ]
 }
 
 @test "attach reports catalog-unreachable distinctly, not as nothing-waiting" {
   _load_attach
-  _stub_gum_must_not_run
   # rc=2 out of _catalog_req is a transport failure (never reached the
   # service) per lib/catalog-http-lib.sh:23-25 — distinct from an empty
   # waiting list and from an HTTP-level error (rc=1, covered below).
@@ -152,13 +135,10 @@ EOF
   echo "$output" | grep -qi 'catalog service unreachable'
   run grep -qi 'nothing waiting' <<<"$output"
   [ "$status" -ne 0 ]
-  run grep -q 'GUM SHOULD NOT RUN' <<<"$output"
-  [ "$status" -ne 0 ]
 }
 
 @test "attach reports a catalog HTTP error distinctly, not as nothing-waiting" {
   _load_attach
-  _stub_gum_must_not_run
   # rc=1 out of _catalog_req is a >=400 HTTP response — service reachable but
   # answered with an error, still not "the list is empty".
   _catalog_req() { printf '%s' '{"error":"boom"}'; return 1; }
@@ -167,8 +147,6 @@ EOF
   [ "$status" -eq 1 ]
   echo "$output" | grep -qi 'catalog service returned an error'
   run grep -qi 'nothing waiting' <<<"$output"
-  [ "$status" -ne 0 ]
-  run grep -q 'GUM SHOULD NOT RUN' <<<"$output"
   [ "$status" -ne 0 ]
 }
 
