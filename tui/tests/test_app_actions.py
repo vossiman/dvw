@@ -247,3 +247,53 @@ async def test_simple_action_failure_toast(fake_client, monkeypatch):
     assert error, "expected an error-severity notify"
     assert "failed" in error[-1]["message"]
     assert "rc=5" in error[-1]["message"]
+
+
+# ---------------------------------------------------------------------------
+# do_new: wires WizardScreen to the flag-form `dvw new` build
+# ---------------------------------------------------------------------------
+
+async def test_wizard_result_runs_flag_form_new(fake_client, fake_new_cli, monkeypatch):
+    app = DvwApp(client=fake_client)
+    runs = []
+    monkeypatch.setattr(app, "_run_suspended", lambda argv, **kw: runs.append(argv) or 0)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")            # main-screen binding -> do_new
+        await pilot.pause()
+        await pilot.press("down")         # past "+ enter new…"
+        await pilot.press("enter")        # repo
+        await pilot.pause(0.2)
+        await pilot.press("enter")        # branch
+        await pilot.pause(0.2)
+        await pilot.press("enter")        # name
+        await pilot.pause()
+        await pilot.press("enter")        # ide
+        await pilot.pause()
+        await pilot.press("y")            # summary
+        await pilot.pause()
+    assert runs == [["dvw", "new", "--repo", "git@github.com:vossiman/alpha.git",
+                     "--branch", "main", "--name", "alpha-main",
+                     "--ide", "cursor", "--yes"]]
+
+
+async def test_wizard_abort_runs_nothing(fake_client, fake_new_cli, monkeypatch):
+    app = DvwApp(client=fake_client)
+    runs = []
+    monkeypatch.setattr(app, "_run_suspended", lambda argv, **kw: runs.append(argv) or 0)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert runs == []
+
+
+async def test_dvw_tui_start_new_opens_wizard(fake_client, fake_new_cli, monkeypatch):
+    monkeypatch.setenv("DVW_TUI_START", "new")
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from dvw_tui.screens.wizard import WizardScreen
+        assert isinstance(app.screen, WizardScreen)

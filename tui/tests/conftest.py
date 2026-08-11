@@ -1,5 +1,7 @@
 import pytest
 
+from dvw_tui import actions
+from dvw_tui.actions import ActionResult
 from dvw_tui.client import CatalogError, Workspace
 
 
@@ -11,6 +13,9 @@ class FakeClient:
         self.fail = False
         self.inspect_calls = []
         self.waiting_windows = []
+        # Global catalog defaults, shaped like GET /v1/defaults. Tests mutate
+        # this to exercise the wizard's IDE preselection.
+        self.defaults_body = {"ide": "cursor", "provider": "vossisrv"}
         self._workspaces = [
             Workspace(id="alpha", repo="git@github.com:vossiman/alpha.git",
                       branch="main", ide="cursor", provider="vossisrv",
@@ -52,6 +57,19 @@ class FakeClient:
         self._check()
         return list(self._orphans)
 
+    async def repos(self):
+        self._check()
+        # Deliberately a different form than fake_new_cli's --list-branches
+        # resolved URL (git@…) — proves the wizard adopts the RESOLVED
+        # value from `dvw new --list-branches`, not the catalog entry
+        # picked from the OptionList.
+        return ["https://github.com/vossiman/alpha.git",
+                "https://github.com/vossiman/beta.git"]
+
+    async def defaults(self):
+        self._check()
+        return dict(self.defaults_body)
+
     async def waiting(self):
         if self.fail:
             return []
@@ -69,3 +87,29 @@ class FakeClient:
 @pytest.fixture
 def fake_client():
     return FakeClient()
+
+
+@pytest.fixture
+def fake_new_cli(monkeypatch):
+    """Canned `dvw new --list-branches/--check-devcontainer` results.
+
+    Monkeypatches actions.run_captured_split (the split-capture path the
+    wizard uses) so the wizard's subprocess calls resolve instantly. Tests
+    mutate state["branches"]/["devcontainer_rc"] before driving the pilot;
+    state["calls"] records every argv.
+    """
+    state = {"branches": (0, "git@github.com:vossiman/alpha.git\nmain\ndev\n"),
+             "devcontainer_rc": 0, "calls": []}
+
+    def fake_run_captured(argv):
+        state["calls"].append(argv)
+        if "--list-branches" in argv:
+            rc, out = state["branches"]
+            return ActionResult(ok=rc == 0, returncode=rc, output=out)
+        if "--check-devcontainer" in argv:
+            rc = state["devcontainer_rc"]
+            return ActionResult(ok=rc == 0, returncode=rc, output="")
+        raise AssertionError(f"unexpected argv: {argv}")
+
+    monkeypatch.setattr(actions, "run_captured_split", fake_run_captured)
+    return state

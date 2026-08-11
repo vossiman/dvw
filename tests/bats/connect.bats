@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 #
-# cmd_connect mode selection: bare `dvw <id>` defaults to SSH (no gum
-# chooser). Flags still force cursor/both/ssh.
+# cmd_connect mode selection: bare `dvw <id>` defaults to SSH (no
+# interactive chooser). Flags still force cursor/both/ssh.
 
 setup() {
   TMPDIR=$(mktemp -d)
@@ -37,16 +37,8 @@ _load_connect() {
     _connect_ssh _connect_cursor
 }
 
-@test "cmd_connect: bare id defaults to ssh (no gum)" {
+@test "cmd_connect: bare id defaults to ssh (no chooser)" {
   _load_connect
-  # Poison gum — if the chooser were still called, this would fail loudly.
-  cat > "$STUB_BIN/gum" <<'EOF'
-#!/bin/bash
-echo "gum should not be invoked for bare connect" >&2
-exit 99
-EOF
-  chmod +x "$STUB_BIN/gum"
-
   run cmd_connect myws
   [ "$status" -eq 0 ]
   [ "$(cat "$MODES_LOG")" = "ssh:myws" ]
@@ -91,6 +83,31 @@ echo "devpod $*" >> "$MODES_LOG"
 exit 0
 STUB
   chmod +x "$STUB_BIN/devpod"
+}
+
+# A container already exists on the provider -> the wipe guard must gate
+# `devpod up` behind ui_confirm (real implementation, not the earlier gum
+# stubs). _load_connect only stubs ui_error/ui_info, so source ui.sh for a
+# real ui_confirm.
+_load_up_guard_container_exists() {
+  _load_up_guard
+  _dvw_provider_has_container() { return 0; }
+  source "$DVW_ROOT/lib/ui.sh"
+  export DVW_ASSUME_TTY=1
+}
+
+@test "_dvw_safe_devpod_up: wipe guard confirmed (y) runs devpod up" {
+  _load_up_guard_container_exists
+  run _dvw_safe_devpod_up myws --ide none <<< "y"
+  [ "$status" -eq 0 ]
+  grep -q "devpod up myws --ide none" "$MODES_LOG"
+}
+
+@test "_dvw_safe_devpod_up: wipe guard declined (n) aborts without running devpod up" {
+  _load_up_guard_container_exists
+  run _dvw_safe_devpod_up myws --ide none <<< "n"
+  [ "$status" -ne 0 ]
+  [ ! -s "$MODES_LOG" ]
 }
 
 @test "_dvw_safe_devpod_up: runs devpod up and releases the lock" {

@@ -115,33 +115,16 @@ _serve_waiting() {
   echo "$attach_output" | grep -qi 'ignoring malformed window id'
 }
 
-# All three no-menu tests stub gum to fail loudly (nonzero exit + a marker on
-# stderr) so a regression that resurrects a `ui_top_menu`/gum call anywhere in
-# cmd_attach's three non-attach branches shows up as a spurious "GUM SHOULD
-# NOT RUN" in $output, not just a silently-wrong exit code.
-_stub_gum_must_not_run() {
-  cat > "$STUB_BIN/gum" <<'EOF'
-#!/usr/bin/env bash
-echo "GUM SHOULD NOT RUN" >&2
-exit 97
-EOF
-  chmod +x "$STUB_BIN/gum"
-}
-
 @test "attach with nothing waiting reports and exits 0 without any menu" {
   _load_attach
-  _stub_gum_must_not_run
   _serve_waiting '[]'
   run cmd_attach
   [ "$status" -eq 0 ]
   echo "$output" | grep -qi 'nothing waiting'
-  run grep -q 'GUM SHOULD NOT RUN' <<<"$output"
-  [ "$status" -ne 0 ]
 }
 
 @test "attach reports catalog-unreachable distinctly, not as nothing-waiting" {
   _load_attach
-  _stub_gum_must_not_run
   # rc=2 out of _catalog_req is a transport failure (never reached the
   # service) per lib/catalog-http-lib.sh:23-25 — distinct from an empty
   # waiting list and from an HTTP-level error (rc=1, covered below).
@@ -152,13 +135,10 @@ EOF
   echo "$output" | grep -qi 'catalog service unreachable'
   run grep -qi 'nothing waiting' <<<"$output"
   [ "$status" -ne 0 ]
-  run grep -q 'GUM SHOULD NOT RUN' <<<"$output"
-  [ "$status" -ne 0 ]
 }
 
 @test "attach reports a catalog HTTP error distinctly, not as nothing-waiting" {
   _load_attach
-  _stub_gum_must_not_run
   # rc=1 out of _catalog_req is a >=400 HTTP response — service reachable but
   # answered with an error, still not "the list is empty".
   _catalog_req() { printf '%s' '{"error":"boom"}'; return 1; }
@@ -168,33 +148,91 @@ EOF
   echo "$output" | grep -qi 'catalog service returned an error'
   run grep -qi 'nothing waiting' <<<"$output"
   [ "$status" -ne 0 ]
-  run grep -q 'GUM SHOULD NOT RUN' <<<"$output"
-  [ "$status" -ne 0 ]
 }
 
-@test "attach falls back to gum filter when fzf is not installed" {
+@test "attach picker: no fzf falls back to a numbered list" {
   _load_attach
   export CONNECT_LOG="$HOME/connect-log"
   : > "$CONNECT_LOG"
-  cmd_connect() { printf '%s\n' "$*" > "$CONNECT_LOG"; }
+  cmd_connect() { printf 'connect: %s\n' "$*" > "$CONNECT_LOG"; }
   export -f cmd_connect
   _serve_waiting '[
     {"workspace_id":"newws","container_id":"c2","window_id":"@9","window_name":"newer","waiting_since":2000},
     {"workspace_id":"oldws","container_id":"c1","window_id":"@3","window_name":"older","waiting_since":1000}
   ]'
-  # No fzf stub installed on purpose — PATH has neither a real nor a stub
-  # fzf, so `command -v fzf` must fail and cmd_attach must fall back to the
-  # gum filter convention (lib/commands.sh, cmd_attach's picker branch).
-  cat > "$STUB_BIN/gum" <<'EOF'
-#!/usr/bin/env bash
-[ "$1" = "filter" ] || { echo "unexpected gum invocation: $*" >&2; exit 99; }
-head -n1
-EOF
-  chmod +x "$STUB_BIN/gum"
-  run cmd_attach
+  export DVW_ASSUME_TTY=1
+  # Hide fzf even if installed, but leave every other `command -v` lookup
+  # (jq, column, ...) working — cmd_attach still needs those.
+  command() { [[ "$1" == "-v" && "$2" == "fzf" ]] && return 1; builtin command "$@"; }
+  export -f command
+  run cmd_attach <<< "2"
   [ "$status" -eq 0 ]
-  grep -q "^newws " "$CONNECT_LOG"
-  grep -q '@9' "$CONNECT_LOG"
+  echo "$output" | grep -q "1)"
+  grep -q "connect:" "$CONNECT_LOG"
+  grep -q 'oldws' "$CONNECT_LOG"
+  grep -q '@3' "$CONNECT_LOG"
+}
+
+@test "attach picker: garbage selection errors out" {
+  _load_attach
+  export CONNECT_LOG="$HOME/connect-log"
+  : > "$CONNECT_LOG"
+  cmd_connect() { printf 'connect: %s\n' "$*" > "$CONNECT_LOG"; }
+  export -f cmd_connect
+  _serve_waiting '[
+    {"workspace_id":"newws","container_id":"c2","window_id":"@9","window_name":"newer","waiting_since":2000},
+    {"workspace_id":"oldws","container_id":"c1","window_id":"@3","window_name":"older","waiting_since":1000}
+  ]'
+  export DVW_ASSUME_TTY=1
+  command() { [[ "$1" == "-v" && "$2" == "fzf" ]] && return 1; builtin command "$@"; }
+  export -f command
+  run cmd_attach <<< "banana"
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -qi "invalid selection"
+  run grep -q "connect:" "$CONNECT_LOG"
+  [ "$status" -ne 0 ]
+}
+
+@test "attach picker: leading-zero out-of-range selection errors out (not octal parse noise)" {
+  _load_attach
+  export CONNECT_LOG="$HOME/connect-log"
+  : > "$CONNECT_LOG"
+  cmd_connect() { printf 'connect: %s\n' "$*" > "$CONNECT_LOG"; }
+  export -f cmd_connect
+  _serve_waiting '[
+    {"workspace_id":"newws","container_id":"c2","window_id":"@9","window_name":"newer","waiting_since":2000},
+    {"workspace_id":"oldws","container_id":"c1","window_id":"@3","window_name":"older","waiting_since":1000}
+  ]'
+  export DVW_ASSUME_TTY=1
+  command() { [[ "$1" == "-v" && "$2" == "fzf" ]] && return 1; builtin command "$@"; }
+  export -f command
+  run cmd_attach <<< "08"
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -qi "invalid selection"
+  run grep -qi "value too great" <<<"$output"
+  [ "$status" -ne 0 ]
+  run grep -q "connect:" "$CONNECT_LOG"
+  [ "$status" -ne 0 ]
+}
+
+@test "attach picker: leading-zero valid selection connects (base-10, not octal)" {
+  _load_attach
+  export CONNECT_LOG="$HOME/connect-log"
+  : > "$CONNECT_LOG"
+  cmd_connect() { printf 'connect: %s\n' "$*" > "$CONNECT_LOG"; }
+  export -f cmd_connect
+  _serve_waiting '[
+    {"workspace_id":"newws","container_id":"c2","window_id":"@9","window_name":"newer","waiting_since":2000},
+    {"workspace_id":"oldws","container_id":"c1","window_id":"@3","window_name":"older","waiting_since":1000}
+  ]'
+  export DVW_ASSUME_TTY=1
+  command() { [[ "$1" == "-v" && "$2" == "fzf" ]] && return 1; builtin command "$@"; }
+  export -f command
+  run cmd_attach <<< "02"
+  [ "$status" -eq 0 ]
+  grep -q "connect:" "$CONNECT_LOG"
+  grep -q 'oldws' "$CONNECT_LOG"
+  grep -q '@3' "$CONNECT_LOG"
 }
 
 @test "attach with multiple waiting windows opens a picker, newest-first row wins" {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Top-level interactive menu for bare `dvw`.
+# Shared ANSI UI helpers (colors, banners, prompts).
 
 # Nord palette — used across banner / picker / chooser chrome.
 DVW_ACCENT="#88c0d0"        # frost cyan (primary accent)
@@ -28,26 +28,15 @@ _ansi() {
 }
 ui_reset() { printf '\033[0m'; }
 
-# ui_banner "Title" ["subtitle"]  — Nord double-border title block.
+# ui_banner "Title" ["subtitle"] — double-border title block, plain ANSI.
 ui_banner() {
   local title="$1" sub="${2:-}"
-  if [[ -n "$sub" ]]; then
-    gum join --vertical \
-      "$(gum style \
-          --border double --padding "0 2" \
-          --foreground "$DVW_ACCENT" --border-foreground "$DVW_ACCENT" \
-          --bold \
-          "$title")" \
-      "$(gum style \
-          --foreground "$DVW_SUBTLE" --margin "0 0 1 2" \
-          "$sub")"
-  else
-    gum style \
-      --border double --padding "0 2" --margin "0 0 1 0" \
-      --foreground "$DVW_ACCENT" --border-foreground "$DVW_ACCENT" \
-      --bold \
-      "$title"
-  fi
+  local a s bar
+  a=$(_ansi "$DVW_ACCENT" bold); s=$(_ansi "$DVW_SUBTLE")
+  bar=$(printf '═%.0s' $(seq 1 $(( ${#title} + 4 ))))
+  printf '%s╔%s╗\n║  %s  ║\n╚%s╝%s\n' "$a" "$bar" "$title" "$bar" "$(ui_reset)"
+  [[ -n "$sub" ]] && printf '  %s%s%s\n' "$s" "$sub" "$(ui_reset)"
+  printf '\n'
 }
 
 # Colored [OK]/[WARN]/[FAIL] markers. Detail string follows on the same line.
@@ -75,6 +64,26 @@ ui_error() {
     "$(_ansi "$DVW_RED")" "$1" "$(ui_reset)" >&2
 }
 
+# ui_confirm "prompt" — plain yes/no, default no. Reads one line from stdin;
+# only y/Y/yes counts as yes. Prompt goes to stderr so callers capturing
+# stdout stay clean. Non-TTY stdin fails closed (rc 1) — headless callers
+# take a --yes flag instead. DVW_ASSUME_TTY=1 is the test hook (same idea
+# as DVW_TUI_FORCE) so bats can pipe answers.
+ui_confirm() {
+  local prompt="$1" reply
+  if [[ ! -t 0 && "${DVW_ASSUME_TTY:-}" != "1" ]]; then
+    ui_error "non-interactive: assuming no — $prompt"
+    return 1
+  fi
+  printf '%s%s%s [y/N] ' \
+    "$(_ansi "$DVW_ACCENT" bold)" "$prompt" "$(ui_reset)" >&2
+  IFS= read -r reply || return 1
+  case "$reply" in
+    y|Y|yes|Yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ui_progress LABEL CMD [ARGS...]
 #
 # Run CMD; if it doesn't return within ~0.8s, emit a dim "› LABEL…" hint
@@ -82,9 +91,19 @@ ui_error() {
 # (catalog service catalog/blueprint fetch, ssh blueprint cp, etc).
 # Returns CMD's exit code unchanged. Cheap on the happy path: no output
 # at all, just one fork+sleep that gets killed before it prints.
+#
+# The marker subshell's stdout is explicitly redirected to /dev/null (its
+# own printf already targets stderr): a backgrounded subshell otherwise
+# inherits the caller's stdout fd, and when ui_progress runs inside a
+# `$(...)` command substitution that fd IS the substitution's pipe. The
+# `sleep 0.8` grandchild would keep that pipe's write end open for its own
+# lifetime, so `$(...)` couldn't return until the sleep expired — even after
+# the foreground command and the `kill` below are done. Closing the
+# subshell's stdout lets the pipe close as soon as the foreground command
+# does, regardless of whether the marker has fired yet.
 ui_progress() {
   local label="$1"; shift
-  ( sleep 0.8 && printf '  %s› %s…%s\n' "$(_ansi "$DVW_SUBTLE")" "$label" "$(ui_reset)" >&2 ) &
+  ( sleep 0.8 && printf '  %s› %s…%s\n' "$(_ansi "$DVW_SUBTLE")" "$label" "$(ui_reset)" >&2 ) >/dev/null &
   local marker_pid=$!
   local rc=0
   "$@" || rc=$?

@@ -5,9 +5,15 @@ cmd_list() {
 }
 
 cmd_rm() {
+  local yes=0 arg args=()
+  for arg in "$@"; do
+    [[ "$arg" == "--yes" ]] && { yes=1; continue; }
+    args+=("$arg")
+  done
+  set -- "${args[@]}"
   local id="${1:-}"
   if [[ -z "$id" ]]; then
-    ui_error "usage: dvw rm <workspace-id>"
+    ui_error "usage: dvw rm <workspace-id> [--yes]"
     return 1
   fi
   if ! catalog_workspace_get "$id" >/dev/null 2>&1; then
@@ -26,7 +32,7 @@ cmd_rm() {
   if (( known_locally )); then
     _dvw_load_running_ids
     if printf '%s\n' "$DVW_RUNNING_IDS" | grep -qFx "$id"; then
-      if ! gum confirm "Workspace $id is running. Delete it?"; then
+      if (( ! yes )) && ! ui_confirm "Workspace $id is running. Delete it?"; then
         ui_info "aborted"
         return 1
       fi
@@ -38,7 +44,7 @@ cmd_rm() {
     }
   else
     ui_action "removing" "$id (catalog-only — not registered with this machine's devpod)"
-    if ! gum confirm "Remove catalog entry only? Remote provider state may be left orphaned."; then
+    if (( ! yes )) && ! ui_confirm "Remove catalog entry only? Remote provider state may be left orphaned."; then
       ui_info "aborted"
       return 1
     fi
@@ -466,14 +472,6 @@ cmd_doctor() {
     fail=$((fail+1))
   fi
 
-  # gum
-  if command -v gum >/dev/null; then
-    ui_status_ok "gum: $(gum --version 2>/dev/null)"
-  else
-    ui_status_fail "gum: not on PATH (install: https://github.com/charmbracelet/gum)"
-    fail=$((fail+1))
-  fi
-
   # jq
   if command -v jq >/dev/null; then
     ui_status_ok "jq: $(jq --version)"
@@ -541,7 +539,7 @@ cmd_doctor() {
   # on the gap (set difference), not on the empty-list case — so a user who
   # has a generic `ssh` provider installed but whose catalog asks for a named
   # `vossisrv` one still gets the prompt.
-  if (( ${#missing_providers[@]} > 0 )) && [[ -t 0 ]] && command -v gum >/dev/null; then
+  if (( ${#missing_providers[@]} > 0 )) && [[ -t 0 ]]; then
     local p
     for p in "${missing_providers[@]}"; do
       if ! ssh -G "$p" >/dev/null 2>&1; then
@@ -550,7 +548,7 @@ cmd_doctor() {
         continue
       fi
       echo
-      if gum confirm "Add devpod SSH provider \"$p\" using SSH host alias \"$p\"?"; then
+      if ui_confirm "Add devpod SSH provider \"$p\" using SSH host alias \"$p\"?"; then
         ui_action "adding provider" "$p (devpod provider add ssh --name $p --option HOST=$p)"
         if devpod provider add ssh --name "$p" --option "HOST=$p"; then
           ui_status_ok "added provider \"$p\""
@@ -930,12 +928,36 @@ cmd_attach() {
     local rows sel
     rows=$(jq -r '.[] | "\(.workspace_id)\t\(.window_name)\t\(.window_id)"' <<<"$raw" \
       | column -t -s $'\t')
-    # fzf-preferred/gum-fallback convention — dvw doesn't hard-require fzf
-    # anywhere else.
+    # fzf-preferred, numbered-list fallback (no interactive picker is
+    # required — dvw doesn't hard-require fzf anywhere else).
     if command -v fzf >/dev/null; then
       sel=$(printf '%s\n' "$rows" | fzf --prompt='attach> ' --height=40% --reverse) || return 1
     else
-      sel=$(printf '%s\n' "$rows" | gum filter --placeholder='attach> ') || return 1
+      # Rows are already column-aligned; print them indexed, read one number.
+      local n i=0 line pick
+      n=$(wc -l <<<"$rows")
+      while IFS= read -r line; do
+        i=$((i+1))
+        printf '%2d) %s\n' "$i" "$line"
+      done <<<"$rows"
+      if [[ ! -t 0 && "${DVW_ASSUME_TTY:-}" != "1" ]]; then
+        ui_error "attach: multiple windows waiting and no way to pick non-interactively"
+        return 1
+      fi
+      printf 'attach #> ' >&2
+      IFS= read -r pick || pick=""
+      if [[ ! "$pick" =~ ^[0-9]+$ ]]; then
+        ui_error "invalid selection: ${pick:-<empty>}"
+        return 1
+      fi
+      # Base-10, not bash's default (leading-zero digits like "08"/"09" would
+      # otherwise be parsed as octal and throw "value too great for base").
+      pick=$((10#$pick))
+      if (( pick < 1 || pick > n )); then
+        ui_error "invalid selection: ${pick:-<empty>}"
+        return 1
+      fi
+      sel=$(sed -n "${pick}p" <<<"$rows")
     fi
     ws=$(awk '{print $1}' <<<"$sel")
     win=$(awk '{print $NF}' <<<"$sel")

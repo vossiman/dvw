@@ -527,10 +527,8 @@ _dvw_safe_devpod_up() {
     ui_info "  running \`devpod up\` against an already-running container can wipe"
     ui_info "  content/ and leave the bind mount on a deleted inode (lost source)."
     ui_info "  recover: fix the network to the agent, or \`dvw recreate $id\`."
-    if [[ -t 0 ]] && command -v gum >/dev/null; then
-      gum confirm "run \`devpod up $id $*\` anyway?" || { ui_info "aborted"; return 1; }
-    else
-      ui_error "refusing to run \`devpod up\` non-interactively without confirmation"
+    if ! ui_confirm "run \`devpod up $id $*\` anyway?"; then
+      ui_info "aborted"
       return 1
     fi
   fi

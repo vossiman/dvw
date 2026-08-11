@@ -16,9 +16,8 @@ def test_argv_builders(monkeypatch):
     assert actions.stop("alpha") == ["dvw", "stop", "alpha"]
     assert actions.start("alpha") == ["dvw", "start", "alpha"]
     assert actions.rebuild("alpha") == ["dvw", "rebuild", "alpha"]
-    assert actions.remove("alpha") == ["dvw", "rm", "alpha"]
+    assert actions.remove("alpha") == ["dvw", "rm", "alpha", "--yes"]
     assert actions.connect("alpha") == ["dvw", "alpha"]
-    assert actions.new() == ["dvw", "new"]
     assert actions.doctor() == ["dvw", "doctor"]
 
 
@@ -64,4 +63,47 @@ def test_run_captured_failure_merges_stderr():
 
 def test_run_captured_missing_binary():
     res = actions.run_captured(["/nonexistent/definitely-not-here"])
+    assert not res.ok and res.returncode == 127
+
+
+def test_new_list_branches():
+    assert actions.new_list_branches("R") == ["dvw", "new", "--list-branches", "R"]
+
+
+def test_new_check_devcontainer():
+    assert actions.new_check_devcontainer("R", "b") == [
+        "dvw", "new", "--check-devcontainer", "R", "b"]
+
+
+def test_new_create_full_flags():
+    assert actions.new_create("R", "b", "n", "cursor",
+                              init_empty=True, seed_devcontainer=True) == [
+        "dvw", "new", "--repo", "R", "--branch", "b", "--name", "n",
+        "--ide", "cursor", "--init-empty", "--seed-devcontainer", "--yes"]
+
+
+def test_new_create_minimal():
+    assert actions.new_create("R", "b", "n", "ssh") == [
+        "dvw", "new", "--repo", "R", "--branch", "b", "--name", "n",
+        "--ide", "ssh", "--yes"]
+
+
+def test_run_captured_split_discards_stderr():
+    """The plumbing probes' stdout is a contract (line 1 = resolved URL);
+    stderr noise (update nudge, ui_progress markers) must not reach it."""
+    res = actions.run_captured_split(
+        ["sh", "-c", "echo '⬆ 3 behind main' >&2; "
+                     "printf 'git@github.com:o/r.git\\nmain\\n'; exit 0"])
+    assert res.ok and res.returncode == 0
+    assert res.output.splitlines() == ["git@github.com:o/r.git", "main"]
+    assert "behind main" not in res.output
+
+
+def test_run_captured_split_passes_rc_through():
+    res = actions.run_captured_split(["sh", "-c", "echo noise >&2; exit 3"])
+    assert not res.ok and res.returncode == 3 and res.output == ""
+
+
+def test_run_captured_split_missing_binary():
+    res = actions.run_captured_split(["/nonexistent/definitely-not-here"])
     assert not res.ok and res.returncode == 127

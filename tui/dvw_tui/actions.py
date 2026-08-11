@@ -3,7 +3,7 @@ action shells out to the battle-tested bash `dvw` paths.
 
 Two execution styles, chosen by the app layer:
   - suspend: Textual suspends, the command runs interactively in the real
-    terminal (gum confirms, progress output, ssh sessions all work).
+    terminal (confirm prompts, progress output, ssh sessions all work).
   - background: fire-and-forget Popen for GUI IDE connects.
   - captured: run quietly, collect output (doctor report rendering).
 """
@@ -31,7 +31,9 @@ def rebuild(workspace_id: str) -> list[str]:
 
 
 def remove(workspace_id: str) -> list[str]:
-    return [dvw_bin(), "rm", workspace_id]
+    # --yes: the TUI's ConfirmScreen already asked; without it the bash
+    # side would prompt a second time inside the suspended terminal.
+    return [dvw_bin(), "rm", workspace_id, "--yes"]
 
 
 def connect(workspace_id: str, mode: str | None = None,
@@ -46,8 +48,24 @@ def connect(workspace_id: str, mode: str | None = None,
     return [dvw_bin(), workspace_id, f"--{mode}"]
 
 
-def new() -> list[str]:
-    return [dvw_bin(), "new"]
+def new_list_branches(repo: str) -> list[str]:
+    return [dvw_bin(), "new", "--list-branches", repo]
+
+
+def new_check_devcontainer(repo: str, branch: str) -> list[str]:
+    return [dvw_bin(), "new", "--check-devcontainer", repo, branch]
+
+
+def new_create(repo: str, branch: str, name: str, ide: str,
+               init_empty: bool = False, seed_devcontainer: bool = False) -> list[str]:
+    argv = [dvw_bin(), "new", "--repo", repo, "--branch", branch,
+            "--name", name, "--ide", ide]
+    if init_empty:
+        argv.append("--init-empty")
+    if seed_devcontainer:
+        argv.append("--seed-devcontainer")
+    argv.append("--yes")
+    return argv
 
 
 def doctor() -> list[str]:
@@ -74,6 +92,25 @@ def run_captured(argv: list[str]) -> ActionResult:
     try:
         proc = subprocess.run(
             argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, stdin=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        return ActionResult(ok=False, returncode=127, output=str(exc))
+    return ActionResult(ok=proc.returncode == 0, returncode=proc.returncode,
+                        output=proc.stdout or "")
+
+
+def run_captured_split(argv: list[str]) -> ActionResult:
+    """Run quietly capturing STDOUT ONLY; stderr is discarded.
+
+    For the machine-read plumbing calls (`dvw new --list-branches` /
+    `--check-devcontainer`) whose stdout is a contract — line 1 is the
+    resolved repo URL. `ui_progress` markers and other bash chatter go to
+    stderr, so merging the streams (run_captured) would corrupt the parse.
+    Keep run_captured for human-facing output (doctor)."""
+    try:
+        proc = subprocess.run(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, stdin=subprocess.DEVNULL,
         )
     except OSError as exc:

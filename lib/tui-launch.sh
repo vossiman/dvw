@@ -20,6 +20,23 @@ _dvw_tui_available() {
   return 0
 }
 
+# Why can't the TUI run here? Prints the FIRST failing prerequisite, in the
+# same order _dvw_tui_available checks them. Only meaningful when
+# _dvw_tui_available just returned 1.
+_dvw_tui_unavailable_reason() {
+  if [[ "${DVW_NO_TUI:-}" == "1" ]]; then
+    printf 'DVW_NO_TUI=1 is set'
+  elif [[ ! -d "$DVW_ROOT/tui" ]]; then
+    printf 'tui/ is missing from this install'
+  elif [[ "${DVW_TUI_FORCE:-}" != "1" ]] && [[ ! -t 0 || ! -t 1 ]]; then
+    printf 'not running in a terminal'
+  elif ! command -v uv >/dev/null 2>&1; then
+    printf 'uv is not on PATH (run dvw doctor)'
+  else
+    printf 'unknown reason'
+  fi
+}
+
 # Print the path of a local unix socket that reaches the catalog service.
 # On the box: the service socket itself. Remote: an ssh -L UDS forward,
 # reused across launches when still healthy.

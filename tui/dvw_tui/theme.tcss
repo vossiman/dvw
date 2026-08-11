@@ -204,3 +204,66 @@ MenuScreen {
     color: $accent;
     text-style: bold;
 }
+
+WizardScreen {
+    align: center middle;
+}
+
+#wizard-box {
+    width: 60;
+    height: auto;
+    background: $bg-panel;
+    border: round $accent;
+    padding: 1;
+}
+
+#wizard-title {
+    color: $accent;
+    text-style: bold;
+}
+
+#wizard-step {
+    height: auto;
+    max-height: 20;
+}
+
+.wizard-label {
+    color: $subtle;
+}
+
+#wizard-repo-list, #wizard-branch-list, #wizard-ide-list {
+    width: 100%;
+    height: auto;
+    max-height: 12;
+    background: $bg-panel;
+    border: none;
+    padding: 0;
+    background-tint: $fg 0%;
+}
+
+#wizard-repo-list > .option-list--option,
+#wizard-branch-list > .option-list--option,
+#wizard-ide-list > .option-list--option {
+    padding: 0 1;
+}
+
+#wizard-repo-list > .option-list--option-highlighted,
+#wizard-branch-list > .option-list--option-highlighted,
+#wizard-ide-list > .option-list--option-highlighted,
+#wizard-repo-list:focus > .option-list--option-highlighted,
+#wizard-branch-list:focus > .option-list--option-highlighted,
+#wizard-ide-list:focus > .option-list--option-highlighted {
+    background: $bg-panel;
+    color: $accent;
+    text-style: bold;
+}
+
+#wizard-repo-input, #wizard-name-input {
+    border: round $grey;
+    background: $bg;
+}
+
+#wizard-step LoadingIndicator {
+    height: 1;
+    background: $bg-panel;
+}

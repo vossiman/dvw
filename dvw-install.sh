@@ -47,21 +47,6 @@ if (( ${#NEEDED[@]} )); then
   sudo apt install -y "${NEEDED[@]}"
 fi
 
-step "checking gum"
-if ! command -v gum >/dev/null; then
-  echo "installing gum from Charm apt repo"
-  sudo mkdir -p /etc/apt/keyrings
-  if [[ ! -f /etc/apt/keyrings/charm.gpg ]]; then
-    curl -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
-  fi
-  if [[ ! -f /etc/apt/sources.list.d/charm.list ]]; then
-    echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
-      | sudo tee /etc/apt/sources.list.d/charm.list
-  fi
-  sudo apt update
-  sudo apt install -y gum
-fi
-
 step "checking devpod"
 if ! command -v devpod >/dev/null; then
   echo "installing devpod"

@@ -103,6 +103,16 @@ class CatalogClient:
     async def orphans(self) -> list[dict]:
         return await self._get("/containers/orphans")
 
+    async def defaults(self) -> dict:
+        """Global catalog defaults (`ide`, `provider`, …) — the same
+        `GET /v1/defaults` bash's `catalog_default` reads. Raises
+        CatalogError when unreachable; callers pick their own fallback."""
+        body = await self._get("/defaults")
+        return body if isinstance(body, dict) else {}
+
+    async def repos(self) -> list[str]:
+        return [d["url"] for d in await self._get("/repos")]
+
     async def waiting(self) -> list[WaitingWindow]:
         """@waiting-flagged windows, newest first. Fail-closed: any catalog
         error or malformed body yields [] — the TUI renders normally with a

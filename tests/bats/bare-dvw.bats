@@ -36,6 +36,44 @@ setup() {
   echo "$output" | grep -q 'subcommands:'
 }
 
+@test "bare dvw names the missing prerequisite: DVW_NO_TUI" {
+  export DVW_NO_TUI=1
+  run main
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "DVW_NO_TUI=1 is set"
+}
+
+@test "bare dvw names the missing prerequisite: uv" {
+  # TTY check bypassed, tui/ present, uv hidden.
+  export DVW_TUI_FORCE=1
+  command() { [[ "$2" == "uv" ]] && return 1; builtin command "$@"; }
+  run main
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "uv is not on PATH"
+}
+
+@test "dvw new (no args, TUI unavailable) errors with reason + usage" {
+  export DVW_NO_TUI=1
+  run main new
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "DVW_NO_TUI=1 is set"
+  echo "$output" | grep -q "usage: dvw new"
+}
+
+@test "dvw new (no args, TUI available) launches the TUI with DVW_TUI_START=new" {
+  export DVW_TUI_FORCE=1
+  dvw_tui_launch() { echo "launched start=${DVW_TUI_START:-}"; }
+  run main new
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "launched start=new"
+}
+
+@test "dvw new with flags dispatches to cmd_new" {
+  cmd_new() { echo "cmd_new:$*"; }
+  run main new --repo R --branch b --name n --ide ssh --yes
+  echo "$output" | grep -q "cmd_new:--repo R"
+}
+
 @test "bare dvw runs the TUI when available" {
   export DVW_TUI_FORCE=1
 
