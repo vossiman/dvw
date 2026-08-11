@@ -446,45 +446,20 @@ class DockerInspector:
     # ---- waiting windows ---------------------------------------------------
 
     def waiting_windows(self) -> list[WaitingWindow]:
-        """All @waiting-flagged windows of the `work` session, all containers.
-
-        One exec per running devpod container; windows without a flag print an
-        empty third field and are skipped. Any per-container failure skips
-        that container — a broken tmux must not 500 the endpoint.
-        """
+        """All @waiting-flagged windows, newest first. Since the tree-view
+        work this is a projection of the same snapshot that serves
+        /containers/windows — one exec per container, not two."""
         out: list[WaitingWindow] = []
-        prefix = self._settings.workspace_mount_prefix
-        for c in self._devpod_containers():
-            if c.status != "running":
-                continue
-            ws_id = _ws_id_from_mounts(c.attrs.get("Mounts", []), prefix)
-            if ws_id is None:
-                continue
-            try:
-                res = c.exec_run(
-                    ["tmux", "list-windows", "-t", "work",
-                     "-F", "#{window_id}\t#{window_name}\t#{@waiting}"],
-                    demux=True,
-                )
-            except Exception:
-                continue
-            if res.exit_code != 0:
-                continue
-            stdout = res.output[0] if isinstance(res.output, tuple) else res.output
-            if not stdout:
-                continue
-            for line in stdout.decode("utf-8", "replace").splitlines():
-                parts = line.split("\t")
-                if len(parts) != 3 or not parts[2]:
-                    continue
-                try:
-                    since = int(parts[2])
-                except ValueError:
+        for ww in self.windows_many():
+            for w in ww.windows:
+                if w.waiting_since is None:
                     continue
                 out.append(WaitingWindow(
-                    workspace_id=ws_id, container_id=c.id,
-                    window_id=parts[0], window_name=parts[1],
-                    waiting_since=since,
+                    workspace_id=ww.workspace_id,
+                    container_id=ww.container_id,
+                    window_id=w.window_id,
+                    window_name=w.name,
+                    waiting_since=w.waiting_since,
                 ))
         out.sort(key=lambda w: w.waiting_since, reverse=True)
         return out
