@@ -66,3 +66,35 @@ def test_windows_many_bad_waiting_epoch_treated_not_waiting(monkeypatch):
     insp = _inspector([c], monkeypatch)
     (ww,) = insp.windows_many()
     assert ww.windows[0].waiting_since is None
+
+
+def test_waiting_windows_projects_flagged_windows_newest_first(monkeypatch):
+    # ws-a: one waiting window (older) + one non-waiting window.
+    a = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a", tmux_windows=(
+        "@1\tfeat-a\t1\t1754890000\t1754891000\tclaude\t1\n"
+        "@2\tidle-a\t0\t1754880000\t\tbash\t1\n"
+    ))
+    # ws-b: one waiting window (newer, different epoch) + one non-waiting.
+    b = FakeContainer("c2", "n2", "u2", "/workspaces/ws-b", tmux_windows=(
+        "@3\tbuild-b\t0\t1754870000\t\tbash\t1\n"
+        "@4\tfeat-b\t1\t1754860000\t1754899000\tclaude\t1\n"
+    ))
+    insp = _inspector([a, b], monkeypatch)
+    result = insp.waiting_windows()
+
+    assert [w.window_id for w in result] == ["@4", "@1"]
+    assert [w.waiting_since for w in result] == [1754899000, 1754891000]
+
+    w_b, w_a = result
+    assert w_b.workspace_id == "ws-b" and w_b.container_id == "c2"
+    assert w_b.window_id == "@4" and w_b.window_name == "feat-b"
+    assert w_a.workspace_id == "ws-a" and w_a.container_id == "c1"
+    assert w_a.window_id == "@1" and w_a.window_name == "feat-a"
+
+
+def test_waiting_windows_empty_when_nothing_flagged(monkeypatch):
+    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a", tmux_windows=(
+        "@1\twork\t1\t1754900000\t\tclaude\t1\n"
+    ))
+    insp = _inspector([c], monkeypatch)
+    assert insp.waiting_windows() == []
