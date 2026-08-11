@@ -15,14 +15,9 @@ from textual.timer import Timer
 from textual.widgets import DataTable, Footer, Input, Static
 
 from ..client import CatalogError, WaitingWindow, Workspace
-from ..render import ACCENT, GREEN, RED, SUBTLE, ide_cell, inspect_lines, state_cell
+from ..render import ACCENT, GREEN, RED, SUBTLE, age, ide_cell, inspect_lines, state_cell
 
 _CATALOG_HOST = os.environ.get("DVW_CATALOG_HOST", "vossisrv")
-
-
-def _age(since: int) -> str:
-    d = max(0, int(time.time()) - since)
-    return f"{d // 3600}h" if d >= 3600 else f"{d // 60}m"
 
 
 class WorkspaceTable(DataTable):
@@ -152,7 +147,7 @@ class MainScreen(Screen):
             table.add_row(
                 Text(w.workspace_id, style=f"bold {ACCENT}"),
                 Text(w.window_name, style=SUBTLE),
-                _age(w.waiting_since),
+                age(w.waiting_since, now=int(time.time())),
             )
         table.display = bool(self._waiting)
 

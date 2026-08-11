@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from rich.text import Text
 
+from .client import WindowInfo
+
 # Nord palette — mirrors lib/ui.sh. theme.tcss carries the same values for CSS.
 ACCENT = "#88c0d0"
 SUBTLE = "#616e88"
@@ -87,3 +89,29 @@ def inspect_lines(data: dict) -> list[tuple[str, str]]:
         rw = "rw" if m.get("rw", True) else "ro"
         pairs.append(("mount", f"{m['source']} → {m['destination']} ({rw})"))
     return pairs
+
+
+def age(epoch: int, now: int) -> str:
+    """Elapsed time since `epoch` as a compact '<N>m' / '<N>h' string."""
+    d = max(0, now - epoch)
+    return f"{d // 3600}h" if d >= 3600 else f"{d // 60}m"
+
+
+def window_label(w: WindowInfo, now: int) -> Text:
+    """Single-line label for a tmux window row in the tree view.
+
+    `❘ <name>  ▸ <command>` (command omitted when empty), ` *` when active,
+    `  <age>` from `activity` (omitted when -1), and `  ⏸ waiting <age>`
+    (bold ACCENT) from `waiting_since` when the window is waiting. The ⏸
+    glyph is always followed by a space.
+    """
+    text = Text(f"❘ {w.name}")
+    if w.command:
+        text.append(f"  ▸ {w.command}", style=SUBTLE)
+    if w.active:
+        text.append(" *")
+    if w.activity >= 0:
+        text.append(f"  {age(w.activity, now)}", style=SUBTLE)
+    if w.waiting_since is not None:
+        text.append(f"  ⏸ waiting {age(w.waiting_since, now)}", style=f"bold {ACCENT}")
+    return text
