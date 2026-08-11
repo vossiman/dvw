@@ -131,6 +131,38 @@ class DockerInspector:
                     return -1
         return -1
 
+    def _tmux_work_attached(self, c: Container) -> int:
+        """Clients attached to the tmux `work` session; 0 if none/unreadable.
+
+        Same probe shape as _tmux_work_activity but a different consumer:
+        activity serves resolve()'s tie-break, this serves status_many's
+        attached indicator. Kept separate so resolver and status semantics
+        stay uncoupled.
+        """
+        if c.status != "running":
+            return 0
+        try:
+            res = c.exec_run(
+                ["tmux", "list-sessions", "-F",
+                 "#{session_name} #{session_attached}"],
+                demux=True,
+            )
+        except Exception:
+            return 0
+        if res.exit_code != 0:
+            return 0
+        stdout = res.output[0] if isinstance(res.output, tuple) else res.output
+        if not stdout:
+            return 0
+        for line in stdout.decode("utf-8", "replace").splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0] == "work":
+                try:
+                    return max(0, int(parts[1]))
+                except ValueError:
+                    return 0
+        return 0
+
     def _uid(self, c: Container) -> str | None:
         return c.labels.get(self._settings.devpod_id_label)
 
@@ -372,6 +404,7 @@ class DockerInspector:
                     container_id=c.id if c else None,
                     devpod_uid=self._uid(c) if c else None,
                     running_siblings=running_count.get(ws_id, 0),
+                    attached=self._tmux_work_attached(c) if c else 0,
                 )
             )
         return out

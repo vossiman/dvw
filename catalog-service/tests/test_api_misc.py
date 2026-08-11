@@ -101,11 +101,17 @@ def test_resolve_endpoint(client, inspector):
 
 def test_containers_status_defaults_to_all(client, inspector):
     client.post("/v1/workspaces", json={"id": "a", "repo": "r", "branch": "m"})
-    inspector.statuses["a"] = WorkspaceStatus(id="a", liveness="alive", container_id="c1")
+    client.post("/v1/workspaces", json={"id": "b", "repo": "r", "branch": "m"})
+    inspector.statuses["a"] = WorkspaceStatus(id="a", liveness="alive", container_id="c1",
+                                              attached=2)
+    inspector.statuses["b"] = WorkspaceStatus(id="b", liveness="alive", container_id="c2")
     r = client.get("/v1/containers/status")
     assert r.json() == [{"id": "a", "liveness": "alive",
                          "container_id": "c1", "devpod_uid": None,
-                         "running_siblings": 0}]
+                         "running_siblings": 0, "attached": 2},
+                        {"id": "b", "liveness": "alive",
+                         "container_id": "c2", "devpod_uid": None,
+                         "running_siblings": 0, "attached": 0}]
 
 
 def test_containers_orphans(client, inspector):

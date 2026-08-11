@@ -256,6 +256,11 @@ class WorkspaceStatus(BaseModel):
     # winner as running. Surfaced so `dvw doctor` can name the condition
     # instead of passing clean. 0 when nothing is running (stopped/absent).
     running_siblings: int = 0
+    # Clients attached to the container's tmux `work` session (any
+    # `dvw <ws> --ssh` from any machine). 0 = nobody attached, but also the
+    # fail-open value for no session / exec failure / stopped container — a
+    # false "attached" misleads; a missed one is harmless.
+    attached: int = 0
 
 
 class Orphan(BaseModel):

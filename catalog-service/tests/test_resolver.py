@@ -18,7 +18,7 @@ class FakeExecResult:
 class FakeContainer:
     def __init__(self, cid, name, uid, dest, status="running",
                  created="2026-01-01T00:00:00Z", tmux_work=None, source="/exists",
-                 owner="codespace:codespace"):
+                 owner="codespace:codespace", tmux_attached=None):
         self.id = cid
         self.name = name
         self.status = status
@@ -30,6 +30,7 @@ class FakeContainer:
         }
         self._tmux_work = tmux_work
         self._owner = owner
+        self._tmux_attached = tmux_attached
 
     def exec_run(self, cmd, demux=False):
         # `stat -c %U:%G /workspaces` — owner probe used to tell a provisioned
@@ -38,6 +39,10 @@ class FakeContainer:
             if self._owner is None:
                 return FakeExecResult(1, None)
             return FakeExecResult(0, f"{self._owner}\n".encode())
+        if cmd and "session_attached" in cmd[-1]:
+            if self._tmux_attached is None:
+                return FakeExecResult(1, None)
+            return FakeExecResult(0, f"work {self._tmux_attached}\nother 0\n".encode())
         if self._tmux_work is None:
             return FakeExecResult(1, None)
         return FakeExecResult(0, f"work {self._tmux_work}\nother 123\n".encode())
@@ -240,3 +245,41 @@ def test_siblings_tolerates_unreadable_owner(monkeypatch):
     insp = _inspector([c], monkeypatch)
     (s,) = insp.siblings("ws-a")
     assert s.workspaces_owner is None
+
+
+def test_status_many_reports_attached_clients(monkeypatch):
+    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a", tmux_attached=2)
+    insp = _inspector([c], monkeypatch)
+    (st,) = insp.status_many(["ws-a"])
+    assert st.attached == 2
+
+
+def test_status_many_attached_zero_when_no_work_session(monkeypatch):
+    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a", tmux_attached=None)
+    insp = _inspector([c], monkeypatch)
+    (st,) = insp.status_many(["ws-a"])
+    assert st.attached == 0
+
+
+def test_status_many_attached_zero_for_stopped_and_absent(monkeypatch):
+    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a", status="exited",
+                      tmux_attached=3)
+    insp = _inspector([c], monkeypatch)
+    res = {s.id: s.attached for s in insp.status_many(["ws-a", "ws-gone"])}
+    assert res == {"ws-a": 0, "ws-gone": 0}
+
+
+def test_tmux_work_attached_garbage_output(monkeypatch):
+    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a")
+    c.exec_run = lambda cmd, demux=False: FakeExecResult(0, b"work banana\n")
+    insp = _inspector([c], monkeypatch)
+    assert insp._tmux_work_attached(c) == 0
+
+
+def test_tmux_work_attached_exec_raises(monkeypatch):
+    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a")
+    def boom(cmd, demux=False):
+        raise RuntimeError("docker died")
+    c.exec_run = boom
+    insp = _inspector([c], monkeypatch)
+    assert insp._tmux_work_attached(c) == 0
