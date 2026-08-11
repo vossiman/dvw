@@ -22,7 +22,11 @@ def test_the_wide_set_is_curated_not_derived():
     # These marks are all Unicode Neutral (not W/F), so a derived set based on
     # east_asian_width(mark) in ("W", "F") would be empty and pass vacuously.
     # The explicit assertion ensures the set contains the right marks.
-    assert WIDE_MARKS == {"⚠", "⏸"}
+    assert WIDE_MARKS == {"⚠", "⏸"}, (
+        "WIDE_MARKS is deliberately curated and cannot be derived from any width API. "
+        "If adding a mark that over-renders in terminal fonts, update this assertion — "
+        "that is expected, not a bug to work around."
+    )
     # Verify each mark is not Wide/Fullwidth so someone can't justify deriving
     # the set from an east_asian_width comparison.
     for mark in WIDE_MARKS:
