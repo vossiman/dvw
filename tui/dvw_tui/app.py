@@ -13,13 +13,14 @@ from textual.app import App
 
 from . import actions
 from .client import CatalogClient, Workspace
-from .palette import TOKYO, build_theme
+from .palette import PALETTES, build_theme, palette_for
 from .screens.confirm import ConfirmScreen
 from .screens.doctor import DoctorScreen
 from .screens.main import MainScreen
 from .screens.menu import MenuScreen
 from .screens.orphans import OrphansScreen
 from .screens.wizard import WizardResult, WizardScreen
+from .settings import load_settings
 
 
 class DvwApp(App):
@@ -37,7 +38,19 @@ class DvwApp(App):
         # ...) from our roles instead of leaving them on its default hue.
         # Done in __init__, before the first compose/paint, so the app
         # never renders a frame in Textual's built-in theme.
-        theme = build_theme(palette=TOKYO)
+        #
+        # The theme name is derived from the resolved palette name (not a
+        # fixed "dvw-tokyo") so a second registered palette gets its own
+        # theme identity instead of colliding with the first one under the
+        # same name. Resolve the name against PALETTES ourselves (rather
+        # than trusting the settings file) so an unknown/invalid name falls
+        # back to "tokyo" for both the palette dict and the theme name in
+        # one step — settings must never prevent the TUI starting.
+        palette_name = load_settings().get("palette")
+        if not isinstance(palette_name, str) or palette_name not in PALETTES:
+            palette_name = "tokyo"
+        theme = build_theme(
+            name=f"dvw-{palette_name}", palette=palette_for(palette_name))
         self.register_theme(theme)
         self.theme = theme.name
 
