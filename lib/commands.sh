@@ -547,7 +547,7 @@ cmd_doctor() {
   # on the gap (set difference), not on the empty-list case — so a user who
   # has a generic `ssh` provider installed but whose catalog asks for a named
   # `vossisrv` one still gets the prompt.
-  if (( ${#missing_providers[@]} > 0 )) && [[ -t 0 ]] && command -v gum >/dev/null; then
+  if (( ${#missing_providers[@]} > 0 )) && [[ -t 0 ]]; then
     local p
     for p in "${missing_providers[@]}"; do
       if ! ssh -G "$p" >/dev/null 2>&1; then
@@ -556,7 +556,7 @@ cmd_doctor() {
         continue
       fi
       echo
-      if gum confirm "Add devpod SSH provider \"$p\" using SSH host alias \"$p\"?"; then
+      if ui_confirm "Add devpod SSH provider \"$p\" using SSH host alias \"$p\"?"; then
         ui_action "adding provider" "$p (devpod provider add ssh --name $p --option HOST=$p)"
         if devpod provider add ssh --name "$p" --option "HOST=$p"; then
           ui_status_ok "added provider \"$p\""

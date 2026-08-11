@@ -93,6 +93,31 @@ STUB
   chmod +x "$STUB_BIN/devpod"
 }
 
+# A container already exists on the provider -> the wipe guard must gate
+# `devpod up` behind ui_confirm (real implementation, not the earlier gum
+# stubs). _load_connect only stubs ui_error/ui_info, so source ui.sh for a
+# real ui_confirm.
+_load_up_guard_container_exists() {
+  _load_up_guard
+  _dvw_provider_has_container() { return 0; }
+  source "$DVW_ROOT/lib/ui.sh"
+  export DVW_ASSUME_TTY=1
+}
+
+@test "_dvw_safe_devpod_up: wipe guard confirmed (y) runs devpod up" {
+  _load_up_guard_container_exists
+  run _dvw_safe_devpod_up myws --ide none <<< "y"
+  [ "$status" -eq 0 ]
+  grep -q "devpod up myws --ide none" "$MODES_LOG"
+}
+
+@test "_dvw_safe_devpod_up: wipe guard declined (n) aborts without running devpod up" {
+  _load_up_guard_container_exists
+  run _dvw_safe_devpod_up myws --ide none <<< "n"
+  [ "$status" -ne 0 ]
+  [ ! -s "$MODES_LOG" ]
+}
+
 @test "_dvw_safe_devpod_up: runs devpod up and releases the lock" {
   _load_up_guard
   run _dvw_safe_devpod_up myws --ide none
