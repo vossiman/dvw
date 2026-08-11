@@ -18,7 +18,8 @@ class FakeExecResult:
 class FakeContainer:
     def __init__(self, cid, name, uid, dest, status="running",
                  created="2026-01-01T00:00:00Z", tmux_work=None, source="/exists",
-                 owner="codespace:codespace", tmux_attached=None):
+                 owner="codespace:codespace", tmux_attached=None,
+                 tmux_windows=None):
         self.id = cid
         self.name = name
         self.status = status
@@ -31,6 +32,7 @@ class FakeContainer:
         self._tmux_work = tmux_work
         self._owner = owner
         self._tmux_attached = tmux_attached
+        self._tmux_windows = tmux_windows
 
     def exec_run(self, cmd, demux=False):
         # `stat -c %U:%G /workspaces` — owner probe used to tell a provisioned
@@ -39,6 +41,13 @@ class FakeContainer:
             if self._owner is None:
                 return FakeExecResult(1, None)
             return FakeExecResult(0, f"{self._owner}\n".encode())
+        # windows_many's single-exec snapshot — discriminated by
+        # "pane_current_command" in the format string so it stays distinct
+        # from the waiting-probe format below (rewired in Task 2).
+        if cmd and "pane_current_command" in (cmd[-1] if cmd else ""):
+            if self._tmux_windows is None:
+                return FakeExecResult(1, None)
+            return FakeExecResult(0, self._tmux_windows.encode())
         if cmd and "session_attached" in cmd[-1]:
             if self._tmux_attached is None:
                 return FakeExecResult(1, None)
