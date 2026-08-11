@@ -58,6 +58,33 @@ async def test_app_registers_and_selects_the_dvw_theme(fake_client):
         assert active.background == TOKYO["bg"]
 
 
+async def test_modal_screens_keep_a_translucent_background(fake_client):
+    """Modal screens must float over the still-visible main screen.
+
+    Regression: a bare `Screen { background: $bg }` rule in theme.tcss also
+    matched every ModalScreen subclass (type selectors match subclasses, and
+    the user stylesheet beats ModalScreen's DEFAULT_CSS), painting the modal
+    fully opaque — opening the menu blacked out the whole tree + inspect
+    pane instead of dimming them behind the box."""
+    from dvw_tui.screens.confirm import ConfirmScreen
+    from dvw_tui.screens.menu import MenuScreen
+
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+        assert isinstance(app.screen, MenuScreen)
+        assert app.screen.styles.background.a < 1
+
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("X")  # remove → ConfirmScreen
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen)
+        assert app.screen.styles.background.a < 1
+
+
 async def test_pilot_renders_tokyo_colours_not_nord(fake_client):
     """Prove the theme was actually applied to a live, mounted widget — not
     merely that build_theme() holds the right string. A registered-but-never

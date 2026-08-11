@@ -96,6 +96,15 @@ def test_age_formats_minutes_and_hours():
     assert age(now, now) == "0m"
 
 
+def test_age_formats_days():
+    # A leaked flag used to render as e.g. "8801h" — day-scale ages must
+    # read as days, hour-scale ones stay hours.
+    now = 1_000_000
+    assert age(now - 86_400, now) == "1d"
+    assert age(now - 90 * 3600, now) == "3d"
+    assert age(now - 86_399, now) == "23h"
+
+
 def test_age_clamps_negative_delta():
     assert age(100, 50) == "0m"
 
