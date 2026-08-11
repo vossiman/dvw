@@ -31,7 +31,9 @@ def rebuild(workspace_id: str) -> list[str]:
 
 
 def remove(workspace_id: str) -> list[str]:
-    return [dvw_bin(), "rm", workspace_id]
+    # --yes: the TUI's ConfirmScreen already asked; without it the bash
+    # side would prompt a second time inside the suspended terminal.
+    return [dvw_bin(), "rm", workspace_id, "--yes"]
 
 
 def connect(workspace_id: str, mode: str | None = None,

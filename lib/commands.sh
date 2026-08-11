@@ -5,9 +5,15 @@ cmd_list() {
 }
 
 cmd_rm() {
+  local yes=0 arg args=()
+  for arg in "$@"; do
+    [[ "$arg" == "--yes" ]] && { yes=1; continue; }
+    args+=("$arg")
+  done
+  set -- "${args[@]}"
   local id="${1:-}"
   if [[ -z "$id" ]]; then
-    ui_error "usage: dvw rm <workspace-id>"
+    ui_error "usage: dvw rm <workspace-id> [--yes]"
     return 1
   fi
   if ! catalog_workspace_get "$id" >/dev/null 2>&1; then
@@ -26,7 +32,7 @@ cmd_rm() {
   if (( known_locally )); then
     _dvw_load_running_ids
     if printf '%s\n' "$DVW_RUNNING_IDS" | grep -qFx "$id"; then
-      if ! gum confirm "Workspace $id is running. Delete it?"; then
+      if (( ! yes )) && ! ui_confirm "Workspace $id is running. Delete it?"; then
         ui_info "aborted"
         return 1
       fi
@@ -38,7 +44,7 @@ cmd_rm() {
     }
   else
     ui_action "removing" "$id (catalog-only — not registered with this machine's devpod)"
-    if ! gum confirm "Remove catalog entry only? Remote provider state may be left orphaned."; then
+    if (( ! yes )) && ! ui_confirm "Remove catalog entry only? Remote provider state may be left orphaned."; then
       ui_info "aborted"
       return 1
     fi

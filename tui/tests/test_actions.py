@@ -16,7 +16,7 @@ def test_argv_builders(monkeypatch):
     assert actions.stop("alpha") == ["dvw", "stop", "alpha"]
     assert actions.start("alpha") == ["dvw", "start", "alpha"]
     assert actions.rebuild("alpha") == ["dvw", "rebuild", "alpha"]
-    assert actions.remove("alpha") == ["dvw", "rm", "alpha"]
+    assert actions.remove("alpha") == ["dvw", "rm", "alpha", "--yes"]
     assert actions.connect("alpha") == ["dvw", "alpha"]
     assert actions.new() == ["dvw", "new"]
     assert actions.doctor() == ["dvw", "doctor"]
