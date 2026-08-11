@@ -27,6 +27,26 @@ async def test_table_lists_workspaces(fake_client):
         assert "alpha" in str(first[0])
 
 
+async def test_table_shows_attached_suffix(fake_client):
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one(WorkspaceTable)
+        first = table.get_row_at(0)
+        assert "⇄ 2" in str(first[3])      # alpha: alive, attached=2
+        second = table.get_row_at(1)
+        assert "⇄" not in str(second[3])   # beta: stopped
+
+
+async def test_inspect_pane_shows_attached_line(fake_client):
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.4)             # inspect debounce
+        pane = app.query_one("#inspect-body")
+        assert "attached" in str(pane.content)
+        assert "2 clients" in str(pane.content)
+
+
 async def test_inspect_pane_shows_focused_workspace(fake_client):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:

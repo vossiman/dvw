@@ -36,6 +36,7 @@ class Workspace:
     last_used_at: str | None = None
     created_on: str | None = None
     liveness: str = "unknown"  # merged in from /containers/status
+    attached: int = 0  # merged in from /containers/status
 
     @property
     def short_repo(self) -> str:
@@ -86,15 +87,19 @@ class CatalogClient:
     async def workspaces(self) -> list[Workspace]:
         return [Workspace.from_api(d) for d in await self._get("/workspaces")]
 
-    async def statuses(self) -> dict[str, str]:
-        return {d["id"]: d["liveness"]
-                for d in await self._get("/containers/status")}
+    async def statuses(self) -> dict[str, dict]:
+        return {d["id"]: d for d in await self._get("/containers/status")}
 
     async def workspaces_with_status(self) -> list[Workspace]:
         ws = await self.workspaces()
-        liveness = await self.statuses()
+        statuses = await self.statuses()
         for w in ws:
-            w.liveness = liveness.get(w.id, "unknown")
+            s = statuses.get(w.id, {})
+            w.liveness = s.get("liveness", "unknown")
+            try:
+                w.attached = max(0, int(s.get("attached", 0) or 0))
+            except (TypeError, ValueError):
+                w.attached = 0
         return ws
 
     async def inspect(self, workspace_id: str) -> dict:

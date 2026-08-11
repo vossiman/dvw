@@ -1,4 +1,4 @@
-from dvw_tui.render import human_bytes, liveness_cell, ide_color, meter
+from dvw_tui.render import human_bytes, liveness_cell, ide_color, meter, state_cell
 
 def test_human_bytes():
     assert human_bytes(None) == "—"
@@ -27,3 +27,18 @@ def test_meter():
     assert "50%" in bar and "▰" in bar and "▱" in bar
     assert meter(0.0).count("▰") == 0
     assert meter(100.0).count("▱") == 0
+
+def test_state_cell_shows_attached_suffix():
+    text = state_cell("alive", 2)
+    assert "⇄ 2" in text.plain
+    assert "running" in text.plain
+
+
+def test_state_cell_no_suffix_when_zero_or_not_running():
+    assert "⇄" not in state_cell("alive", 0).plain
+    assert "⇄" not in state_cell("stopped", 2).plain
+    assert "⇄" not in state_cell("absent", 1).plain
+
+
+def test_state_cell_stale_shows_suffix():
+    assert "⇄ 1" in state_cell("stale", 1).plain

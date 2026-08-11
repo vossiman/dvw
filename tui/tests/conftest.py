@@ -19,7 +19,8 @@ class FakeClient:
         self._workspaces = [
             Workspace(id="alpha", repo="git@github.com:vossiman/alpha.git",
                       branch="main", ide="cursor", provider="vossisrv",
-                      last_used_at="2026-06-10T10:00:00Z", liveness="alive"),
+                      last_used_at="2026-06-10T10:00:00Z", liveness="alive",
+                      attached=2),
             Workspace(id="beta", repo="git@github.com:vossiman/beta.git",
                       branch="dev", ide="ssh", provider="vossisrv",
                       last_used_at="2026-06-09T10:00:00Z", liveness="stopped"),

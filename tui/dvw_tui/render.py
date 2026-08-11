@@ -30,6 +30,16 @@ def liveness_cell(liveness: str) -> Text:
     return Text(label, style=f"bold {color}" if bold else color)
 
 
+def state_cell(liveness: str, attached: int = 0) -> Text:
+    """liveness_cell plus an accent `⇄ N` suffix when N tmux clients are
+    attached and the container is actually up (alive or stale — an attached
+    client on a stale mount is exactly worth noticing)."""
+    text = liveness_cell(liveness)
+    if attached >= 1 and liveness in ("alive", "stale"):
+        text.append(f" ⇄ {attached}", style=f"bold {ACCENT}")
+    return text
+
+
 def ide_color(ide: str) -> str:
     return _IDE_COLORS.get(ide, GREY)
 
