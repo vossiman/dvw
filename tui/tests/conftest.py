@@ -1,5 +1,7 @@
 import pytest
 
+from dvw_tui import actions
+from dvw_tui.actions import ActionResult
 from dvw_tui.client import CatalogError, Workspace
 
 
@@ -74,3 +76,28 @@ class FakeClient:
 @pytest.fixture
 def fake_client():
     return FakeClient()
+
+
+@pytest.fixture
+def fake_new_cli(monkeypatch):
+    """Canned `dvw new --list-branches/--check-devcontainer` results.
+
+    Monkeypatches actions.run_captured so the wizard's subprocess calls
+    resolve instantly. Tests mutate state["branches"]/["devcontainer_rc"]
+    before driving the pilot; state["calls"] records every argv.
+    """
+    state = {"branches": (0, "git@github.com:vossiman/alpha.git\nmain\ndev\n"),
+             "devcontainer_rc": 0, "calls": []}
+
+    def fake_run_captured(argv):
+        state["calls"].append(argv)
+        if "--list-branches" in argv:
+            rc, out = state["branches"]
+            return ActionResult(ok=rc == 0, returncode=rc, output=out)
+        if "--check-devcontainer" in argv:
+            rc = state["devcontainer_rc"]
+            return ActionResult(ok=rc == 0, returncode=rc, output="")
+        raise AssertionError(f"unexpected argv: {argv}")
+
+    monkeypatch.setattr(actions, "run_captured", fake_run_captured)
+    return state
