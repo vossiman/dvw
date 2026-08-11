@@ -16,6 +16,16 @@ setup() {
   )
   EMPTY_REMOTE="$BATS_TEST_TMPDIR/empty.git"
   git init -q --bare "$EMPTY_REMOTE"
+  # A "remote" with one commit on main that already carries a devcontainer.
+  DEVC_REMOTE="$BATS_TEST_TMPDIR/devc.git"
+  git init -q --bare "$DEVC_REMOTE"
+  (
+    tmp=$(mktemp -d) && cd "$tmp" && git init -q -b main \
+      && mkdir -p .devcontainer && printf '{"stub": true}\n' > .devcontainer/devcontainer.json \
+      && git add -A \
+      && git -c user.name=t -c user.email=t@t commit -q -m init \
+      && git remote add origin "$DEVC_REMOTE" && git push -q origin main
+  )
   # Stubs: catalog knows nothing, devpod succeeds and records.
   catalog_workspace_get() { return 1; }
   catalog_default() { :; }
@@ -94,6 +104,39 @@ setup() {
   run cmd_new --repo "$REMOTE" --branch main --name wsx --ide ssh --yes
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "already exists in DevPod"
+}
+
+@test "new --list-branches: prints resolved url then branches, rc 0" {
+  run cmd_new --list-branches "$REMOTE"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | sed -n 1p)" = "$REMOTE" ]
+  echo "$output" | sed -n 2p | grep -qx "main"
+}
+
+@test "new --list-branches: empty repo rc 3, url still printed" {
+  run cmd_new --list-branches "$EMPTY_REMOTE"
+  [ "$status" -eq 3 ]
+  [ "$(echo "$output" | sed -n 1p)" = "$EMPTY_REMOTE" ]
+}
+
+@test "new --list-branches: unreachable repo rc 2" {
+  run cmd_new --list-branches "$BATS_TEST_TMPDIR/does-not-exist.git"
+  [ "$status" -eq 2 ]
+}
+
+@test "new --check-devcontainer: missing devcontainer rc 1" {
+  run cmd_new --check-devcontainer "$REMOTE" main
+  [ "$status" -eq 1 ]
+}
+
+@test "new --check-devcontainer: present devcontainer rc 0" {
+  run cmd_new --check-devcontainer "$DEVC_REMOTE" main
+  [ "$status" -eq 0 ]
+}
+
+@test "new --check-devcontainer: unreachable repo rc 2" {
+  run cmd_new --check-devcontainer "$BATS_TEST_TMPDIR/does-not-exist.git" main
+  [ "$status" -eq 2 ]
 }
 
 # Regression for a bug where ui_progress's backgrounded marker subshell

@@ -233,6 +233,21 @@ _new_resolve_branches() {
 }
 
 cmd_new() {
+  # Plumbing for the TUI wizard — resolve/inspect only, no side effects.
+  # Comes before the devpod prerequisite check: neither needs devpod or a name.
+  if [[ "${1:-}" == "--list-branches" ]]; then
+    [[ -n "${2:-}" ]] || { _new_usage; return 1; }
+    local prc=0
+    _new_resolve_branches "$2" || prc=$?
+    return "$prc"
+  fi
+  if [[ "${1:-}" == "--check-devcontainer" ]]; then
+    [[ -n "${2:-}" && -n "${3:-}" ]] || { _new_usage; return 1; }
+    local prc=0
+    _branch_has_devcontainer "$2" "$3" || prc=$?
+    return "$prc"
+  fi
+
   command -v devpod >/dev/null || { ui_error "devpod not installed; run dvw doctor"; return 1; }
 
   local repo="" branch="" name="" ide="" init_empty=0 seed_devc=0 yes=0
