@@ -99,4 +99,9 @@ def scanner_frames(art: str, palette: dict[str, str], period_ms: int,
         try:
             return [scanner_settled(art, palette)]
         except Exception:
-            return [Text(art)]
+            # Fallback: render settled with hardcoded safe colours
+            try:
+                lines, _ = _block(art)
+                return [_frame(lines, None, "#808080", "#ffffff", "#ffff00")]
+            except Exception:
+                return [Text(art)]

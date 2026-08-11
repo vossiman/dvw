@@ -72,3 +72,4 @@ def test_zero_period_degrades_to_one_settled_frame():
 def test_a_palette_missing_roles_degrades_instead_of_raising():
     frames = scanner_frames(ART, {}, 900)
     assert len(frames) == 1
+    assert len({str(span.style) for span in frames[0].spans}) == 1
