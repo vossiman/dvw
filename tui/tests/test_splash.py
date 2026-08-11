@@ -111,18 +111,60 @@ async def test_slow_client_flips_within_a_frame_of_readiness(monkeypatch):
 # no double paint: the tree is populated BEFORE the flip, not after
 # ---------------------------------------------------------------------------
 
-async def test_ui_is_painted_before_the_flip():
+async def test_ui_is_painted_before_the_flip(monkeypatch):
+    """The most important test in this file: catch a regression back to
+    painting the tree at handover instead of in the back buffer.
+
+    Two things this test deliberately does NOT do, because both were tried
+    and both let a real regression through:
+
+    1. Poll for `overlay.display is False` and *then* check the tree. A
+       deferred paint (e.g. `call_after_refresh(self._render_tree)`
+       scheduled right where `data_ready` flips True) completes on the very
+       next screen refresh, which is far sooner than any poll interval can
+       observe — so the tree looks populated either way.
+    2. Wrap `SplashOverlay._tick` and capture state inside the tick that
+       flips `display`. `_tick` only runs on the 33ms (`1/FPS`) interval,
+       and a `call_after_refresh`-deferred paint completes long before that
+       tick next fires — so by the time the wrapped tick runs, the deferred
+       paint has *already happened*, regardless of how tightly the capture
+       inside the tick is written. The gap this test exists to catch is
+       entirely between `data_ready` being set and the paint actually
+       running; nothing tied to the splash's own poll cadence can see it.
+
+    Instead this hooks the exact assignment of `MainScreen.data_ready`
+    itself — the one moment that must never be reached before the paint has
+    already happened — and snapshots the tree synchronously, in the same
+    call stack as the assignment, before control returns to the event loop
+    and any scheduled callback (`call_after_refresh`, `set_timer`, ...) gets
+    a chance to run.
+    """
     client = SlowClient(delay=0.8)
     app = DvwApp(client=client)
+    captured: dict[str, list] = {}
+
+    def getter(self: MainScreen) -> bool:
+        return self.__dict__.get("_data_ready", False)
+
+    def setter(self: MainScreen, value: bool) -> None:
+        self.__dict__["_data_ready"] = value
+        if value and "rows" not in captured:
+            tree = self.query_one(WorkspaceTree)
+            captured["rows"] = list(tree.root.children)
+
+    # `data_ready` is a plain instance attribute (set in __init__), not a
+    # class attribute, so the class doesn't already have one to override —
+    # raising=False lets monkeypatch install the property anyway. It cleans
+    # up on the class after the test either way.
+    monkeypatch.setattr(MainScreen, "data_ready", property(getter, setter),
+                        raising=False)
+
     async with app.run_test() as pilot:
         overlay = _overlay(app)
         await _wait_until_hidden(pilot, overlay)
-        # No further pause here: whatever the tree shows right now is what
-        # was on screen the instant the splash hid. A regression that moved
-        # the paint into the handover itself would still show an empty tree
-        # at this exact point.
-        tree = app.query_one(WorkspaceTree)
-        rows = list(tree.root.children)
+
+    assert "rows" in captured, "data_ready was never set to True"
+    rows = captured["rows"]
     assert len(rows) == len(client._workspaces) == 2
     assert rows[0].data == ("ws", "alpha")
 
