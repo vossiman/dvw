@@ -49,16 +49,19 @@ class DvwApp(App):
         palette_name = load_settings().get("palette")
         if not isinstance(palette_name, str) or palette_name not in PALETTES:
             palette_name = "tokyo"
+        self._resolved_palette = palette_for(palette_name)
         theme = build_theme(
-            name=f"dvw-{palette_name}", palette=palette_for(palette_name))
+            name=f"dvw-{palette_name}", palette=self._resolved_palette)
         self.register_theme(theme)
         self.theme = theme.name
 
     def get_default_screen(self) -> MainScreen:
         # MainScreen is the base of the screen stack (Textual >= 1.x queries
         # the default screen from App.query_*, so pushing in on_mount would
-        # leave a blank default screen underneath).
-        return MainScreen()
+        # leave a blank default screen underneath). Threaded the same
+        # resolved palette through so the splash overlay it mounts follows
+        # the configured palette too, not just the CSS/theme half of the UI.
+        return MainScreen(palette=self._resolved_palette)
 
     def on_mount(self) -> None:
         # `dvw new` (bare, TUI available) lands directly in the wizard.

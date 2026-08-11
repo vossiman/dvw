@@ -7,7 +7,7 @@ Screen {
     color: $fg;
 }
 
-/* Nord scrollbars everywhere — the defaults are harsh black. */
+/* Themed scrollbars everywhere — the defaults are harsh black. */
 * {
     scrollbar-background: $bg;
     scrollbar-background-hover: $bg;

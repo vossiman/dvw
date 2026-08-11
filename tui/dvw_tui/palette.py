@@ -34,9 +34,58 @@ TOKYO: dict[str, str] = {
 
 # Registry so the `palette` setting (stored as a name, e.g. "tokyo") can be
 # resolved to a dict. Add new palettes here.
+#
+# Known limitation: only the registered Textual theme (this module) and the
+# boot splash (screens/splash.py) actually follow the configured palette
+# today. render.py's ACCENT/SUBTLE/GREEN/RED/GREY/BLUE/TEAL/YELLOW/PEACH
+# constants are bound to TOKYO at import time, so registering a second
+# palette here and pointing `palette` at it will recolour the CSS and splash
+# but leave the tree/inspect pane's text still drawn in tokyo colours — a
+# half-recoloured UI — until those constants are de-globalised to read from
+# the resolved palette at render time instead of at import time.
 PALETTES: dict[str, dict[str, str]] = {
     "tokyo": TOKYO,
 }
+
+
+def _validate_palettes() -> None:
+    """Fail loudly at import time on our own malformed data.
+
+    Every registered palette must have exactly the `ROLES` keys, and every
+    value must be a well-formed `#RRGGBB` string — this is a developer
+    error (a bad entry added to PALETTES), not a runtime condition, so
+    raising here is correct: better to crash on import than to have
+    `scanner._lerp` silently render a wrong colour from something like
+    `"#abcdef00"`.
+    """
+    roles = set(ROLES)
+    for name, p in PALETTES.items():
+        keys = set(p)
+        if keys != roles:
+            missing = roles - keys
+            extra = keys - roles
+            detail = []
+            if missing:
+                detail.append(f"missing {sorted(missing)}")
+            if extra:
+                detail.append(f"unexpected {sorted(extra)}")
+            raise ValueError(
+                f"palette {name!r} has the wrong role keys: {'; '.join(detail)}")
+        for key, value in p.items():
+            ok = (isinstance(value, str) and len(value) == 7
+                  and value.startswith("#"))
+            if ok:
+                try:
+                    int(value[1:], 16)
+                except ValueError:
+                    ok = False
+            if not ok:
+                raise ValueError(
+                    f"palette {name!r} role {key!r} is not a well-formed "
+                    f"#RRGGBB colour: {value!r}")
+
+
+_validate_palettes()
 
 
 def build_theme(name: str = "dvw-tokyo", palette: dict[str, str] | None = None) -> "Theme":

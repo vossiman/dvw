@@ -456,6 +456,22 @@ SSH connects suspend the TUI and resume when the session ends. Cursor (via the
 `x` menu or `dvw <id> --cursor`) launches in the background and the TUI stays
 up. All mutations run through the same bash code paths as the CLI.
 
+### Settings
+
+The TUI reads (hand-edited only — nothing writes it) `~/.config/dvw/tui.json`:
+
+```json
+{ "palette": "tokyo", "motion": true }
+```
+
+- `palette` — colour scheme name, default `"tokyo"`. Unknown names fall back
+  to `"tokyo"` silently.
+- `motion` — boot-splash animation, default `true`.
+
+`DVW_TUI_MOTION=0` overrides `motion` regardless of the file (also accepts
+`false`, `no`, `off`, or an empty value, case-insensitively) — the escape
+hatch for CI and slow ssh links.
+
 ## Tests
 
 ```bash

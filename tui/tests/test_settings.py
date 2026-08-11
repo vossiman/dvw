@@ -71,12 +71,6 @@ def test_env_var_falsy_values_disable_motion(monkeypatch, value):
     assert S.motion_enabled(S.load_settings()) is False
 
 
-def test_env_var_off_disables_motion(monkeypatch):
-    monkeypatch.setenv("DVW_TUI_MOTION", "off")
-    S.save_settings({"motion": True})
-    assert S.motion_enabled(S.load_settings()) is False
-
-
 def test_wrong_typed_motion_falls_back_to_default():
     S.settings_path().parent.mkdir(parents=True, exist_ok=True)
     S.settings_path().write_text(json.dumps({"motion": "false"}))

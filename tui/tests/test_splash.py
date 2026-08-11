@@ -239,3 +239,81 @@ async def test_splash_is_centred_with_no_added_margins(size, monkeypatch):
     right_margin = len(first_row) - len(first_row.rstrip())
     assert left_margin > 0
     assert abs(left_margin - right_margin) <= 1
+
+
+# ---------------------------------------------------------------------------
+# the 30 Hz timer must stop at the flip, not run for the app's whole life
+# ---------------------------------------------------------------------------
+
+async def test_tick_timer_stops_after_the_flip(monkeypatch):
+    """Regression test for the splash's `set_interval` never being cancelled.
+
+    Wraps `_tick` to count invocations, waits for the flip, then advances
+    several more frame intervals and asserts the count is unchanged — proof
+    the widget isn't still waking the event loop 30 times a second after it
+    has nothing left to draw.
+    """
+    monkeypatch.setenv("DVW_TUI_MOTION", "1")
+    app = DvwApp(client=FakeClient())
+    async with app.run_test() as pilot:
+        overlay = _overlay(app)
+        calls = {"n": 0}
+        original_tick = overlay._tick
+
+        def counting_tick():
+            calls["n"] += 1
+            original_tick()
+
+        monkeypatch.setattr(overlay, "_tick", counting_tick)
+
+        await _wait_until_hidden(pilot, overlay)
+        assert overlay._timer is None, "timer must be cleared at the flip"
+        count_at_flip = calls["n"]
+
+        # Advance several more frame intervals — if the timer weren't
+        # stopped, _tick would keep firing (and instantly re-return, since
+        # `display` is already False and `_ready()` is still True).
+        for _ in range(10):
+            await pilot.pause(FRAME_MS / 1000)
+
+    assert calls["n"] == count_at_flip
+
+
+# ---------------------------------------------------------------------------
+# palette: the splash follows the configured palette, not a hardcoded one
+# ---------------------------------------------------------------------------
+
+async def test_splash_uses_the_configured_palette_not_tokyo(tmp_path, monkeypatch):
+    """`app.py` resolves the `palette` setting for the Textual theme; the
+    splash must follow the same resolution rather than hardcoding TOKYO.
+
+    Monkeypatches a second palette into `PALETTES` (same technique as
+    test_app_settings.py) with a distinctive `accent` so the settled
+    frame's colour can be checked against it directly (with motion off,
+    `scanner_settled` paints every glyph `bold {accent}` — see
+    scanner.py's `_colours`) — proof the widget is actually painting from
+    the resolved palette, not merely accepting one.
+    """
+    import json
+
+    from dvw_tui import palette as P
+    from dvw_tui import settings as S
+    from dvw_tui.palette import TOKYO
+
+    monkeypatch.setenv("HOME", str(tmp_path))  # never touch the real ~/.config/dvw/
+
+    other = dict(TOKYO)
+    other["accent"] = "#222222"
+    monkeypatch.setitem(P.PALETTES, "other", other)
+
+    monkeypatch.setenv("DVW_TUI_MOTION", "0")  # single settled frame, easy to inspect
+    S.settings_path().parent.mkdir(parents=True, exist_ok=True)
+    S.settings_path().write_text(json.dumps({"palette": "other"}))
+
+    app = DvwApp(client=FakeClient())
+    async with app.run_test() as pilot:
+        overlay = _overlay(app)
+        styles = {str(span.style) for span in overlay._frames[0].spans}
+
+    assert styles == {f"bold {other['accent']}"}
+    assert other["accent"] != TOKYO["accent"]

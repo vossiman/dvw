@@ -46,6 +46,9 @@ def load_settings() -> dict:
 
 
 def save_settings(data: dict) -> None:
+    # No production caller today — the TUI only reads this file, never
+    # writes it. `tui.json` is hand-edited by the user; this function
+    # exists for tests and any future settings-editing UI.
     try:
         path = settings_path()
         path.parent.mkdir(parents=True, exist_ok=True)

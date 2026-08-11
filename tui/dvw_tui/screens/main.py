@@ -24,6 +24,7 @@ from textual.widgets.tree import TreeNode
 
 from ..client import CatalogError, Workspace, WorkspaceWindows
 from ..glyphs import glyph
+from ..palette import TOKYO
 from ..render import (
     ACCENT,
     GREEN,
@@ -89,8 +90,13 @@ class MainScreen(Screen):
         Binding("q", "app.quit", "quit"),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, palette: dict[str, str] = TOKYO) -> None:
         super().__init__()
+        # Resolved by the app from the `palette` setting and threaded through
+        # to the splash overlay below, which otherwise has no route to it
+        # (it isn't mounted as a pushed Screen with access to app state at
+        # construction time).
+        self._palette = palette
         self._workspaces: list[Workspace] = []
         self._windows: dict[str, WorkspaceWindows] = {}
         # Workspace ids the user collapsed by hand — nodes are rebuilt from
@@ -125,7 +131,7 @@ class MainScreen(Screen):
         # Boot splash: layered above everything else in this screen while
         # refresh_data() paints the tree behind it (see splash.py). Mounted
         # here, not pushed as a Screen, so `app.screen` never changes.
-        yield SplashOverlay(ready=lambda: self.data_ready)
+        yield SplashOverlay(ready=lambda: self.data_ready, palette=self._palette)
 
     def on_mount(self) -> None:
         self._update_header(connected=False)
