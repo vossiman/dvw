@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Launcher for the Textual TUI (bare `dvw`). Decides availability, guarantees
 # a LOCAL unix socket to the catalog service, and hands off to `uv run`.
-# Fallback to the gum menu (ui_top_menu) stays in dvw's dispatch — this file
-# only ever says "can run / cannot run" and "run it".
+# When unavailable (or the launch fails), dvw's dispatch reports an error and
+# exits — bare `dvw` is TUI-or-error since 2026-08-10, no menu fallback. This
+# file only ever says "can run / cannot run" and "run it".
 #
 # Env:
-#   DVW_NO_TUI=1     force the gum menu (escape hatch)
+#   DVW_NO_TUI=1     disable the TUI (bare `dvw` then errors out)
 #   DVW_TUI_FORCE=1  skip the tty/uv checks (tests only)
 
 # Can the TUI run here? Pure check, no side effects.

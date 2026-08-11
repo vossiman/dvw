@@ -23,12 +23,12 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 
 | Command | Effect |
 |--|--|
-| `dvw` | top-level menu (Connect/New/Status/Stop/Start/Remove/Doctor) |
+| `dvw` | opens the TUI (requires `uv` + a tty); errors with the subcommand list if the TUI can't run |
 | `dvw <id>` | connect via SSH (terminal + tmux `work` session) |
 | `dvw <id> --ssh` | same as bare connect (explicit) |
 | `dvw <id> --cursor` | open in Cursor via `devpod up --ide cursor` |
 | `dvw <id> --both` | open in Cursor, then ssh + attach `work` tmux session |
-| `dvw attach` | connect to the tmux window most recently flagged waiting-for-input (picker if several; menu if none) |
+| `dvw attach` | connect to the tmux window most recently flagged waiting-for-input (picker if several; reports and exits if none) — TUI equivalent: `a` (newest) or Enter on a waiting row (that row) |
 | `dvw -l` | list workspaces (MRU order) |
 | `dvw new` | wizard: create a new workspace, append to catalog |
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
@@ -38,6 +38,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw update` | Update to the latest released tooling and refresh the version marker. Standalone checkout: pull `main` + reinstall. Submodule checkout: follow the parent's pins (ff the parent, check out pinned submodules, reinstall) — never commits or pushes. Startup/`dvw doctor` nudge when behind `origin/main`. |
 | `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
 | `dvw doctor` | health check: catalog endpoint + transport note, provider probe, catalog service, ssh-sync, devpod, gum, per-orphan summary, duplicate-sibling containers |
+| `dvw audit` | deeper per-orphan git audit (branch, modified file count, unpushed commit count, stash count, verdict) — one ssh per provider host |
 | `dvw config` / `dvw config set KEY VALUE` | show or persist the per-machine config (catalog host, provider — see [Configuration](#configuration-host-user-provider)); runs even when the service is unreachable |
 | `dvw <anything> --dry-run` | print would-be `devpod ...` / `docker ...` invocations without executing — works on any mutating subcommand |
 
@@ -187,7 +188,7 @@ plan to keep up-to-date.
 ### Connect to a workspace
 
 ```bash
-dvw                  # menu, defaults to Connect
+dvw                  # TUI
 dvw <workspace-id>   # direct
 dvw -l               # list and exit
 ```
@@ -311,10 +312,10 @@ When DevPod recreates a workspace (`devpod up --recreate`, or `devpod up` after 
 [WARN]  2 orphan container(s) on provider — may contain data, verify before removing
           default-da-89c70 · heuristic_spence · running · /workspaces/dataenv-git-devpod mount alive (may contain data)
           default-fi-2bae9 · jolly_lovelace  · exited  · /workspaces/financepdfs-git-main mount stale (deleted inode — workspaces data unrecoverable)
-         (run `dvw` and pick "Audit orphan containers" for git status / unpushed / stashes inside each)
+         (run `dvw audit` for git status / unpushed / stashes inside each)
 ```
 
-The `dvw` top menu shows **⚠ Audit orphan containers (N)** when N > 0. Choosing it runs a deeper audit per orphan: branch, modified file count, unpushed commit count, stash count, verdict. Removal is always manual — `dvw` prints the `ssh <host> 'docker rm -f <name>'` template; you type it after deciding.
+The `dvw` TUI's `o` key lists orphan containers and lets you remove one (confirm, then a suspended `docker rm -f` you see before it runs). For the deeper per-orphan git audit — branch, modified file count, unpushed commit count, stash count, verdict — run `dvw audit` from a shell; it does one ssh per provider host and reports before you decide what to remove.
 
 ## SSH config sync
 
@@ -417,12 +418,16 @@ Editing `.devcontainer/devcontainer.json` after a container exists doesn't updat
 
 ## TUI
 
-Bare `dvw` opens a lazydocker-style TUI (requires [uv](https://docs.astral.sh/uv/);
-falls back to the gum menu without it, or with `DVW_NO_TUI=1`).
+Bare `dvw` opens a lazydocker-style TUI (requires [uv](https://docs.astral.sh/uv/)
+and a tty). Without `uv`, without a tty, or with `DVW_NO_TUI=1`, bare `dvw`
+errors with the subcommand list instead — there's no menu fallback.
 
 - left: workspaces with live state (● running / ⚠ stale / ○ stopped / ✗ absent)
+- above the workspace table, a waiting section (⏸ rows, newest first) lists
+  tmux windows flagged waiting-for-input; hidden when nothing's waiting
 - right: inspect detail (health, mounts, cpu/mem, disk) for the focused workspace
-- `enter` / double-click → ssh · `x` menu (ssh / cursor / both + lifecycle)
+- `enter` / double-click → ssh (on a waiting row: attach to that window instead)
+- `a` attach to the newest waiting window · `x` menu (ssh / cursor / both + lifecycle)
 - `s`/`S` stop/start · `r` rebuild · `X` remove · `n` new
 - `d` doctor · `o` orphans · `/` filter · `R` refresh · `q` quit
 

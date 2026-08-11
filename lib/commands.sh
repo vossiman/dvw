@@ -256,13 +256,14 @@ cmd_status() {
 }
 
 # uv check, extracted for testability. Returns 0 (ok) / 1 (warn).
-# Warn-only: without uv, bare `dvw` falls back to the gum menu.
+# Warn-only: without uv, bare `dvw` can't launch the TUI and errors out
+# instead (no menu fallback — TUI-only since 2026-08-10).
 _dvw_doctor_check_uv() {
   if command -v uv >/dev/null; then
     ui_status_ok "uv: $(uv --version 2>/dev/null)"
     return 0
   fi
-  ui_status_warn "uv: not on PATH — bare \`dvw\` falls back to the gum menu (install: https://docs.astral.sh/uv/)"
+  ui_status_warn "uv: not on PATH — bare \`dvw\` will error without it (install: https://docs.astral.sh/uv/)"
   return 1
 }
 
@@ -394,7 +395,7 @@ cmd_doctor() {
         ui_info "          $orphan_name (no detail available)"
       fi
     done <<<"$DVW_PROBE_ORPHAN_NAMES"
-    ui_info "         (run \`dvw\` and pick \"Audit orphan containers\" for git status / unpushed / stashes inside each)"
+    ui_info "         (run \`dvw audit\` for git status / unpushed / stashes inside each)"
   fi
 
   # catalog readable (served by the catalog service)
@@ -568,14 +569,14 @@ cmd_doctor() {
       "$(_ansi "$DVW_RED")" "$fail" "$(ui_reset)" \
       "$(_ansi "$DVW_YELLOW")" "$warn" "$(ui_reset)"
     if [[ -n "${DVW_PROBE_ORPHAN_NAMES:-}" ]]; then
-      ui_info "  audit orphans for unsaved work via \`dvw\` menu → \"Audit orphan containers\""
+      ui_info "  audit orphans for unsaved work: \`dvw audit\`"
     fi
   elif (( warn > 0 )); then
     printf '%s⚠%s %s%d warning(s)%s\n' \
       "$(_ansi "$DVW_YELLOW" bold)" "$(ui_reset)" \
       "$(_ansi "$DVW_YELLOW")" "$warn" "$(ui_reset)"
     if [[ -n "${DVW_PROBE_ORPHAN_NAMES:-}" ]]; then
-      ui_info "  audit orphans for unsaved work via \`dvw\` menu → \"Audit orphan containers\""
+      ui_info "  audit orphans for unsaved work: \`dvw audit\`"
     fi
   else
     printf '%s✓%s %sall checks passed%s\n' \
@@ -587,9 +588,9 @@ cmd_doctor() {
 
 # Tier-2 orphan audit: for each orphan container, surface git state inside
 # its /workspaces bind mount so the user can decide whether to copy
-# anything out before removing. Triggered from the top menu (not from
-# `dvw doctor` directly) because it does docker exec per orphan and can
-# be slow if there are many.
+# anything out before removing. Its own subcommand (`dvw audit`, not run
+# automatically from `dvw doctor`) because it does docker exec per orphan
+# and can be slow if there are many.
 #
 # Container-safety: read-only. The remote script never invokes docker
 # rm/stop/restart, never writes to any bind mount, never touches the
@@ -888,10 +889,10 @@ cmd_config() {
 # dvw attach — jump to the tmux window most recently flagged @waiting by
 # agent-notify (spec: devMachine 2026-08-09-agent-waiting-phone-notify).
 #
-# Zero waiting -> report and fall through to the normal top menu (nothing to
-# jump to, but the user still gets a way in). One -> connect straight in,
-# window pre-selected. More than one -> a picker, newest-first (the service
-# already sorts /v1/containers/waiting that way).
+# Zero waiting -> report and return 0 — no menu, TUI-only since 2026-08-10.
+# One -> connect straight in, window pre-selected. More than one -> a
+# picker, newest-first (the service already sorts /v1/containers/waiting
+# that way).
 cmd_attach() {
   local raw rc=0
   raw=$(_catalog_req GET /v1/containers/waiting 2>/dev/null) || rc=$?
@@ -899,25 +900,22 @@ cmd_attach() {
   # from "service answered with an HTTP error" (rc=1) — see
   # lib/catalog-http-lib.sh:23-25. Collapsing either into count=0 would tell
   # the user "nothing waiting" when the truth is "couldn't check", the same
-  # distinction connect-resolver.sh:72 makes via DVW_PROBE_ERROR. Still fall
-  # through to the top menu in both cases — there's no waiting-list to act on
-  # either way, just a different reason.
+  # distinction connect-resolver.sh:72 makes via DVW_PROBE_ERROR. Report and
+  # return the matching code in both cases — no menu, TUI-only since
+  # 2026-08-10.
   if [[ "$rc" -eq 2 ]]; then
     ui_error "attach: catalog service unreachable — can't check for waiting windows"
-    ui_top_menu
-    return $?
+    return 2
   elif [[ "$rc" -eq 1 ]]; then
     ui_error "attach: catalog service returned an error checking waiting windows"
-    ui_top_menu
-    return $?
+    return 1
   fi
 
   local count
   count=$(jq -r 'length' <<<"${raw:-[]}" 2>/dev/null || echo 0)
   if [[ "$count" -eq 0 ]]; then
     ui_info "nothing waiting — no window is flagged"
-    ui_top_menu
-    return $?
+    return 0
   fi
 
   local ws win
@@ -932,8 +930,8 @@ cmd_attach() {
     local rows sel
     rows=$(jq -r '.[] | "\(.workspace_id)\t\(.window_name)\t\(.window_id)"' <<<"$raw" \
       | column -t -s $'\t')
-    # Same fzf-preferred/gum-fallback convention as ui_pick_workspace
-    # (lib/ui.sh:259-272) — dvw doesn't hard-require fzf anywhere else.
+    # fzf-preferred/gum-fallback convention — dvw doesn't hard-require fzf
+    # anywhere else.
     if command -v fzf >/dev/null; then
       sel=$(printf '%s\n' "$rows" | fzf --prompt='attach> ' --height=40% --reverse) || return 1
     else

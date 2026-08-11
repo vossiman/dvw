@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 from rich.text import Text
 from textual import events, work
@@ -13,10 +14,15 @@ from textual.screen import Screen
 from textual.timer import Timer
 from textual.widgets import DataTable, Footer, Input, Static
 
-from ..client import CatalogError, Workspace
+from ..client import CatalogError, WaitingWindow, Workspace
 from ..render import ACCENT, GREEN, RED, SUBTLE, ide_cell, inspect_lines, liveness_cell
 
 _CATALOG_HOST = os.environ.get("DVW_CATALOG_HOST", "vossisrv")
+
+
+def _age(since: int) -> str:
+    d = max(0, int(time.time()) - since)
+    return f"{d // 3600}h" if d >= 3600 else f"{d // 60}m"
 
 
 class WorkspaceTable(DataTable):
@@ -66,6 +72,7 @@ class WorkspaceTable(DataTable):
 class MainScreen(Screen):
     BINDINGS = [
         Binding("enter", "connect", "ssh", priority=True),
+        Binding("a", "attach_waiting", "attach ⏸"),
         Binding("s", "stop", "stop"),
         Binding("S", "start", "start"),
         Binding("r", "rebuild", "rebuild"),
@@ -82,6 +89,7 @@ class MainScreen(Screen):
     def __init__(self) -> None:
         super().__init__()
         self._workspaces: list[Workspace] = []
+        self._waiting: list[WaitingWindow] = []
         self._filter = ""
         # Last inspect response per workspace id; rendered instantly on
         # highlight, freshened by a debounced re-fetch.
@@ -96,6 +104,7 @@ class MainScreen(Screen):
         with Horizontal(id="panes"):
             with Vertical(id="left"):
                 yield Static(" dvw — workspaces", id="left-title")
+                yield DataTable(id="waiting-table", cursor_type="row")
                 yield WorkspaceTable(id="ws-table")
                 yield Input(placeholder="filter…", id="filter-input")
             with VerticalScroll(id="right"):
@@ -110,6 +119,9 @@ class MainScreen(Screen):
         table = self.query_one(WorkspaceTable)
         table.cursor_type = "row"
         table.add_columns("workspace", "repo@branch", "ide", "state")
+        waiting_table = self.query_one("#waiting-table", DataTable)
+        waiting_table.add_columns("workspace", "window", "age")
+        waiting_table.display = False
         self.set_interval(10.0, self.refresh_data)
         self.refresh_data()
 
@@ -122,10 +134,27 @@ class MainScreen(Screen):
         except CatalogError as exc:
             self._show_error(f"catalog unreachable — {exc} — R to retry")
             self._update_header(connected=False)
+            # Fail closed: don't leave stale waiting rows visible (or
+            # attachable via `a`) once the workspace fetch itself failed.
+            self._waiting = []
+            self._render_waiting_table()
             return
         self._hide_error()
         self._update_header(connected=True)
         self._render_table()
+        self._waiting = await self.app.client.waiting()
+        self._render_waiting_table()
+
+    def _render_waiting_table(self) -> None:
+        table = self.query_one("#waiting-table", DataTable)
+        table.clear()
+        for w in self._waiting:
+            table.add_row(
+                Text(w.workspace_id, style=f"bold {ACCENT}"),
+                Text(w.window_name, style=SUBTLE),
+                _age(w.waiting_since),
+            )
+        table.display = bool(self._waiting)
 
     def _visible_workspaces(self) -> list[Workspace]:
         if not self._filter:
@@ -173,6 +202,14 @@ class MainScreen(Screen):
 
     def on_data_table_row_highlighted(self, _event) -> None:
         self._update_inspect()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if event.data_table.id != "waiting-table":
+            return
+        row_index = event.cursor_row
+        if not (0 <= row_index < len(self._waiting)):
+            return
+        self.app.do_attach(self._waiting[row_index])
 
     def _update_inspect(self) -> None:
         if self._inspect_timer is not None:
@@ -297,6 +334,19 @@ class MainScreen(Screen):
         if self.query_one("#filter-input", Input).has_focus:
             self._commit_filter()
             return
+        # Priority bindings dispatch before the focused widget ever sees the
+        # key, so if the waiting table has focus, Enter must attach *that*
+        # row — not fall through to the workspace table's cursor row.
+        waiting_table = self.query_one("#waiting-table", DataTable)
+        # Guard on non-empty rather than just `.has_focus`: the waiting
+        # table is the first focusable widget mounted, so it silently holds
+        # initial app focus even while hidden/empty (no waiting rows) — that
+        # shouldn't hijack Enter away from the workspace table.
+        if waiting_table.has_focus and self._waiting:
+            row_index = waiting_table.cursor_row
+            if row_index is not None and 0 <= row_index < len(self._waiting):
+                self.app.do_attach(self._waiting[row_index])
+            return
         self.app.do_connect(self.focused_workspace(), "ssh")
 
     def action_stop(self) -> None:
@@ -322,3 +372,9 @@ class MainScreen(Screen):
 
     def action_menu(self) -> None:
         self.app.open_context_menu()
+
+    def action_attach_waiting(self) -> None:
+        if not self._waiting:
+            self.notify("nothing waiting", title="dvw")
+            return
+        self.app.do_attach(self._waiting[0])

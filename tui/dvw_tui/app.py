@@ -6,10 +6,12 @@ and the main screen both invoke them.
 
 from __future__ import annotations
 
+import re
+
 from textual.app import App
 
 from . import actions
-from .client import CatalogClient, Workspace
+from .client import CatalogClient, WaitingWindow, Workspace
 from .screens.confirm import ConfirmScreen
 from .screens.doctor import DoctorScreen
 from .screens.main import MainScreen
@@ -94,6 +96,19 @@ class DvwApp(App):
             self.notify(f"connecting {workspace.id} (cursor)…", title="dvw")
         else:
             self._run_suspended(argv)
+
+    def do_attach(self, w: WaitingWindow | None) -> None:
+        """Attach to a waiting tmux window via the bash ssh path. Window ids
+        come from the catalog; re-validate before argv (defense in depth —
+        _dvw_ssh_session validates again)."""
+        if w is None:
+            return
+        if not re.fullmatch(r"@[0-9]+", w.window_id):
+            self.notify(f"bad window id from catalog: {w.window_id!r}",
+                        title="dvw", severity="error")
+            return
+        self._run_suspended(actions.connect(w.workspace_id, "ssh",
+                                            window=w.window_id))
 
     def do_simple_action(self, name: str, workspace: Workspace | None) -> None:
         if workspace is None:

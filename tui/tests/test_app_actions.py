@@ -7,6 +7,7 @@ from textual.widgets import OptionList
 
 from dvw_tui import actions
 from dvw_tui.app import DvwApp
+from dvw_tui.client import WaitingWindow
 from dvw_tui.screens.confirm import ConfirmScreen
 from dvw_tui.screens.main import WorkspaceTable
 from dvw_tui.screens.menu import MenuScreen
@@ -137,6 +138,28 @@ async def test_confirm_dismissed_with_n_does_nothing(fake_client, monkeypatch):
         await pilot.press("n")
         await pilot.pause()
         assert "suspended" not in calls
+
+
+# ---------------------------------------------------------------------------
+# do_attach: window-targeted ssh connect with id validation
+# ---------------------------------------------------------------------------
+
+def test_do_attach_runs_suspended_with_window(fake_client, monkeypatch):
+    monkeypatch.setenv("DVW_BIN", "dvw")
+    calls = []
+    app = DvwApp(client=fake_client)
+    app._run_suspended = lambda argv, **kw: calls.append(argv) or 0
+    app.do_attach(WaitingWindow("alpha", "@7", "claude", 1754800000))
+    assert calls == [[actions.dvw_bin(), "alpha", "--ssh", "--window", "@7"]]
+
+
+def test_do_attach_rejects_malformed_window_id(fake_client):
+    calls = []
+    app = DvwApp(client=fake_client)
+    app._run_suspended = lambda argv, **kw: calls.append(argv) or 0
+    app.do_attach(WaitingWindow("alpha", "; rm -rf /", "evil", 1))
+    app.do_attach(None)
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------

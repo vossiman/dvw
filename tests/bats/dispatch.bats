@@ -60,3 +60,11 @@ setup() {
   [ "$(cat "$BATS_TEST_TMPDIR/connect-argv")" = "myws
 --ssh" ]
 }
+
+@test "dispatch: dvw audit reaches cmd_orphans_audit" {
+  cmd_orphans_audit() { echo "cmd_orphans_audit called" > "$BATS_TEST_TMPDIR/audit-called"; }
+
+  run main audit
+  [ "$status" -eq 0 ]
+  [ -f "$BATS_TEST_TMPDIR/audit-called" ]
+}

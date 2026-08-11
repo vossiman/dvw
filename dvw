@@ -87,15 +87,20 @@ main() {
       shift; cmd_attach "$@" ;;
     doctor)
       cmd_doctor ;;
+    audit)
+      cmd_orphans_audit ;;
     "")
       if _dvw_tui_available; then
-        dvw_tui_launch || ui_top_menu
-      else
-        if [[ -d "$DVW_ROOT/tui" ]] && [[ "${DVW_NO_TUI:-}" != "1" ]]; then
-          command -v uv >/dev/null 2>&1 \
-            || ui_info "tip: install uv for the dvw TUI (https://docs.astral.sh/uv/) — falling back to menu"
+        local tui_rc=0
+        dvw_tui_launch || tui_rc=$?
+        if [[ $tui_rc -ne 0 ]]; then
+          ui_error "TUI exited with rc=$tui_rc"
         fi
-        ui_top_menu
+        exit "$tui_rc"
+      else
+        ui_error "the dvw TUI is unavailable (needs uv + a tty; DVW_NO_TUI unset)"
+        ui_info "subcommands: <id> | attach | new | rm | stop | start | recreate | update | status | doctor | audit | config | -l"
+        exit 1
       fi ;;
     *)
       cmd_connect "$@" ;;

@@ -23,7 +23,7 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
-@test "ui top menu: no 'Install blueprint' entry" {
+@test "lib/ui.sh: no 'Install blueprint' entry" {
   run grep -nE 'Install blueprint|cmd_blueprint' "$DVW_ROOT/lib/ui.sh"
   [ "$status" -ne 0 ]
 }

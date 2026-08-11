@@ -93,7 +93,7 @@ class OrphansScreen(Screen):
         host = os.environ.get("DVW_CATALOG_HOST", "vossisrv")
         message = (f"docker rm -f {name} on {host}?\n\n"
                    "Orphans may hold uncommitted work — audit first "
-                   "(dvw menu → audit) if unsure.")
+                   "(`dvw audit`) if unsure.")
 
         def on_result(confirmed: bool | None) -> None:
             if confirmed:

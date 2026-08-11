@@ -66,6 +66,21 @@ Screen {
     height: 1;
 }
 
+#waiting-table {
+    height: auto;
+    max-height: 6;
+    background: $bg;
+}
+
+#waiting-table > .datatable--cursor {
+    background: $bg-panel;
+}
+
+#waiting-table > .datatable--header {
+    background: $bg;
+    color: $accent;
+}
+
 #ws-table {
     height: 1fr;
     background: $bg;
