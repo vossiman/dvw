@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from app.models import CanonicalContainer, Orphan, WorkspaceStatus
+from app.models import (
+    CanonicalContainer,
+    Orphan,
+    WindowInfo,
+    WorkspaceStatus,
+    WorkspaceWindows,
+)
 
 
 def test_health(client, inspector):
@@ -119,6 +125,31 @@ def test_containers_orphans(client, inspector):
                                  mount_status="deleted")]
     r = client.get("/v1/containers/orphans")
     assert r.json()[0]["workspace_id"] == "leaked"
+
+
+def test_containers_windows(client, inspector):
+    inspector.window_lists = [
+        WorkspaceWindows(
+            workspace_id="ws-a", container_id="c1", attached=2,
+            windows=[WindowInfo(window_id="@1", name="work", active=True,
+                                activity=1754900000, waiting_since=None,
+                                command="claude")],
+        ),
+    ]
+    r = client.get("/v1/containers/windows")
+    assert r.status_code == 200
+    body = r.json()
+    assert body[0]["workspace_id"] == "ws-a"
+    assert body[0]["container_id"] == "c1"
+    assert body[0]["attached"] == 2
+    assert body[0]["windows"] == [{
+        "window_id": "@1", "name": "work", "active": True,
+        "activity": 1754900000, "waiting_since": None, "command": "claude",
+    }]
+
+
+def test_containers_windows_empty(client, inspector):
+    assert client.get("/v1/containers/windows").json() == []
 
 
 def test_catalog_full_dump(client):

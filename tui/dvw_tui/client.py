@@ -7,7 +7,7 @@ starts; on the box it's the service socket, remotely it's an ssh -L forward.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -16,14 +16,27 @@ class CatalogError(Exception):
     """Catalog unreachable or returned an error response."""
 
 
-@dataclass(frozen=True)
-class WaitingWindow:
-    """A tmux window flagged @waiting (newest-first from the catalog)."""
+@dataclass
+class WindowInfo:
+    """A single tmux window in a container's snapshot from
+    `GET /v1/containers/windows`."""
+
+    window_id: str
+    name: str
+    active: bool = False
+    activity: int = -1
+    waiting_since: int | None = None
+    command: str = ""
+
+
+@dataclass
+class WorkspaceWindows:
+    """A workspace's window snapshot. Deliberately omits container_id —
+    the TUI never uses it."""
 
     workspace_id: str
-    window_id: str
-    window_name: str
-    waiting_since: int
+    attached: int = 0
+    windows: list[WindowInfo] = field(default_factory=list)
 
 
 @dataclass
@@ -118,26 +131,50 @@ class CatalogClient:
     async def repos(self) -> list[str]:
         return [d["url"] for d in await self._get("/repos")]
 
-    async def waiting(self) -> list[WaitingWindow]:
-        """@waiting-flagged windows, newest first. Fail-closed: any catalog
-        error or malformed body yields [] — the TUI renders normally with a
-        dead catalog (spec 2026-08-10)."""
+    async def windows(self) -> dict[str, WorkspaceWindows]:
+        """Per-workspace tmux window snapshots. Fail-open: any catalog
+        error, HTTP error, or malformed body yields {} — the old-server
+        case where the TUI simply has no window info to render. Malformed
+        entries and windows are skipped individually."""
         try:
-            body = await self._get("/containers/waiting")
+            body = await self._get("/containers/windows")
         except CatalogError:
-            return []
+            return {}
         if not isinstance(body, list):
-            return []
-        out: list[WaitingWindow] = []
-        for d in body:
-            try:
-                out.append(WaitingWindow(
-                    workspace_id=d["workspace_id"], window_id=d["window_id"],
-                    window_name=d["window_name"],
-                    waiting_since=int(d["waiting_since"]),
-                ))
-            except (KeyError, TypeError, ValueError):
+            return {}
+        out: dict[str, WorkspaceWindows] = {}
+        for entry in body:
+            if not isinstance(entry, dict):
                 continue
+            try:
+                workspace_id = entry["workspace_id"]
+            except (KeyError, TypeError):
+                continue
+            windows: list[WindowInfo] = []
+            for w in entry.get("windows") or []:
+                if not isinstance(w, dict):
+                    continue
+                try:
+                    windows.append(WindowInfo(
+                        window_id=w["window_id"],
+                        name=w["name"],
+                        active=bool(w.get("active", False)),
+                        activity=int(w.get("activity", -1)),
+                        waiting_since=(
+                            None if w.get("waiting_since") is None
+                            else int(w["waiting_since"])
+                        ),
+                        command=w.get("command", ""),
+                    ))
+                except (KeyError, TypeError, ValueError):
+                    continue
+            try:
+                attached = max(0, int(entry.get("attached", 0) or 0))
+            except (TypeError, ValueError):
+                attached = 0
+            out[workspace_id] = WorkspaceWindows(
+                workspace_id=workspace_id, attached=attached, windows=windows,
+            )
         return out
 
     async def health(self) -> dict:

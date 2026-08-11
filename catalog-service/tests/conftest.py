@@ -19,6 +19,7 @@ from app.models import (
     Orphan,
     WaitingWindow,
     WorkspaceStatus,
+    WorkspaceWindows,
 )
 from app.store import CatalogStore
 
@@ -34,6 +35,7 @@ class FakeInspector:
         self._orphans: list[Orphan] = []
         self.sibling_map: dict[str, list] = {}
         self.waiting: list[WaitingWindow] = []
+        self.window_lists: list[WorkspaceWindows] = []
 
     def ping(self) -> bool:
         return self.alive
@@ -57,6 +59,9 @@ class FakeInspector:
 
     def waiting_windows(self) -> list:
         return self.waiting
+
+    def windows_many(self) -> list:
+        return self.window_lists
 
 
 @pytest.fixture

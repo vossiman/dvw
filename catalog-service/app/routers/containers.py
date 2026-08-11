@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from ..deps import InspectorDep, StoreDep, run_inspect
-from ..models import Orphan, WaitingWindow, WorkspaceStatus
+from ..models import Orphan, WaitingWindow, WorkspaceStatus, WorkspaceWindows
 
 router = APIRouter(prefix="/containers", tags=["containers"])
 
@@ -35,3 +35,10 @@ async def orphans(store: StoreDep, inspector: InspectorDep) -> list[Orphan]:
 async def waiting(inspector: InspectorDep) -> list[WaitingWindow]:
     """tmux windows flagged @waiting by agent-notify, newest first."""
     return await run_inspect(inspector.waiting_windows)
+
+
+@router.get("/windows", response_model=list[WorkspaceWindows])
+async def windows(inspector: InspectorDep) -> list[WorkspaceWindows]:
+    """Per-workspace tmux window snapshot (tree view). One exec per
+    running container; failures degrade to an empty window list."""
+    return await run_inspect(inspector.windows_many)

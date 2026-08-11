@@ -66,33 +66,26 @@ Screen {
     height: 1;
 }
 
-#waiting-table {
-    height: auto;
-    max-height: 6;
-    background: $bg;
-}
-
-#waiting-table > .datatable--cursor {
-    background: $bg-panel;
-}
-
-#waiting-table > .datatable--header {
-    background: $bg;
-    color: $accent;
-}
-
-#ws-table {
+#ws-tree {
     height: 1fr;
     background: $bg;
+    padding: 0;
 }
 
-#ws-table > .datatable--cursor {
+#ws-tree > .tree--cursor {
+    background: $bg-panel;
+    text-style: none;
+}
+
+#ws-tree > .tree--highlight-line {
     background: $bg-panel;
 }
 
-#ws-table > .datatable--header {
-    background: $bg;
-    color: $subtle;
+#ws-tree > .tree--guides,
+#ws-tree > .tree--guides-hover,
+#ws-tree > .tree--guides-selected {
+    color: $grey;
+    text-style: none;
 }
 
 #filter-input {

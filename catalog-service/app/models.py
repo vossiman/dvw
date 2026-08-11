@@ -202,6 +202,26 @@ class WaitingWindow(BaseModel):
     waiting_since: int    # epoch set by agent-notify
 
 
+class WindowInfo(BaseModel):
+    """One tmux window of the `work` session (tree-view snapshot)."""
+
+    window_id: str            # tmux #{window_id}, e.g. "@7"
+    name: str
+    active: bool = False
+    activity: int = -1        # epoch of last activity, -1 unknown
+    waiting_since: int | None = None   # @waiting epoch, None = not waiting
+    command: str = ""         # pane_current_command of the active pane
+
+
+class WorkspaceWindows(BaseModel):
+    """Per-workspace tmux window snapshot, one exec per container."""
+
+    workspace_id: str
+    container_id: str
+    attached: int = 0         # session_attached of `work`
+    windows: list[WindowInfo] = Field(default_factory=list)
+
+
 class BindMount(BaseModel):
     source: str
     destination: str

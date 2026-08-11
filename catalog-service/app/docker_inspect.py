@@ -26,7 +26,9 @@ from .models import (
     Orphan,
     SiblingContainer,
     WaitingWindow,
+    WindowInfo,
     WorkspaceStatus,
+    WorkspaceWindows,
 )
 
 
@@ -59,6 +61,7 @@ class Inspector(Protocol):
     def siblings(self, ws_id: str) -> list[SiblingContainer]: ...
     def orphans(self, catalog_ids: set[str]) -> list[Orphan]: ...
     def waiting_windows(self) -> list[WaitingWindow]: ...
+    def windows_many(self) -> list[WorkspaceWindows]: ...
 
 
 class DockerInspector:
@@ -443,13 +446,79 @@ class DockerInspector:
     # ---- waiting windows ---------------------------------------------------
 
     def waiting_windows(self) -> list[WaitingWindow]:
-        """All @waiting-flagged windows of the `work` session, all containers.
-
-        One exec per running devpod container; windows without a flag print an
-        empty third field and are skipped. Any per-container failure skips
-        that container — a broken tmux must not 500 the endpoint.
-        """
+        """All @waiting-flagged windows, newest first. Since the tree-view
+        work this is a projection of the same snapshot that serves
+        /containers/windows — one exec per container, not two."""
         out: list[WaitingWindow] = []
+        for ww in self.windows_many():
+            for w in ww.windows:
+                if w.waiting_since is None:
+                    continue
+                out.append(WaitingWindow(
+                    workspace_id=ww.workspace_id,
+                    container_id=ww.container_id,
+                    window_id=w.window_id,
+                    window_name=w.name,
+                    waiting_since=w.waiting_since,
+                ))
+        out.sort(key=lambda w: w.waiting_since, reverse=True)
+        return out
+
+    # ---- window snapshot (tree view) ---------------------------------------
+
+    def _work_session_windows(self, c: Container) -> tuple[int, list[WindowInfo]]:
+        """One exec: every window of `work` + the session's attached count.
+        (0, []) on any failure — a broken tmux must not 500 an endpoint."""
+        if c.status != "running":
+            return 0, []
+        try:
+            res = c.exec_run(
+                ["tmux", "list-windows", "-t", "work", "-F",
+                 "#{window_id}\t#{window_name}\t#{window_active}"
+                 "\t#{window_activity}\t#{@waiting}\t#{pane_current_command}"
+                 "\t#{session_attached}"],
+                demux=True,
+            )
+        except Exception:
+            return 0, []
+        if res.exit_code != 0:
+            return 0, []
+        stdout = res.output[0] if isinstance(res.output, tuple) else res.output
+        if not stdout:
+            return 0, []
+        attached = 0
+        windows: list[WindowInfo] = []
+        for line in stdout.decode("utf-8", "replace").splitlines():
+            parts = line.split("\t")
+            if len(parts) != 7 or not parts[0].startswith("@"):
+                continue
+            win_id, name, active, activity, waiting, command, sess_att = parts
+            try:
+                attached = max(attached, max(0, int(sess_att)))
+            except ValueError:
+                pass
+
+            def _int(v: str, default: int) -> int:
+                try:
+                    return int(v)
+                except ValueError:
+                    return default
+
+            waiting_since = _int(waiting, -1) if waiting else -1
+            windows.append(WindowInfo(
+                window_id=win_id,
+                name=name,
+                active=active == "1",
+                activity=_int(activity, -1),
+                waiting_since=waiting_since if waiting_since >= 0 else None,
+                command=command,
+            ))
+        return attached, windows
+
+    def windows_many(self) -> list[WorkspaceWindows]:
+        """Window snapshot for every running devpod container with a
+        resolvable workspace id (same iteration as waiting_windows)."""
+        out: list[WorkspaceWindows] = []
         prefix = self._settings.workspace_mount_prefix
         for c in self._devpod_containers():
             if c.status != "running":
@@ -457,31 +526,8 @@ class DockerInspector:
             ws_id = _ws_id_from_mounts(c.attrs.get("Mounts", []), prefix)
             if ws_id is None:
                 continue
-            try:
-                res = c.exec_run(
-                    ["tmux", "list-windows", "-t", "work",
-                     "-F", "#{window_id}\t#{window_name}\t#{@waiting}"],
-                    demux=True,
-                )
-            except Exception:
-                continue
-            if res.exit_code != 0:
-                continue
-            stdout = res.output[0] if isinstance(res.output, tuple) else res.output
-            if not stdout:
-                continue
-            for line in stdout.decode("utf-8", "replace").splitlines():
-                parts = line.split("\t")
-                if len(parts) != 3 or not parts[2]:
-                    continue
-                try:
-                    since = int(parts[2])
-                except ValueError:
-                    continue
-                out.append(WaitingWindow(
-                    workspace_id=ws_id, container_id=c.id,
-                    window_id=parts[0], window_name=parts[1],
-                    waiting_since=since,
-                ))
-        out.sort(key=lambda w: w.waiting_since, reverse=True)
+            attached, windows = self._work_session_windows(c)
+            out.append(WorkspaceWindows(
+                workspace_id=ws_id, container_id=c.id,
+                attached=attached, windows=windows))
         return out

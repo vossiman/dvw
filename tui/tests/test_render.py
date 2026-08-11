@@ -1,4 +1,13 @@
-from dvw_tui.render import human_bytes, liveness_cell, ide_color, meter, state_cell
+from dvw_tui.client import WindowInfo
+from dvw_tui.render import (
+    age,
+    human_bytes,
+    liveness_cell,
+    ide_color,
+    meter,
+    state_cell,
+    window_label,
+)
 
 def test_human_bytes():
     assert human_bytes(None) == "—"
@@ -42,3 +51,64 @@ def test_state_cell_no_suffix_when_zero_or_not_running():
 
 def test_state_cell_stale_shows_suffix():
     assert "⇄ 1" in state_cell("stale", 1).plain
+
+
+def test_age_formats_minutes_and_hours():
+    now = 10_000
+    assert age(now - 90, now) == "1m"
+    assert age(now - 3600, now) == "1h"
+    assert age(now, now) == "0m"
+
+
+def test_age_clamps_negative_delta():
+    assert age(100, 50) == "0m"
+
+
+def test_window_label_full():
+    now = 10_000
+    w = WindowInfo(
+        window_id="1",
+        name="build",
+        active=True,
+        activity=now - 120,
+        waiting_since=now - 60,
+        command="make test",
+    )
+    label = window_label(w, now)
+    plain = label.plain
+    assert "❘ build" in plain
+    assert "▸ make test" in plain
+    assert " *" in plain
+    assert "2m" in plain
+    assert "⏸ waiting 1m" in plain
+
+
+def test_window_label_minimal():
+    w = WindowInfo(window_id="2", name="idle", active=False, activity=-1,
+                    waiting_since=None, command="")
+    label = window_label(w, 10_000)
+    plain = label.plain
+    assert plain == "❘ idle"
+    assert "▸" not in plain
+    assert "*" not in plain
+    assert "⏸" not in plain
+
+
+def test_window_label_waiting_glyph_is_spaced():
+    now = 10_000
+    w = WindowInfo(window_id="3", name="w", active=False, activity=-1,
+                    waiting_since=now - 30, command="")
+    label = window_label(w, now)
+    assert "⏸ waiting " in label.plain
+    assert "⏸waiting" not in label.plain
+
+
+def test_window_label_waiting_style_is_accent_bold():
+    now = 10_000
+    w = WindowInfo(window_id="4", name="w", active=False, activity=-1,
+                    waiting_since=now - 30, command="")
+    label = window_label(w, now)
+    # find the span covering the waiting badge and check its style
+    idx = label.plain.index("⏸")
+    styles = [s.style for s in label.spans if s.start <= idx < s.end]
+    assert any("bold" in str(s) and "#88c0d0" in str(s) for s in styles)

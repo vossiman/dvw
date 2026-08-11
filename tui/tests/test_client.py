@@ -130,33 +130,82 @@ async def test_bearer_token_header_sent():
     assert seen["auth"] == "Bearer sekrit"
 
 
-WAITING = [
-    {"workspace_id": "alpha", "container_id": "c1", "window_id": "@7",
-     "window_name": "claude", "waiting_since": 1754800000},
-    {"workspace_id": "beta", "container_id": "c2", "window_id": "@3",
-     "window_name": "codex", "waiting_since": 1754790000},
+WINDOWS = [
+    {"workspace_id": "alpha", "container_id": "c1", "attached": 1,
+     "windows": [
+         {"window_id": "@1", "name": "shell", "active": True, "activity": 1754800100,
+          "waiting_since": None, "command": "bash"},
+         {"window_id": "@2", "name": "claude", "active": False, "activity": 1754800000,
+          "waiting_since": 1754800000, "command": "claude"},
+     ]},
+    {"workspace_id": "beta", "container_id": "c2", "attached": 0,
+     "windows": [
+         {"window_id": "@1", "name": "shell", "active": True, "activity": 1754790000,
+          "waiting_since": None, "command": "bash"},
+     ]},
 ]
 
 
 @pytest.mark.asyncio
-async def test_waiting_parses_rows_in_api_order():
+async def test_windows_parses_nested_fields():
     def handler(request):
-        assert request.url.path == "/v1/containers/waiting"
-        return httpx.Response(200, json=WAITING)
-    ws = await make_client(handler).waiting()
-    assert [(w.workspace_id, w.window_id) for w in ws] == [("alpha", "@7"), ("beta", "@3")]
-    assert ws[0].window_name == "claude" and ws[0].waiting_since == 1754800000
+        assert request.url.path == "/v1/containers/windows"
+        return httpx.Response(200, json=WINDOWS)
+    result = await make_client(handler).windows()
+    assert set(result) == {"alpha", "beta"}
+    alpha = result["alpha"]
+    assert alpha.workspace_id == "alpha"
+    assert alpha.attached == 1
+    assert not hasattr(alpha, "container_id")
+    assert len(alpha.windows) == 2
+    w1, w2 = alpha.windows
+    assert w1.window_id == "@1" and w1.name == "shell" and w1.active is True
+    assert w1.activity == 1754800100 and w1.waiting_since is None and w1.command == "bash"
+    assert w2.waiting_since == 1754800000
+    beta = result["beta"]
+    assert beta.attached == 0
+    assert len(beta.windows) == 1
 
 
 @pytest.mark.asyncio
-async def test_waiting_fail_closed_on_http_error_and_bad_body():
+async def test_windows_fail_open_on_404_and_bad_body():
     async def check(json_or_status):
         def handler(request):
             if isinstance(json_or_status, int):
                 return httpx.Response(json_or_status, json={"detail": "x"})
             return httpx.Response(200, json=json_or_status)
-        assert await make_client(handler).waiting() == []
-    await check(500)
+        assert await make_client(handler).windows() == {}
     await check(404)
+    await check(500)
     await check({"detail": "not a list"})
-    await check([{"workspace_id": "a"}])   # missing fields → row skipped ⇒ []
+
+
+@pytest.mark.asyncio
+async def test_windows_entry_missing_fields_gets_defaults():
+    def handler(request):
+        return httpx.Response(200, json=[
+            {"workspace_id": "alpha"},  # no attached, no windows
+        ])
+    result = await make_client(handler).windows()
+    assert result["alpha"].attached == 0
+    assert result["alpha"].windows == []
+
+
+@pytest.mark.asyncio
+async def test_windows_malformed_window_entry_skipped():
+    def handler(request):
+        return httpx.Response(200, json=[
+            {"workspace_id": "alpha", "attached": 1, "windows": [
+                {"window_id": "@1", "name": "shell"},  # ok, defaults fill in
+                "not a dict",
+                {"name": "no id"},  # missing window_id → skipped
+            ]},
+        ])
+    result = await make_client(handler).windows()
+    windows = result["alpha"].windows
+    assert len(windows) == 1
+    assert windows[0].window_id == "@1"
+    assert windows[0].name == "shell"
+    assert windows[0].active is False
+    assert windows[0].activity == -1
+    assert windows[0].command == ""

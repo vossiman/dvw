@@ -7,9 +7,8 @@ from textual.widgets import OptionList
 
 from dvw_tui import actions
 from dvw_tui.app import DvwApp
-from dvw_tui.client import WaitingWindow
 from dvw_tui.screens.confirm import ConfirmScreen
-from dvw_tui.screens.main import WorkspaceTable
+from dvw_tui.screens.main import WorkspaceTree
 from dvw_tui.screens.menu import MenuScreen
 
 
@@ -37,10 +36,29 @@ async def test_double_click_sshs(fake_client, monkeypatch):
     app = DvwApp(client=fake_client)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        # offset (2, 1): under the header row so style.meta has row=0
-        await pilot.click(WorkspaceTable, offset=(2, 1), times=2)
+        # offset (8, 0): first tree line, past the expand arrow so the
+        # click lands on the label rather than toggling the folder.
+        await pilot.click(WorkspaceTree, offset=(8, 0), times=2)
         await pilot.pause()
         assert calls["suspended"] == ["dvw", "alpha", "--ssh"]
+
+
+async def test_double_click_on_window_row_attaches_that_window(fake_client, monkeypatch):
+    """Double-click on a child (window) row attaches that window, mirroring
+    the enter-on-window-row route — not the workspace-node ssh route."""
+    calls = {}
+    monkeypatch.setattr(
+        DvwApp, "_run_suspended", lambda self, argv, pause_on_fail=True:
+            calls.setdefault("suspended", argv))
+    monkeypatch.setenv("DVW_BIN", "dvw")
+    app = DvwApp(client=fake_client)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        # offset (10, 1): alpha auto-expands with its windows, so line 1 is
+        # its first child row (window @1, "claude").
+        await pilot.click(WorkspaceTree, offset=(10, 1), times=2)
+        await pilot.pause()
+        assert calls["suspended"] == ["dvw", "alpha", "--ssh", "--window", "@1"]
 
 
 async def test_single_click_does_not_ssh(fake_client, monkeypatch):
@@ -52,7 +70,7 @@ async def test_single_click_does_not_ssh(fake_client, monkeypatch):
     app = DvwApp(client=fake_client)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        await pilot.click(WorkspaceTable, offset=(2, 1), times=1)
+        await pilot.click(WorkspaceTree, offset=(8, 0), times=1)
         await pilot.pause()
         assert "suspended" not in calls
 
@@ -149,7 +167,7 @@ def test_do_attach_runs_suspended_with_window(fake_client, monkeypatch):
     calls = []
     app = DvwApp(client=fake_client)
     app._run_suspended = lambda argv, **kw: calls.append(argv) or 0
-    app.do_attach(WaitingWindow("alpha", "@7", "claude", 1754800000))
+    app.do_attach("alpha", "@7")
     assert calls == [[actions.dvw_bin(), "alpha", "--ssh", "--window", "@7"]]
 
 
@@ -157,8 +175,9 @@ def test_do_attach_rejects_malformed_window_id(fake_client):
     calls = []
     app = DvwApp(client=fake_client)
     app._run_suspended = lambda argv, **kw: calls.append(argv) or 0
-    app.do_attach(WaitingWindow("alpha", "; rm -rf /", "evil", 1))
-    app.do_attach(None)
+    app.do_attach("alpha", "; rm -rf /")
+    app.do_attach("alpha", None)
+    app.do_attach(None, "@7")
     assert calls == []
 
 

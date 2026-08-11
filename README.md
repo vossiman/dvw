@@ -28,7 +28,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw <id> --ssh` | same as bare connect (explicit) |
 | `dvw <id> --cursor` | open in Cursor via `devpod up --ide cursor` |
 | `dvw <id> --both` | open in Cursor, then ssh + attach `work` tmux session |
-| `dvw attach` | connect to the tmux window most recently flagged waiting-for-input (picker if several; reports and exits if none) — TUI equivalent: `a` (newest) or Enter on a waiting row (that row) |
+| `dvw attach` | connect to the tmux window most recently flagged waiting-for-input (picker if several; reports and exits if none) — TUI equivalent: `a` (newest) or Enter on that window's row in the tree |
 | `dvw -l` | list workspaces (MRU order) |
 | `dvw new` | bare: opens the TUI's new-workspace wizard (same requirements as bare `dvw`). Flag-driven (no TUI/tty needed): `dvw new --repo <url> --name <name> --ide cursor\|ssh [--branch <b>] [--init-empty] [--seed-devcontainer] [--yes]` — creates the workspace and appends it to the catalog. See [Create a new workspace](#create-a-new-workspace). |
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
@@ -437,11 +437,17 @@ Bare `dvw` opens a lazydocker-style TUI (requires [uv](https://docs.astral.sh/uv
 and a tty). Without `uv`, without a tty, or with `DVW_NO_TUI=1`, bare `dvw`
 errors with the subcommand list instead — there's no menu fallback.
 
-- left: workspaces with live state (● running / ⚠ stale / ○ stopped / ✗ absent)
-- above the workspace table, a waiting section (⏸ rows, newest first) lists
-  tmux windows flagged waiting-for-input; hidden when nothing's waiting
+- left: a tree — each workspace is a folder (name, repo@branch, ide, live
+  state incl. `⇄ N` attached clients); a running workspace auto-expands to
+  its tmux windows, each shown as `name`, current command, `*` if active,
+  activity age, and `⏸ waiting <age>` when an agent flagged it waiting for
+  input; stopped workspaces are childless. Collapse/expand state survives
+  refreshes.
+- the header shows `⏸ N waiting` when anything across any workspace is
+  waiting for input
 - right: inspect detail (health, mounts, cpu/mem, disk) for the focused workspace
-- `enter` / double-click → ssh (on a waiting row: attach to that window instead)
+- `enter` / double-click on a window row → attach that tmux window; on a
+  workspace folder → plain ssh session
 - `a` attach to the newest waiting window · `x` menu (ssh / cursor / both + lifecycle)
 - `s`/`S` stop/start · `r` rebuild · `X` remove · `n` new
 - `d` doctor · `o` orphans · `/` filter · `R` refresh · `q` quit
