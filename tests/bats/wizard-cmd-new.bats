@@ -95,3 +95,26 @@ setup() {
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "already exists in DevPod"
 }
+
+# Regression for a bug where ui_progress's backgrounded marker subshell
+# inherited the caller's stdout: when _fetch_remote_branches runs inside a
+# `$(...)` command substitution, that fd IS the substitution's pipe, and the
+# marker's `sleep 0.8` grandchild held the pipe's write end open until the
+# sleep expired — so a fast, local ls-remote still took ~0.8s (paid twice
+# when the HTTPS->SSH retry fires) instead of returning immediately.
+@test "_fetch_remote_branches: returns promptly for a fast local remote (does not wait on the progress marker)" {
+  local start end elapsed
+  start=$EPOCHREALTIME
+  _fetch_remote_branches "$REMOTE" >/dev/null
+  end=$EPOCHREALTIME
+  elapsed=$(awk -v s="$start" -v e="$end" 'BEGIN { printf "%.3f", e - s }')
+  awk -v e="$elapsed" 'BEGIN { exit !(e < 0.5) }'
+}
+
+# Companion regression: confirm the fix didn't neuter the marker itself —
+# it must still reach stderr on a slow command.
+@test "ui_progress: marker hint reaches stderr for a slow command" {
+  local err
+  err=$( { ui_progress "marker-test" sleep 1 1>/dev/null; } 2>&1 )
+  echo "$err" | grep -q "marker-test"
+}

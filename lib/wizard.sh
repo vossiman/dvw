@@ -44,10 +44,14 @@ _github_https_to_ssh() {
 # aborting the whole wizard before the empty-result handling can run. (A global
 # can't carry the rc — this runs in the `$(...)` subshell, so it wouldn't
 # propagate.)
+_new_git_ls_remote_heads() {
+  git ls-remote --heads "$1" 2>/dev/null
+}
+
 _fetch_remote_branches() {
   local repo="$1" raw rc
   if raw=$(GIT_TERMINAL_PROMPT=0 ui_progress "fetching branches for $repo" \
-             git ls-remote --heads "$repo" 2>/dev/null); then
+             _new_git_ls_remote_heads "$repo"); then
     rc=0
   else
     rc=$?

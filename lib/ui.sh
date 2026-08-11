@@ -91,9 +91,19 @@ ui_confirm() {
 # (catalog service catalog/blueprint fetch, ssh blueprint cp, etc).
 # Returns CMD's exit code unchanged. Cheap on the happy path: no output
 # at all, just one fork+sleep that gets killed before it prints.
+#
+# The marker subshell's stdout is explicitly redirected to /dev/null (its
+# own printf already targets stderr): a backgrounded subshell otherwise
+# inherits the caller's stdout fd, and when ui_progress runs inside a
+# `$(...)` command substitution that fd IS the substitution's pipe. The
+# `sleep 0.8` grandchild would keep that pipe's write end open for its own
+# lifetime, so `$(...)` couldn't return until the sleep expired — even after
+# the foreground command and the `kill` below are done. Closing the
+# subshell's stdout lets the pipe close as soon as the foreground command
+# does, regardless of whether the marker has fired yet.
 ui_progress() {
   local label="$1"; shift
-  ( sleep 0.8 && printf '  %s› %s…%s\n' "$(_ansi "$DVW_SUBTLE")" "$label" "$(ui_reset)" >&2 ) &
+  ( sleep 0.8 && printf '  %s› %s…%s\n' "$(_ansi "$DVW_SUBTLE")" "$label" "$(ui_reset)" >&2 ) >/dev/null &
   local marker_pid=$!
   local rc=0
   "$@" || rc=$?
