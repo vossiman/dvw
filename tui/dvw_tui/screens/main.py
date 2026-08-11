@@ -373,7 +373,7 @@ class MainScreen(Screen):
 
     def _show_error(self, message: str) -> None:
         banner = self.query_one("#error-banner", Static)
-        banner.update(Text(f" ✗ {message}", style="bold"))
+        banner.update(Text(f" {glyph('✗', message)}", style="bold"))
         banner.display = True
         self.query_one("#panes").add_class("dimmed")
 
