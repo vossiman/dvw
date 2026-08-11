@@ -71,6 +71,16 @@ async def test_inspect_and_orphans_return_dicts():
     assert (await c.orphans())[0]["container_name"] == "old"
 
 
+async def test_repos_returns_urls():
+    def handler(request):
+        if request.url.path == "/v1/repos":
+            return httpx.Response(200, json=[
+                {"url": "git@github.com:v/a.git", "last_branch": "main"}])
+        return ok_handler(request)
+    c = make_client(handler)
+    assert await c.repos() == ["git@github.com:v/a.git"]
+
+
 async def test_transport_error_raises_catalog_error():
     def handler(request):
         raise httpx.ConnectError("boom")

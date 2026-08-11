@@ -52,6 +52,11 @@ class FakeClient:
         self._check()
         return list(self._orphans)
 
+    async def repos(self):
+        self._check()
+        return ["git@github.com:vossiman/alpha.git",
+                "git@github.com:vossiman/beta.git"]
+
     async def waiting(self):
         if self.fail:
             return []

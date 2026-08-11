@@ -65,3 +65,25 @@ def test_run_captured_failure_merges_stderr():
 def test_run_captured_missing_binary():
     res = actions.run_captured(["/nonexistent/definitely-not-here"])
     assert not res.ok and res.returncode == 127
+
+
+def test_new_list_branches():
+    assert actions.new_list_branches("R") == ["dvw", "new", "--list-branches", "R"]
+
+
+def test_new_check_devcontainer():
+    assert actions.new_check_devcontainer("R", "b") == [
+        "dvw", "new", "--check-devcontainer", "R", "b"]
+
+
+def test_new_create_full_flags():
+    assert actions.new_create("R", "b", "n", "cursor",
+                              init_empty=True, seed_devcontainer=True) == [
+        "dvw", "new", "--repo", "R", "--branch", "b", "--name", "n",
+        "--ide", "cursor", "--init-empty", "--seed-devcontainer", "--yes"]
+
+
+def test_new_create_minimal():
+    assert actions.new_create("R", "b", "n", "ssh") == [
+        "dvw", "new", "--repo", "R", "--branch", "b", "--name", "n",
+        "--ide", "ssh", "--yes"]

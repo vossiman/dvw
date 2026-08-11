@@ -103,6 +103,9 @@ class CatalogClient:
     async def orphans(self) -> list[dict]:
         return await self._get("/containers/orphans")
 
+    async def repos(self) -> list[str]:
+        return [d["url"] for d in await self._get("/repos")]
+
     async def waiting(self) -> list[WaitingWindow]:
         """@waiting-flagged windows, newest first. Fail-closed: any catalog
         error or malformed body yields [] — the TUI renders normally with a

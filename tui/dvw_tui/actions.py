@@ -52,6 +52,26 @@ def new() -> list[str]:
     return [dvw_bin(), "new"]
 
 
+def new_list_branches(repo: str) -> list[str]:
+    return [dvw_bin(), "new", "--list-branches", repo]
+
+
+def new_check_devcontainer(repo: str, branch: str) -> list[str]:
+    return [dvw_bin(), "new", "--check-devcontainer", repo, branch]
+
+
+def new_create(repo: str, branch: str, name: str, ide: str,
+               init_empty: bool = False, seed_devcontainer: bool = False) -> list[str]:
+    argv = [dvw_bin(), "new", "--repo", repo, "--branch", branch,
+            "--name", name, "--ide", ide]
+    if init_empty:
+        argv.append("--init-empty")
+    if seed_devcontainer:
+        argv.append("--seed-devcontainer")
+    argv.append("--yes")
+    return argv
+
+
 def doctor() -> list[str]:
     return [dvw_bin(), "doctor"]
 
