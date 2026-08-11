@@ -13,12 +13,14 @@ from textual.app import App
 
 from . import actions
 from .client import CatalogClient, Workspace
+from .palette import PALETTES, build_theme, palette_for
 from .screens.confirm import ConfirmScreen
 from .screens.doctor import DoctorScreen
 from .screens.main import MainScreen
 from .screens.menu import MenuScreen
 from .screens.orphans import OrphansScreen
 from .screens.wizard import WizardResult, WizardScreen
+from .settings import load_settings
 
 
 class DvwApp(App):
@@ -31,12 +33,35 @@ class DvwApp(App):
     def __init__(self, client: object | None = None) -> None:
         super().__init__()
         self.client = client or CatalogClient()
+        # Registered (not get_css_variables()-overridden) so Textual
+        # regenerates the derived variables ($accent-muted, $text-accent,
+        # ...) from our roles instead of leaving them on its default hue.
+        # Done in __init__, before the first compose/paint, so the app
+        # never renders a frame in Textual's built-in theme.
+        #
+        # The theme name is derived from the resolved palette name (not a
+        # fixed "dvw-tokyo") so a second registered palette gets its own
+        # theme identity instead of colliding with the first one under the
+        # same name. Resolve the name against PALETTES ourselves (rather
+        # than trusting the settings file) so an unknown/invalid name falls
+        # back to "tokyo" for both the palette dict and the theme name in
+        # one step — settings must never prevent the TUI starting.
+        palette_name = load_settings().get("palette")
+        if not isinstance(palette_name, str) or palette_name not in PALETTES:
+            palette_name = "tokyo"
+        self._resolved_palette = palette_for(palette_name)
+        theme = build_theme(
+            name=f"dvw-{palette_name}", palette=self._resolved_palette)
+        self.register_theme(theme)
+        self.theme = theme.name
 
     def get_default_screen(self) -> MainScreen:
         # MainScreen is the base of the screen stack (Textual >= 1.x queries
         # the default screen from App.query_*, so pushing in on_mount would
-        # leave a blank default screen underneath).
-        return MainScreen()
+        # leave a blank default screen underneath). Threaded the same
+        # resolved palette through so the splash overlay it mounts follows
+        # the configured palette too, not just the CSS/theme half of the UI.
+        return MainScreen(palette=self._resolved_palette)
 
     def on_mount(self) -> None:
         # `dvw new` (bare, TUI available) lands directly in the wizard.

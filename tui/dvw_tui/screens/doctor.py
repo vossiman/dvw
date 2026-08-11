@@ -14,7 +14,7 @@ from textual.widgets import Footer, RichLog, Static
 from textual.worker import get_current_worker
 
 from .. import actions
-from ..render import SUBTLE
+from ..render import RED, SUBTLE
 
 
 class DoctorScreen(Screen):
@@ -57,6 +57,6 @@ class DoctorScreen(Screen):
             log.write(report)
             if not result.ok:
                 log.write(Text(f"\n(doctor exited {result.returncode})",
-                               style="bold #bf616a"))
+                               style=f"bold {RED}"))
 
         self.app.call_from_thread(render)

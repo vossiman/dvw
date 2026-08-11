@@ -2,6 +2,7 @@
 
 from dvw_tui.app import DvwApp
 from dvw_tui.client import WindowInfo, WorkspaceWindows
+from dvw_tui.glyphs import glyph
 from dvw_tui.screens.main import WorkspaceTree
 
 
@@ -65,7 +66,7 @@ async def test_running_node_expands_with_one_row_per_window(fake_client):
         assert [c.data for c in alpha.children] == [
             ("win", "alpha", "@1"), ("win", "alpha", "@2")]
         assert "claude" in _label(alpha.children[0])
-        assert "⏸ waiting" in _label(alpha.children[0])
+        assert glyph("⏸", "waiting") in _label(alpha.children[0])
         # beta has no windows: childless and not expandable
         assert list(beta.children) == []
         assert beta.allow_expand is False
@@ -79,7 +80,7 @@ async def test_header_shows_waiting_count(fake_client):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert "⏸ 1 waiting" in str(app.query_one("#status-header").content)
+        assert glyph("⏸", "1 waiting") in str(app.query_one("#status-header").content)
 
 
 async def test_header_has_no_waiting_marker_when_none_waiting(fake_client):
@@ -208,7 +209,7 @@ async def test_a_key_noop_after_workspace_fetch_fails(fake_client):
     app.do_attach = lambda ws, win: calls.append((ws, win))
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert "⏸ 1 waiting" in str(app.query_one("#status-header").content)
+        assert glyph("⏸", "1 waiting") in str(app.query_one("#status-header").content)
         fake_client.fail = True
         app.screen.refresh_data()
         await pilot.pause()

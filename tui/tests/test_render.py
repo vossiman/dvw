@@ -1,5 +1,16 @@
 from dvw_tui.client import WindowInfo
+from dvw_tui.glyphs import glyph
+from dvw_tui.palette import TOKYO
 from dvw_tui.render import (
+    ACCENT,
+    BLUE,
+    GREEN,
+    GREY,
+    PEACH,
+    RED,
+    SUBTLE,
+    TEAL,
+    YELLOW,
     age,
     human_bytes,
     liveness_cell,
@@ -9,6 +20,23 @@ from dvw_tui.render import (
     window_label,
 )
 
+
+def test_color_constants_come_from_the_palette():
+    # render.py's nine colour constants must be lookups into TOKYO, not
+    # literals that can drift from theme.tcss's copy. bg/bg-panel/fg are
+    # CSS-only and have no render.py counterpart, so this checks nine, not
+    # all twelve ROLES.
+    assert ACCENT == TOKYO["accent"]
+    assert SUBTLE == TOKYO["subtle"]
+    assert GREEN == TOKYO["green"]
+    assert RED == TOKYO["red"]
+    assert GREY == TOKYO["grey"]
+    assert BLUE == TOKYO["blue"]
+    assert TEAL == TOKYO["teal"]
+    assert YELLOW == TOKYO["yellow"]
+    assert PEACH == TOKYO["peach"]
+
+
 def test_human_bytes():
     assert human_bytes(None) == "—"
     assert human_bytes(512) == "512 B"
@@ -16,19 +44,27 @@ def test_human_bytes():
     assert human_bytes(3 * 1024**3) == "3.0 GiB"
 
 def test_liveness_cell_glyphs_and_styles():
+    assert liveness_cell("alive").plain == glyph("●", "running")
+    assert liveness_cell("stale").plain == glyph("⚠", "stale")
+    assert liveness_cell("stopped").plain == glyph("○", "stopped")
+    assert liveness_cell("absent").plain == glyph("✗", "absent")
+    assert liveness_cell("whatever").plain == glyph("?", "unknown")
+    assert "#9ece6a" in str(liveness_cell("alive").style)
+
+
+def test_liveness_cell_wide_marks_get_two_spaces():
+    # The user-visible bug this task fixes: ⚠ and ⏸ render two cells wide in
+    # common terminal fonts, so they need a second space to avoid overdrawing
+    # the label. Narrow marks like ● keep a single space.
+    assert liveness_cell("stale").plain == "⚠  stale"
     assert liveness_cell("alive").plain == "● running"
-    assert liveness_cell("stale").plain == "⚠ stale"
-    assert liveness_cell("stopped").plain == "○ stopped"
-    assert liveness_cell("absent").plain == "✗ absent"
-    assert liveness_cell("whatever").plain == "? unknown"
-    assert "#a3be8c" in str(liveness_cell("alive").style)
 
 def test_ide_color():
-    assert ide_color("cursor") == "#8fbcbb"
-    assert ide_color("ssh") == "#ebcb8b"
-    assert ide_color("vscode") == "#81a1c1"
-    assert ide_color("jetbrains") == "#d08770"
-    assert ide_color("none") == "#4c566a"
+    assert ide_color("cursor") == "#73daca"
+    assert ide_color("ssh") == "#e0af68"
+    assert ide_color("vscode") == "#7aa2f7"
+    assert ide_color("jetbrains") == "#ff9e64"
+    assert ide_color("none") == "#414868"
 
 def test_meter():
     assert meter(None) == "—"
@@ -80,7 +116,7 @@ def test_window_label_full():
     assert "▸ make test" in plain
     assert " *" in plain
     assert "2m" in plain
-    assert "⏸ waiting 1m" in plain
+    assert glyph("⏸", "waiting 1m") in plain
 
 
 def test_window_label_minimal():
@@ -99,7 +135,7 @@ def test_window_label_waiting_glyph_is_spaced():
     w = WindowInfo(window_id="3", name="w", active=False, activity=-1,
                     waiting_since=now - 30, command="")
     label = window_label(w, now)
-    assert "⏸ waiting " in label.plain
+    assert glyph("⏸", "waiting") in label.plain
     assert "⏸waiting" not in label.plain
 
 
@@ -111,4 +147,4 @@ def test_window_label_waiting_style_is_accent_bold():
     # find the span covering the waiting badge and check its style
     idx = label.plain.index("⏸")
     styles = [s.style for s in label.spans if s.start <= idx < s.end]
-    assert any("bold" in str(s) and "#88c0d0" in str(s) for s in styles)
+    assert any("bold" in str(s) and "#7dcfff" in str(s) for s in styles)

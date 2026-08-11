@@ -16,6 +16,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Static
 
 from ..client import CatalogError
+from ..glyphs import glyph
 from ..render import ACCENT, GREY, RED, SUBTLE, YELLOW
 from .confirm import ConfirmScreen
 
@@ -35,8 +36,9 @@ class OrphansScreen(Screen):
         self._orphans: list[dict] = []
 
     def compose(self) -> ComposeResult:
-        yield Static(" ⚠ orphan containers — may contain data, verify before removing",
-                     id="orphans-title")
+        yield Static(
+            f" {glyph('⚠', 'orphan containers — may contain data, verify before removing')}",
+            id="orphans-title")
         yield DataTable(id="orphans-table")
         yield Footer()
 

@@ -23,6 +23,8 @@ from textual.widgets import Footer, Input, Static, Tree
 from textual.widgets.tree import TreeNode
 
 from ..client import CatalogError, Workspace, WorkspaceWindows
+from ..glyphs import glyph
+from ..palette import TOKYO
 from ..render import (
     ACCENT,
     GREEN,
@@ -33,6 +35,7 @@ from ..render import (
     state_cell,
     window_label,
 )
+from .splash import SplashOverlay
 
 _CATALOG_HOST = os.environ.get("DVW_CATALOG_HOST", "vossisrv")
 
@@ -87,8 +90,13 @@ class MainScreen(Screen):
         Binding("q", "app.quit", "quit"),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, palette: dict[str, str] = TOKYO) -> None:
         super().__init__()
+        # Resolved by the app from the `palette` setting and threaded through
+        # to the splash overlay below, which otherwise has no route to it
+        # (it isn't mounted as a pushed Screen with access to app state at
+        # construction time).
+        self._palette = palette
         self._workspaces: list[Workspace] = []
         self._windows: dict[str, WorkspaceWindows] = {}
         # Workspace ids the user collapsed by hand — nodes are rebuilt from
@@ -99,6 +107,12 @@ class MainScreen(Screen):
         # highlight, freshened by a debounced re-fetch.
         self._inspect_cache: dict[str, dict] = {}
         self._inspect_timer: Timer | None = None
+        # Flips True once the first refresh_data() has painted the tree (or
+        # the error banner) — the splash screen polls this to know when the
+        # back-buffer is safe to reveal. Set at every return point below,
+        # success or CatalogError, so a failed first fetch still hands over
+        # on schedule instead of holding the splash forever.
+        self.data_ready = False
 
     # ---- layout -----------------------------------------------------------
 
@@ -114,6 +128,10 @@ class MainScreen(Screen):
                 yield Static(" inspect", id="right-title")
                 yield Static(id="inspect-body")
         yield Footer()
+        # Boot splash: layered above everything else in this screen while
+        # refresh_data() paints the tree behind it (see splash.py). Mounted
+        # here, not pushed as a Screen, so `app.screen` never changes.
+        yield SplashOverlay(ready=lambda: self.data_ready, palette=self._palette)
 
     def on_mount(self) -> None:
         self._update_header(connected=False)
@@ -138,6 +156,7 @@ class MainScreen(Screen):
             self._windows = {}
             self._update_header(connected=False)
             self._render_tree()
+            self.data_ready = True
             return
         # Fail-open by contract: an old server (no /containers/windows)
         # yields {} and the folders simply render childless.
@@ -145,6 +164,7 @@ class MainScreen(Screen):
         self._hide_error()
         self._update_header(connected=True)
         self._render_tree()
+        self.data_ready = True
 
     def _visible_workspaces(self) -> list[Workspace]:
         if not self._filter:
@@ -365,14 +385,14 @@ class MainScreen(Screen):
             text.append(" · unreachable", style=RED)
         waiting = len(self._waiting_windows())
         if waiting:
-            text.append(f" · ⏸ {waiting} waiting", style=f"bold {ACCENT}")
+            text.append(f" · {glyph('⏸', f'{waiting} waiting')}", style=f"bold {ACCENT}")
         self.query_one("#status-header", Static).update(text)
 
     # ---- error banner -----------------------------------------------------
 
     def _show_error(self, message: str) -> None:
         banner = self.query_one("#error-banner", Static)
-        banner.update(Text(f" ✗ {message}", style="bold"))
+        banner.update(Text(f" {glyph('✗', message)}", style="bold"))
         banner.display = True
         self.query_one("#panes").add_class("dimmed")
 
