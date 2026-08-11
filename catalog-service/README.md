@@ -50,6 +50,8 @@ auth + `0660 vossi:vossi` socket perms *is* the auth boundary.
 | `GET /blueprint` · `PUT /blueprint` | effective SSH blueprint; PUT remains compatible with whole-file clients |
 | `GET /blueprint/custom` · `PUT /blueprint/custom` | persistent operator overrides with optimistic revision checks |
 | `GET /containers/status` | bulk liveness (alive/stale/stopped/absent) — replaces dvw's SSH probe |
+| `GET /containers/waiting` | waiting-flagged tmux windows, newest first (bash `dvw attach`) |
+| `GET /containers/windows` | per-workspace tmux window snapshot — id/name/active/activity/waiting/command + session attached count (TUI tree) |
 | `GET /containers/orphans` | devpod-labelled containers not in the catalog |
 
 Interactive docs at `/docs` (over the socket: `ssh vossisrv -- curl --unix-socket … http://localhost/openapi.json`).
