@@ -2,7 +2,7 @@ import pytest
 
 from dvw_tui import actions
 from dvw_tui.actions import ActionResult
-from dvw_tui.client import CatalogError, Workspace
+from dvw_tui.client import CatalogError, Workspace, WorkspaceWindows
 
 
 class FakeClient:
@@ -13,6 +13,7 @@ class FakeClient:
         self.fail = False
         self.inspect_calls = []
         self.waiting_windows = []
+        self.window_map: dict[str, WorkspaceWindows] = {}
         # Global catalog defaults, shaped like GET /v1/defaults. Tests mutate
         # this to exercise the wizard's IDE preselection.
         self.defaults_body = {"ide": "cursor", "provider": "vossisrv"}
@@ -75,6 +76,13 @@ class FakeClient:
         if self.fail:
             return []
         return list(self.waiting_windows)
+
+    async def windows(self):
+        # Mirrors the real client's fail-open degradation: errors yield {}
+        # rather than raising CatalogError.
+        if self.fail:
+            return {}
+        return dict(self.window_map)
 
     async def health(self):
         self._check()
