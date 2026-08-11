@@ -1,5 +1,15 @@
 from dvw_tui.client import WindowInfo
+from dvw_tui.palette import TOKYO
 from dvw_tui.render import (
+    ACCENT,
+    BLUE,
+    GREEN,
+    GREY,
+    PEACH,
+    RED,
+    SUBTLE,
+    TEAL,
+    YELLOW,
     age,
     human_bytes,
     liveness_cell,
@@ -8,6 +18,23 @@ from dvw_tui.render import (
     state_cell,
     window_label,
 )
+
+
+def test_color_constants_come_from_the_palette():
+    # render.py's nine colour constants must be lookups into TOKYO, not
+    # literals that can drift from theme.tcss's copy. bg/bg-panel/fg are
+    # CSS-only and have no render.py counterpart, so this checks nine, not
+    # all twelve ROLES.
+    assert ACCENT == TOKYO["accent"]
+    assert SUBTLE == TOKYO["subtle"]
+    assert GREEN == TOKYO["green"]
+    assert RED == TOKYO["red"]
+    assert GREY == TOKYO["grey"]
+    assert BLUE == TOKYO["blue"]
+    assert TEAL == TOKYO["teal"]
+    assert YELLOW == TOKYO["yellow"]
+    assert PEACH == TOKYO["peach"]
+
 
 def test_human_bytes():
     assert human_bytes(None) == "—"
@@ -21,14 +48,14 @@ def test_liveness_cell_glyphs_and_styles():
     assert liveness_cell("stopped").plain == "○ stopped"
     assert liveness_cell("absent").plain == "✗ absent"
     assert liveness_cell("whatever").plain == "? unknown"
-    assert "#a3be8c" in str(liveness_cell("alive").style)
+    assert "#9ece6a" in str(liveness_cell("alive").style)
 
 def test_ide_color():
-    assert ide_color("cursor") == "#8fbcbb"
-    assert ide_color("ssh") == "#ebcb8b"
-    assert ide_color("vscode") == "#81a1c1"
-    assert ide_color("jetbrains") == "#d08770"
-    assert ide_color("none") == "#4c566a"
+    assert ide_color("cursor") == "#73daca"
+    assert ide_color("ssh") == "#e0af68"
+    assert ide_color("vscode") == "#7aa2f7"
+    assert ide_color("jetbrains") == "#ff9e64"
+    assert ide_color("none") == "#414868"
 
 def test_meter():
     assert meter(None) == "—"
@@ -111,4 +138,4 @@ def test_window_label_waiting_style_is_accent_bold():
     # find the span covering the waiting badge and check its style
     idx = label.plain.index("⏸")
     styles = [s.style for s in label.spans if s.start <= idx < s.end]
-    assert any("bold" in str(s) and "#88c0d0" in str(s) for s in styles)
+    assert any("bold" in str(s) and "#7dcfff" in str(s) for s in styles)

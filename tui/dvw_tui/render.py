@@ -5,17 +5,18 @@ from __future__ import annotations
 from rich.text import Text
 
 from .client import WindowInfo
+from .palette import TOKYO
 
-# Nord palette — mirrors lib/ui.sh. theme.tcss carries the same values for CSS.
-ACCENT = "#88c0d0"
-SUBTLE = "#616e88"
-GREEN = "#a3be8c"
-RED = "#bf616a"
-GREY = "#4c566a"
-BLUE = "#81a1c1"
-TEAL = "#8fbcbb"
-YELLOW = "#ebcb8b"
-PEACH = "#d08770"
+# Colours come from the palette — the single source shared with theme.tcss.
+ACCENT = TOKYO["accent"]
+SUBTLE = TOKYO["subtle"]
+GREEN = TOKYO["green"]
+RED = TOKYO["red"]
+GREY = TOKYO["grey"]
+BLUE = TOKYO["blue"]
+TEAL = TOKYO["teal"]
+YELLOW = TOKYO["yellow"]
+PEACH = TOKYO["peach"]
 
 _LIVENESS = {
     "alive":   ("● running", GREEN, False),

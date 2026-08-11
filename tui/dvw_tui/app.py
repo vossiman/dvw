@@ -13,6 +13,7 @@ from textual.app import App
 
 from . import actions
 from .client import CatalogClient, Workspace
+from .palette import TOKYO, build_theme
 from .screens.confirm import ConfirmScreen
 from .screens.doctor import DoctorScreen
 from .screens.main import MainScreen
@@ -31,6 +32,14 @@ class DvwApp(App):
     def __init__(self, client: object | None = None) -> None:
         super().__init__()
         self.client = client or CatalogClient()
+        # Registered (not get_css_variables()-overridden) so Textual
+        # regenerates the derived variables ($accent-muted, $text-accent,
+        # ...) from our roles instead of leaving them on its default hue.
+        # Done in __init__, before the first compose/paint, so the app
+        # never renders a frame in Textual's built-in theme.
+        theme = build_theme(palette=TOKYO)
+        self.register_theme(theme)
+        self.theme = theme.name
 
     def get_default_screen(self) -> MainScreen:
         # MainScreen is the base of the screen stack (Textual >= 1.x queries

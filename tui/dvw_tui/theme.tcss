@@ -1,13 +1,6 @@
-/* Nord theme — single source of styling. Palette mirrors lib/ui.sh. */
-
-$accent: #88c0d0;
-$subtle: #616e88;
-$green: #a3be8c;
-$red: #bf616a;
-$grey: #4c566a;
-$bg: #2e3440;
-$bg-panel: #3b4252;
-$fg: #d8dee9;
+/* Styling rules. Colours come from the registered Theme (see palette.py /
+   app.py) — $accent, $bg, $fg, and the rest are theme variables, not
+   declared here. */
 
 Screen {
     background: $bg;
