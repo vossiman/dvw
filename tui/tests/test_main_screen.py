@@ -238,6 +238,31 @@ async def test_manual_collapse_survives_refresh(fake_client):
         assert _ws_nodes(app)[0].is_expanded is True
 
 
+async def test_collapse_memory_pruned_when_workspace_disappears(fake_client):
+    """A collapsed id shouldn't silently pre-collapse a later, unrelated
+    workspace that happens to reuse the same id after the original one
+    dropped out of the fixture."""
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("space")          # collapse alpha
+        await pilot.pause()
+        assert _ws_nodes(app)[0].is_expanded is False
+
+        original_workspaces = list(fake_client._workspaces)
+        fake_client._workspaces = [w for w in original_workspaces if w.id != "alpha"]
+        app.screen.refresh_data()
+        await pilot.pause()
+        assert [n.data for n in _ws_nodes(app)] == [("ws", "beta")]
+
+        fake_client._workspaces = original_workspaces
+        app.screen.refresh_data()
+        await pilot.pause()
+        alpha = _ws_nodes(app)[0]
+        assert alpha.data == ("ws", "alpha")
+        assert alpha.is_expanded is True
+
+
 # ---------------------------------------------------------------------------
 # 7. filter
 # ---------------------------------------------------------------------------
@@ -408,6 +433,24 @@ async def test_inspect_debounced_while_scrolling(fake_client):
         await pilot.pause(0.4)  # past the debounce
         assert len(fake_client.inspect_calls) == baseline + 1
         assert fake_client.inspect_calls[-1] == "alpha"
+
+
+async def test_inspect_refreshes_on_stationary_cursor_refresh(fake_client):
+    """Regression: Tree.watch_cursor_line only posts NodeHighlighted when the
+    cursor's line number actually changes. On the steady-state 10s poll the
+    cursor stays put (still line 0, on alpha), so _render_tree must call
+    _update_inspect() explicitly — relying on NodeHighlighted alone leaves
+    the inspect pane stale."""
+    app = DvwApp(client=fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.4)             # initial debounce elapses
+        pane = app.query_one("#inspect-body")
+        assert "2 clients" in str(pane.content)
+
+        fake_client._workspaces[0].attached = 9   # alpha: 2 -> 9 clients
+        app.screen.refresh_data()          # cursor never moves off alpha
+        await pilot.pause(0.4)             # past the debounce
+        assert "9 clients" in str(app.query_one("#inspect-body").content)
 
 
 async def test_inspect_renders_from_cache_instantly(fake_client):

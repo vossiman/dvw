@@ -189,6 +189,13 @@ class MainScreen(Screen):
                 node.add_leaf(window_label(win, now),
                               data=("win", w.id, win.window_id))
         self._restore_cursor(tree, prev)
+        # move_cursor()'s NodeHighlighted only fires when the target line
+        # number differs from the previous one — on a steady-state refresh
+        # the cursor typically lands back on the same line, so that event
+        # never posts. Refresh explicitly every time; the occasional extra
+        # call on a genuine cursor move is harmless (it just resets the
+        # 0.3s debounce).
+        self._update_inspect()
 
     # ---- cursor -----------------------------------------------------------
 
