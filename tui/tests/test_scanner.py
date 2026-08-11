@@ -73,3 +73,20 @@ def test_a_palette_missing_roles_degrades_instead_of_raising():
     frames = scanner_frames(ART, {}, 900)
     assert len(frames) == 1
     assert len({str(span.style) for span in frames[0].spans}) == 1
+
+
+def test_non_string_art_degrades_to_one_frame_instead_of_raising():
+    frames = scanner_frames(123, TOKYO, 900)
+    assert len(frames) == 1
+
+
+def test_zero_period_with_empty_palette_is_one_uniform_frame():
+    frames = scanner_frames(ART, {}, 0)
+    assert len(frames) == 1
+    assert len({str(span.style) for span in frames[0].spans}) == 1
+
+
+def test_zero_period_with_a_valid_palette_is_one_uniform_frame():
+    frames = scanner_frames(ART, TOKYO, 0)
+    assert len(frames) == 1
+    assert len({str(span.style) for span in frames[0].spans}) == 1

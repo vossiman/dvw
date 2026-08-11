@@ -1,4 +1,4 @@
-from dvw_tui.palette import ROLES, TOKYO
+from dvw_tui.palette import PALETTES, ROLES, TOKYO, palette_for
 
 
 def test_every_role_is_present():
@@ -18,3 +18,22 @@ def test_roles_match_the_css_variable_names():
         "accent", "subtle", "green", "red", "grey", "bg",
         "bg-panel", "fg", "teal", "yellow", "blue", "peach",
     )
+
+
+def test_palette_for_known_name_returns_the_right_dict():
+    assert palette_for("tokyo") is TOKYO
+
+
+def test_palette_for_unknown_name_falls_back_to_tokyo():
+    assert palette_for("nonexistent") is TOKYO
+
+
+def test_palette_for_non_string_falls_back_rather_than_raising():
+    assert palette_for(5) is TOKYO
+    assert palette_for(None) is TOKYO
+    assert palette_for(["tokyo"]) is TOKYO
+
+
+def test_every_registered_palette_has_exactly_the_roles():
+    for name, palette in PALETTES.items():
+        assert set(palette) == set(ROLES), name

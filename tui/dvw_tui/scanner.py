@@ -15,6 +15,17 @@ _CORE = 1.5     # inside this, the hot colour
 _GLOW = 6.0     # accent -> hot
 _TAIL = 16.0    # base -> accent
 
+# Timing defaults, shared with anything that has to drive a frame timer in
+# lockstep with this module (e.g. a later phase's animation clock).
+FPS = 30
+SWEEP_PERIOD_MS = 900
+
+# Used only by the last-ditch fallback below, when the caller's palette is
+# itself unusable (that's *why* we're on this path, so a palette lookup
+# isn't an option) — a single hardcoded colour rather than three, since the
+# settled frame only ever reads one of them.
+_FALLBACK_COLOUR = "#ffffff"
+
 
 def _lerp(a: str, b: str, t: float) -> str:
     t = max(0.0, min(1.0, t))
@@ -73,7 +84,7 @@ def scanner_settled(art: str, palette: dict[str, str]) -> Text:
 
 
 def scanner_frames(art: str, palette: dict[str, str], period_ms: int,
-                   fps: int = 30, loop: bool = False) -> list[Text]:
+                   fps: int = FPS, loop: bool = False) -> list[Text]:
     """One sweep across and back, as `period_ms` worth of frames at `fps`.
 
     Decoration must never break the tool, so every failure — a period of zero,
@@ -85,7 +96,10 @@ def scanner_frames(art: str, palette: dict[str, str], period_ms: int,
         base, band, core = _colours(palette)
         lines, width = _block(art)
         if period_ms <= 0:
-            return [_frame(lines, None, base, band, core)]
+            # `art` and `palette` already round-tripped through `_colours`
+            # and `_block` above without raising, so `scanner_settled` can't
+            # fail here either — same inputs, same code paths.
+            return [scanner_settled(art, palette)]
         n = max(2, round(period_ms / 1000 * fps))
         frames = []
         for f in range(n):
@@ -102,6 +116,7 @@ def scanner_frames(art: str, palette: dict[str, str], period_ms: int,
             # Fallback: render settled with hardcoded safe colours
             try:
                 lines, _ = _block(art)
-                return [_frame(lines, None, "#808080", "#ffffff", "#ffff00")]
+                return [_frame(lines, None, _FALLBACK_COLOUR,
+                                _FALLBACK_COLOUR, _FALLBACK_COLOUR)]
             except Exception:
-                return [Text(art)]
+                return [Text(str(art))]
