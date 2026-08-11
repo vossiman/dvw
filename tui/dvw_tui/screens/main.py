@@ -23,6 +23,7 @@ from textual.widgets import Footer, Input, Static, Tree
 from textual.widgets.tree import TreeNode
 
 from ..client import CatalogError, Workspace, WorkspaceWindows
+from ..glyphs import glyph
 from ..render import (
     ACCENT,
     GREEN,
@@ -365,7 +366,7 @@ class MainScreen(Screen):
             text.append(" · unreachable", style=RED)
         waiting = len(self._waiting_windows())
         if waiting:
-            text.append(f" · ⏸ {waiting} waiting", style=f"bold {ACCENT}")
+            text.append(f" · {glyph('⏸', f'{waiting} waiting')}", style=f"bold {ACCENT}")
         self.query_one("#status-header", Static).update(text)
 
     # ---- error banner -----------------------------------------------------

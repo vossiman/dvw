@@ -5,6 +5,7 @@ from __future__ import annotations
 from rich.text import Text
 
 from .client import WindowInfo
+from .glyphs import glyph
 from .palette import TOKYO
 
 # Colours come from the palette — the single source shared with theme.tcss.
@@ -19,18 +20,18 @@ YELLOW = TOKYO["yellow"]
 PEACH = TOKYO["peach"]
 
 _LIVENESS = {
-    "alive":   ("● running", GREEN, False),
-    "stale":   ("⚠ stale",   RED,   True),
-    "stopped": ("○ stopped", GREY,  False),
-    "absent":  ("✗ absent",  RED,   True),
+    "alive":   ("●", "running", GREEN, False),
+    "stale":   ("⚠", "stale",   RED,   True),
+    "stopped": ("○", "stopped", GREY,  False),
+    "absent":  ("✗", "absent",  RED,   True),
 }
 
 _IDE_COLORS = {"cursor": TEAL, "ssh": YELLOW, "vscode": BLUE, "jetbrains": PEACH}
 
 
 def liveness_cell(liveness: str) -> Text:
-    label, color, bold = _LIVENESS.get(liveness, ("? unknown", GREY, False))
-    return Text(label, style=f"bold {color}" if bold else color)
+    mark, label, color, bold = _LIVENESS.get(liveness, ("?", "unknown", GREY, False))
+    return Text(glyph(mark, label), style=f"bold {color}" if bold else color)
 
 
 def state_cell(liveness: str, attached: int = 0) -> Text:
@@ -39,7 +40,7 @@ def state_cell(liveness: str, attached: int = 0) -> Text:
     client on a stale mount is exactly worth noticing)."""
     text = liveness_cell(liveness)
     if attached >= 1 and liveness in ("alive", "stale"):
-        text.append(f" ⇄ {attached}", style=f"bold {ACCENT}")
+        text.append(f" {glyph('⇄', str(attached))}", style=f"bold {ACCENT}")
     return text
 
 
@@ -103,16 +104,16 @@ def window_label(w: WindowInfo, now: int) -> Text:
 
     `❘ <name>  ▸ <command>` (command omitted when empty), ` *` when active,
     `  <age>` from `activity` (omitted when -1), and `  ⏸ waiting <age>`
-    (bold ACCENT) from `waiting_since` when the window is waiting. The ⏸
-    glyph is always followed by a space.
+    (bold ACCENT) from `waiting_since` when the window is waiting. The gap
+    after each glyph comes from `glyph()`, not this function.
     """
-    text = Text(f"❘ {w.name}")
+    text = Text(glyph("❘", w.name))
     if w.command:
-        text.append(f"  ▸ {w.command}", style=SUBTLE)
+        text.append(f"  {glyph('▸', w.command)}", style=SUBTLE)
     if w.active:
         text.append(" *")
     if w.activity >= 0:
         text.append(f"  {age(w.activity, now)}", style=SUBTLE)
     if w.waiting_since is not None:
-        text.append(f"  ⏸ waiting {age(w.waiting_since, now)}", style=f"bold {ACCENT}")
+        text.append(f"  {glyph('⏸', f'waiting {age(w.waiting_since, now)}')}", style=f"bold {ACCENT}")
     return text

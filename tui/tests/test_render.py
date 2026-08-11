@@ -1,4 +1,5 @@
 from dvw_tui.client import WindowInfo
+from dvw_tui.glyphs import glyph
 from dvw_tui.palette import TOKYO
 from dvw_tui.render import (
     ACCENT,
@@ -43,12 +44,20 @@ def test_human_bytes():
     assert human_bytes(3 * 1024**3) == "3.0 GiB"
 
 def test_liveness_cell_glyphs_and_styles():
-    assert liveness_cell("alive").plain == "● running"
-    assert liveness_cell("stale").plain == "⚠ stale"
-    assert liveness_cell("stopped").plain == "○ stopped"
-    assert liveness_cell("absent").plain == "✗ absent"
-    assert liveness_cell("whatever").plain == "? unknown"
+    assert liveness_cell("alive").plain == glyph("●", "running")
+    assert liveness_cell("stale").plain == glyph("⚠", "stale")
+    assert liveness_cell("stopped").plain == glyph("○", "stopped")
+    assert liveness_cell("absent").plain == glyph("✗", "absent")
+    assert liveness_cell("whatever").plain == glyph("?", "unknown")
     assert "#9ece6a" in str(liveness_cell("alive").style)
+
+
+def test_liveness_cell_wide_marks_get_two_spaces():
+    # The user-visible bug this task fixes: ⚠ and ⏸ render two cells wide in
+    # common terminal fonts, so they need a second space to avoid overdrawing
+    # the label. Narrow marks like ● keep a single space.
+    assert liveness_cell("stale").plain == "⚠  stale"
+    assert liveness_cell("alive").plain == "● running"
 
 def test_ide_color():
     assert ide_color("cursor") == "#73daca"
@@ -107,7 +116,7 @@ def test_window_label_full():
     assert "▸ make test" in plain
     assert " *" in plain
     assert "2m" in plain
-    assert "⏸ waiting 1m" in plain
+    assert glyph("⏸", "waiting 1m") in plain
 
 
 def test_window_label_minimal():
@@ -126,7 +135,7 @@ def test_window_label_waiting_glyph_is_spaced():
     w = WindowInfo(window_id="3", name="w", active=False, activity=-1,
                     waiting_since=now - 30, command="")
     label = window_label(w, now)
-    assert "⏸ waiting " in label.plain
+    assert glyph("⏸", "waiting") in label.plain
     assert "⏸waiting" not in label.plain
 
 
