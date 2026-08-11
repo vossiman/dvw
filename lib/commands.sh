@@ -936,12 +936,29 @@ cmd_attach() {
     local rows sel
     rows=$(jq -r '.[] | "\(.workspace_id)\t\(.window_name)\t\(.window_id)"' <<<"$raw" \
       | column -t -s $'\t')
-    # fzf-preferred/gum-fallback convention — dvw doesn't hard-require fzf
-    # anywhere else.
+    # fzf-preferred, numbered-list fallback (gum removed 2026-08-11) — dvw
+    # doesn't hard-require fzf anywhere else.
     if command -v fzf >/dev/null; then
       sel=$(printf '%s\n' "$rows" | fzf --prompt='attach> ' --height=40% --reverse) || return 1
     else
-      sel=$(printf '%s\n' "$rows" | gum filter --placeholder='attach> ') || return 1
+      # Rows are already column-aligned; print them indexed, read one number.
+      local n i=0 line pick
+      n=$(wc -l <<<"$rows")
+      while IFS= read -r line; do
+        i=$((i+1))
+        printf '%2d) %s\n' "$i" "$line"
+      done <<<"$rows"
+      if [[ ! -t 0 && "${DVW_ASSUME_TTY:-}" != "1" ]]; then
+        ui_error "attach: multiple windows waiting and no way to pick non-interactively"
+        return 1
+      fi
+      printf 'attach #> ' >&2
+      IFS= read -r pick || pick=""
+      if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > n )); then
+        ui_error "invalid selection: ${pick:-<empty>}"
+        return 1
+      fi
+      sel=$(sed -n "${pick}p" <<<"$rows")
     fi
     ws=$(awk '{print $1}' <<<"$sel")
     win=$(awk '{print $NF}' <<<"$sel")

@@ -172,29 +172,47 @@ EOF
   [ "$status" -ne 0 ]
 }
 
-@test "attach falls back to gum filter when fzf is not installed" {
+@test "attach picker: no fzf falls back to a numbered list" {
   _load_attach
   export CONNECT_LOG="$HOME/connect-log"
   : > "$CONNECT_LOG"
-  cmd_connect() { printf '%s\n' "$*" > "$CONNECT_LOG"; }
+  cmd_connect() { printf 'connect: %s\n' "$*" > "$CONNECT_LOG"; }
   export -f cmd_connect
   _serve_waiting '[
     {"workspace_id":"newws","container_id":"c2","window_id":"@9","window_name":"newer","waiting_since":2000},
     {"workspace_id":"oldws","container_id":"c1","window_id":"@3","window_name":"older","waiting_since":1000}
   ]'
-  # No fzf stub installed on purpose — PATH has neither a real nor a stub
-  # fzf, so `command -v fzf` must fail and cmd_attach must fall back to the
-  # gum filter convention (lib/commands.sh, cmd_attach's picker branch).
-  cat > "$STUB_BIN/gum" <<'EOF'
-#!/usr/bin/env bash
-[ "$1" = "filter" ] || { echo "unexpected gum invocation: $*" >&2; exit 99; }
-head -n1
-EOF
-  chmod +x "$STUB_BIN/gum"
-  run cmd_attach
+  export DVW_ASSUME_TTY=1
+  # Hide fzf even if installed, but leave every other `command -v` lookup
+  # (jq, column, ...) working — cmd_attach still needs those.
+  command() { [[ "$1" == "-v" && "$2" == "fzf" ]] && return 1; builtin command "$@"; }
+  export -f command
+  run cmd_attach <<< "2"
   [ "$status" -eq 0 ]
-  grep -q "^newws " "$CONNECT_LOG"
-  grep -q '@9' "$CONNECT_LOG"
+  echo "$output" | grep -q "1)"
+  grep -q "connect:" "$CONNECT_LOG"
+  grep -q 'oldws' "$CONNECT_LOG"
+  grep -q '@3' "$CONNECT_LOG"
+}
+
+@test "attach picker: garbage selection errors out" {
+  _load_attach
+  export CONNECT_LOG="$HOME/connect-log"
+  : > "$CONNECT_LOG"
+  cmd_connect() { printf 'connect: %s\n' "$*" > "$CONNECT_LOG"; }
+  export -f cmd_connect
+  _serve_waiting '[
+    {"workspace_id":"newws","container_id":"c2","window_id":"@9","window_name":"newer","waiting_since":2000},
+    {"workspace_id":"oldws","container_id":"c1","window_id":"@3","window_name":"older","waiting_since":1000}
+  ]'
+  export DVW_ASSUME_TTY=1
+  command() { [[ "$1" == "-v" && "$2" == "fzf" ]] && return 1; builtin command "$@"; }
+  export -f command
+  run cmd_attach <<< "banana"
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -qi "invalid selection"
+  run grep -q "connect:" "$CONNECT_LOG"
+  [ "$status" -ne 0 ]
 }
 
 @test "attach with multiple waiting windows opens a picker, newest-first row wins" {

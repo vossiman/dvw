@@ -28,26 +28,15 @@ _ansi() {
 }
 ui_reset() { printf '\033[0m'; }
 
-# ui_banner "Title" ["subtitle"]  — Nord double-border title block.
+# ui_banner "Title" ["subtitle"] — double-border title block, plain ANSI.
 ui_banner() {
   local title="$1" sub="${2:-}"
-  if [[ -n "$sub" ]]; then
-    gum join --vertical \
-      "$(gum style \
-          --border double --padding "0 2" \
-          --foreground "$DVW_ACCENT" --border-foreground "$DVW_ACCENT" \
-          --bold \
-          "$title")" \
-      "$(gum style \
-          --foreground "$DVW_SUBTLE" --margin "0 0 1 2" \
-          "$sub")"
-  else
-    gum style \
-      --border double --padding "0 2" --margin "0 0 1 0" \
-      --foreground "$DVW_ACCENT" --border-foreground "$DVW_ACCENT" \
-      --bold \
-      "$title"
-  fi
+  local a s bar
+  a=$(_ansi "$DVW_ACCENT" bold); s=$(_ansi "$DVW_SUBTLE")
+  bar=$(printf '═%.0s' $(seq 1 $(( ${#title} + 4 ))))
+  printf '%s╔%s╗\n║  %s  ║\n╚%s╝%s\n' "$a" "$bar" "$title" "$bar" "$(ui_reset)"
+  [[ -n "$sub" ]] && printf '  %s%s%s\n' "$s" "$sub" "$(ui_reset)"
+  printf '\n'
 }
 
 # Colored [OK]/[WARN]/[FAIL] markers. Detail string follows on the same line.
