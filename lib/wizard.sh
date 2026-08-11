@@ -46,9 +46,8 @@ _github_https_to_ssh() {
 # propagate.)
 _fetch_remote_branches() {
   local repo="$1" raw rc
-  if raw=$(GIT_TERMINAL_PROMPT=0 gum spin --spinner dot \
-             --title "fetching branches for $repo..." --show-output \
-             -- git ls-remote --heads "$repo" 2>/dev/null); then
+  if raw=$(GIT_TERMINAL_PROMPT=0 ui_progress "fetching branches for $repo" \
+             git ls-remote --heads "$repo" 2>/dev/null); then
     rc=0
   else
     rc=$?
@@ -204,87 +203,97 @@ _truncate_for_devpod() {
   echo "$name"
 }
 
-cmd_new() {
-  command -v gum >/dev/null || { ui_error "gum not installed; run dvw doctor"; return 1; }
-  command -v devpod >/dev/null || { ui_error "devpod not installed; run dvw doctor"; return 1; }
+_new_usage() {
+  ui_info "usage: dvw new --repo <url> --name <name> --ide cursor|ssh [--branch <b>] [--init-empty] [--seed-devcontainer] [--yes]"
+}
 
-  ui_banner "new workspace" "wizard creates a workspace, brings the container up, and adds it to the catalog"
-
-  # 1. Repo
-  local repos repo
-  repos=$(catalog_repo_list)
-  if [[ -z "$repos" ]]; then
-    repo=$(gum input --placeholder "git@github.com:owner/repo.git" --header "repo URL" \
-            --header.foreground "$DVW_SUBTLE")
-  else
-    repo=$(printf "+ enter new...\n%s\n" "$repos" \
-      | gum filter --placeholder "pick a repo (or '+ enter new...')")
-    if [[ "$repo" == "+ enter new..." || -z "$repo" ]]; then
-      repo=$(gum input --placeholder "git@github.com:owner/repo.git" --header "repo URL" \
-              --header.foreground "$DVW_SUBTLE")
-    fi
-  fi
-  [[ -z "$repo" ]] && { ui_info "aborted: no repo"; return 1; }
-
-  # 2. Branch — pick from the repo's live remote branches. Listing only what
-  # actually exists rules out stale catalog defaults and typo'd/deleted
-  # branches, which `devpod up` would otherwise reject mid-clone with an
-  # opaque "exit status 128".
-  local branches branch rc=0 branch_needs_devcontainer_check=0
+# Resolve <repo>'s branch list, retrying the SSH form for HTTPS github URLs
+# (no credential helper in the devbox). stdout: resolved URL first, then one
+# branch per line. rc: 0 branches found, 3 reachable-but-empty, 2 unreachable.
+_new_resolve_branches() {
+  local repo="$1" branches rc=0
   if branches=$(_fetch_remote_branches "$repo"); then rc=0; else rc=$?; fi
   if [[ -z "$branches" && $rc -ne 0 ]]; then
-    # An HTTPS github.com URL has no credential helper in the devbox (auth is
-    # the forwarded ssh-agent), so ls-remote dies with 128. Derive the SSH form
-    # and retry once before giving up; on a reachable result switch to it so the
-    # catalog records the URL that actually works here.
     local ssh_repo
     ssh_repo=$(_github_https_to_ssh "$repo")
     if [[ "$ssh_repo" != "$repo" ]]; then
-      ui_info "HTTPS clone needs credentials we don't have here; retrying via SSH: $ssh_repo"
       if branches=$(_fetch_remote_branches "$ssh_repo"); then rc=0; else rc=$?; fi
       [[ $rc -eq 0 ]] && repo="$ssh_repo"
     fi
   fi
-  if [[ -z "$branches" && $rc -ne 0 ]]; then
+  [[ -z "$branches" && $rc -ne 0 ]] && return 2
+  printf '%s\n' "$repo"
+  [[ -z "$branches" ]] && return 3
+  printf '%s\n' "$branches"
+  return 0
+}
+
+cmd_new() {
+  command -v devpod >/dev/null || { ui_error "devpod not installed; run dvw doctor"; return 1; }
+
+  local repo="" branch="" name="" ide="" init_empty=0 seed_devc=0 yes=0
+  while (($#)); do
+    case "$1" in
+      --repo)   repo="${2:-}";   shift 2 || { _new_usage; return 1; } ;;
+      --branch) branch="${2:-}"; shift 2 || { _new_usage; return 1; } ;;
+      --name)   name="${2:-}";   shift 2 || { _new_usage; return 1; } ;;
+      --ide)    ide="${2:-}";    shift 2 || { _new_usage; return 1; } ;;
+      --init-empty)         init_empty=1; shift ;;
+      --seed-devcontainer)  seed_devc=1;  shift ;;
+      --yes)                yes=1;        shift ;;
+      *) ui_error "dvw new: unknown argument: $1"; _new_usage; return 1 ;;
+    esac
+  done
+  [[ -z "$repo" ]] && { ui_error "dvw new: --repo is required"; _new_usage; return 1; }
+  [[ -z "$name" ]] && { ui_error "dvw new: --name is required"; _new_usage; return 1; }
+  case "$ide" in cursor|ssh) ;; *)
+    ui_error "dvw new: --ide must be cursor or ssh (got: ${ide:-<empty>})"; _new_usage; return 1 ;;
+  esac
+  if [[ -z "$branch" ]]; then
+    if (( init_empty )); then branch="main"; else
+      ui_error "dvw new: --branch is required (or --init-empty for a fresh repo)"; _new_usage; return 1
+    fi
+  fi
+
+  # Resolve branches; handle empty/unreachable.
+  local resolved rc=0 branches did_init=0
+  if resolved=$(_new_resolve_branches "$repo"); then rc=0; else rc=$?; fi
+  if [[ $rc -eq 2 ]]; then
     ui_error "couldn't list branches for $repo — check the URL, your network, or SSH auth"
     return 1
   fi
-  if [[ -z "$branches" ]]; then
-    # rc == 0 but zero refs → the repo is reachable but empty (freshly created,
-    # no commits). Offer to seed it with an initial commit so there's a branch
-    # to clone, rather than dead-ending on "couldn't list branches".
-    ui_status_warn "repo is empty — it has no branches yet: $repo"
-    gum confirm "Create an initial commit on 'main' (with the blueprint devcontainer.json) and push?" \
-      || { ui_info "aborted: empty repo not initialized"; return 1; }
-    ui_action "initializing" "$repo (initial commit on main)"
-    if ! _init_empty_repo "$repo" main; then
+  repo=$(head -n1 <<<"$resolved")
+  branches=$(tail -n +2 <<<"$resolved")
+  if [[ $rc -eq 3 ]]; then
+    if (( ! init_empty )); then
+      ui_error "repo is empty (no branches): $repo — rerun with --init-empty to create an initial commit (with the blueprint devcontainer.json) on '$branch'"
+      return 1
+    fi
+    ui_action "initializing" "$repo (initial commit on $branch)"
+    if ! _init_empty_repo "$repo" "$branch"; then
       ui_error "failed to initialize empty repo: $repo — check your push access"
       return 1
     fi
     if [[ "${DVW_INIT_SEEDED_DEVCONTAINER:-0}" -eq 1 ]]; then
-      ui_status_ok "initialized $repo with the blueprint devcontainer.json on 'main'"
+      ui_status_ok "initialized $repo with the blueprint devcontainer.json on '$branch'"
     else
-      ui_status_warn "couldn't fetch the blueprint devcontainer.json — initialized $repo with a plain empty commit on 'main' (the container will come up bare)"
+      ui_status_warn "couldn't fetch the blueprint devcontainer.json — initialized $repo with a plain empty commit on '$branch' (the container will come up bare)"
     fi
-    branch="main"
+    did_init=1
   else
-    branch=$(printf '%s\n' "$branches" | gum filter --placeholder "pick a branch")
-    branch_needs_devcontainer_check=1
+    if ! grep -qxF -- "$branch" <<<"$branches"; then
+      ui_error "branch '$branch' not found on $repo"
+      ui_info "available: $(tr '\n' ' ' <<<"$branches")"
+      return 1
+    fi
   fi
-  [[ -z "$branch" ]] && { ui_info "aborted: no branch"; return 1; }
 
-  # 2b. Devcontainer presence — skipped when _init_empty_repo just ran (it
-  # already seeded, or already reported the fetch failure). A branch without
-  # a devcontainer builds DevPod's bare fallback image: no tmux, no
-  # toolchain, no git identity (2026-07-14, obsidian-selfhost). Offer to
-  # seed the blueprint one — commit with the host's git identity + push —
-  # so the `devpod up` below clones a repo that builds the real harness.
-  if [[ "${branch_needs_devcontainer_check:-0}" -eq 1 ]]; then
+  # Devcontainer presence (skipped when we just seeded the repo ourselves).
+  if (( ! did_init )); then
     local devc_rc=0
     _branch_has_devcontainer "$repo" "$branch" || devc_rc=$?
     if [[ $devc_rc -eq 1 ]]; then
-      ui_status_warn "no devcontainer.json on '$branch' — the container would come up bare (no tmux/toolchain)"
-      if gum confirm "Commit the blueprint devcontainer.json to '$branch' and push?"; then
+      if (( seed_devc )); then
         ui_action "seeding" "blueprint devcontainer.json onto $branch"
         if _seed_devcontainer_on_branch "$repo" "$branch"; then
           ui_status_ok "seeded .devcontainer/devcontainer.json on '$branch'"
@@ -292,27 +301,18 @@ cmd_new() {
           ui_error "seeding failed (blueprint fetch or push) — continuing; the container will come up bare"
         fi
       else
-        ui_info "continuing without a devcontainer — expect a bare container"
+        ui_status_warn "no devcontainer.json on '$branch' — the container will come up bare (pass --seed-devcontainer to seed the blueprint)"
       fi
     elif [[ $devc_rc -eq 2 ]]; then
       ui_status_warn "couldn't inspect '$branch' for a devcontainer.json — continuing"
     fi
   fi
 
-  # 3. Workspace name (DevPod caps these at DEVPOD_NAME_MAX chars).
-  local default_name name
-  default_name=$(_sanitize_ws_name "$(_repo_leaf "$repo")-$branch")
-  default_name=$(_truncate_for_devpod "$default_name")
-  name=$(gum input --value "$default_name" \
-          --header "workspace name (max $DEVPOD_NAME_MAX chars)" \
-          --char-limit "$DEVPOD_NAME_MAX" \
-          --header.foreground "$DVW_SUBTLE")
+  # Name: sanitize + cap + collision checks (verbatim from the old body,
+  # minus the gum input — the name now arrives via --name).
   name=$(_sanitize_ws_name "$name")
-  [[ -z "$name" ]] && { ui_info "aborted: no name"; return 1; }
+  [[ -z "$name" ]] && { ui_error "dvw new: --name sanitized to empty"; return 1; }
   if (( ${#name} > DEVPOD_NAME_MAX )); then
-    # Defensive: --char-limit should prevent this, but older gum versions
-    # don't enforce it, and _sanitize_ws_name (tr+sed substitutions) can in
-    # theory expand length. Reject before invoking devpod up.
     ui_error "workspace name too long (${#name} chars, max $DEVPOD_NAME_MAX): $name"
     return 1
   fi
@@ -338,30 +338,18 @@ cmd_new() {
     fi
   fi
 
-  # 4. IDE
-  local default_ide ide
-  default_ide=$(catalog_default ide)
-  default_ide="${default_ide:-cursor}"
-  ide=$(gum choose \
-          --selected "$default_ide" \
-          --cursor "❯ " \
-          --cursor.foreground "$DVW_ACCENT" \
-          --selected.foreground "$DVW_ACCENT" \
-          --header.foreground "$DVW_SUBTLE" \
-          --header "IDE" \
-          cursor ssh)
-  [[ -z "$ide" ]] && { ui_info "aborted: no ide"; return 1; }
-
-  # 5. Confirm — show a styled summary box.
+  # Confirm (unless --yes), then the existing devpod-up/cleanup/catalog tail verbatim.
   local devpod_ide="$ide"
   [[ "$ide" == "ssh" ]] && devpod_ide="none"
-  echo
-  gum style \
-    --border rounded --padding "0 2" --margin "0 0 1 0" \
-    --foreground "$DVW_SUBTLE" --border-foreground "$DVW_ACCENT" \
-    "$(printf 'repo    %s\nbranch  %s\nname    %s\nIDE     %s' \
-        "$repo" "$branch" "$name" "$ide")"
-  gum confirm "Create workspace?" || { ui_info "aborted"; return 1; }
+  printf '%srepo%s    %s\n%sbranch%s  %s\n%sname%s    %s\n%sIDE%s     %s\n' \
+    "$(_ansi "$DVW_SUBTLE")" "$(ui_reset)" "$repo" \
+    "$(_ansi "$DVW_SUBTLE")" "$(ui_reset)" "$branch" \
+    "$(_ansi "$DVW_SUBTLE")" "$(ui_reset)" "$name" \
+    "$(_ansi "$DVW_SUBTLE")" "$(ui_reset)" "$ide"
+  if (( ! yes )) && ! ui_confirm "Create workspace?"; then
+    ui_info "aborted"
+    return 1
+  fi
 
   # 6. Run devpod up
   ui_action "creating" "$name (ide=$devpod_ide)"
