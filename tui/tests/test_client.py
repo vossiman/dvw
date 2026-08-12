@@ -209,3 +209,20 @@ async def test_windows_malformed_window_entry_skipped():
     assert windows[0].active is False
     assert windows[0].activity == -1
     assert windows[0].command == ""
+
+
+@pytest.mark.asyncio
+async def test_windows_omits_duplicate_workspace_snapshots_from_old_server():
+    def handler(request):
+        return httpx.Response(200, json=[
+            {"workspace_id": "alpha", "container_id": "canonical", "windows": [
+                {"window_id": "@1", "name": "real"},
+            ]},
+            {"workspace_id": "alpha", "container_id": "sibling", "windows": [
+                {"window_id": "@9", "name": "wrong"},
+            ]},
+        ])
+
+    # The client cannot reproduce server-side tmux resolution, so the only
+    # safe compatibility behavior is to omit an ambiguous duplicate entirely.
+    assert await make_client(handler).windows() == {}

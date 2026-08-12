@@ -54,6 +54,13 @@ auth + `0660 vossi:vossi` socket perms *is* the auth boundary.
 | `GET /containers/windows` | per-workspace tmux window snapshot — id/name/active/activity/waiting/command + session attached count (TUI tree) |
 | `GET /containers/orphans` | devpod-labelled containers not in the catalog |
 
+Window snapshots use the same canonical-container resolver as attach/connect.
+When duplicate running siblings have no tmux-bearing candidate, the workspace is
+omitted instead of exposing window ids that cannot be routed safely. Attached
+client counts on the bulk status endpoint are best-effort metadata: probes use
+four shared slots and a 250 ms response budget, then fall back to zero so slow
+or broken tmux/Docker calls cannot hold up liveness.
+
 Interactive docs at `/docs` (over the socket: `ssh vossisrv -- curl --unix-socket … http://localhost/openapi.json`).
 
 ## Layout

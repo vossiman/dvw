@@ -5,6 +5,8 @@ dvw relied on: bind-mount destination match + tmux `work` activity tie-break.
 
 from __future__ import annotations
 
+import time
+
 from app.config import Settings
 from app.docker_inspect import DockerInspector
 
@@ -292,3 +294,76 @@ def test_tmux_work_attached_exec_raises(monkeypatch):
     c.exec_run = boom
     insp = _inspector([c], monkeypatch)
     assert insp._tmux_work_attached(c) == 0
+
+
+def test_status_many_bounds_slow_attached_probe(monkeypatch):
+    import app.docker_inspect as di
+
+    monkeypatch.setattr(di.os.path, "isdir", lambda path: path == "/exists")
+    slow = FakeContainer("slow", "slow", "u1", "/workspaces/slow")
+    fast = FakeContainer("fast", "fast", "u2", "/workspaces/fast",
+                         tmux_attached=3)
+    original = slow.exec_run
+
+    def delayed(cmd, demux=False):
+        if cmd and "session_attached" in cmd[-1]:
+            time.sleep(0.5)
+        return original(cmd, demux=demux)
+
+    slow.exec_run = delayed
+    insp = _inspector([slow, fast], monkeypatch)
+    insp._attached_probe_budget = 0.05
+
+    started = time.monotonic()
+    statuses = {s.id: s for s in insp.status_many(["slow", "fast", "missing"])}
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.2
+    assert statuses["slow"].liveness == "alive"
+    assert statuses["slow"].attached == 0
+    assert statuses["fast"].attached == 3
+    assert statuses["missing"].liveness == "absent"
+
+
+def test_status_many_attached_future_failure_fails_open(monkeypatch):
+    import app.docker_inspect as di
+
+    monkeypatch.setattr(di.os.path, "isdir", lambda path: path == "/exists")
+    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a")
+    insp = _inspector([c], monkeypatch)
+    monkeypatch.setattr(insp, "_tmux_work_attached",
+                        lambda container: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    (status,) = insp.status_many(["ws-a"])
+    assert status.liveness == "alive"
+    assert status.attached == 0
+
+
+def test_repeated_slow_status_requests_do_not_queue_more_probes(monkeypatch):
+    containers = [
+        FakeContainer(f"c{i}", f"n{i}", f"u{i}", f"/workspaces/ws-{i}")
+        for i in range(8)
+    ]
+    calls: list[str] = []
+    for c in containers:
+        original = c.exec_run
+
+        def delayed(cmd, demux=False, *, container=c, run=original):
+            if cmd and "session_attached" in cmd[-1]:
+                calls.append(container.id)
+                time.sleep(0.4)
+            return run(cmd, demux=demux)
+
+        c.exec_run = delayed
+
+    insp = _inspector(containers, monkeypatch)
+    insp._attached_probe_budget = 0.03
+    ids = [f"ws-{i}" for i in range(8)]
+
+    insp.status_many(ids)
+    insp.status_many(ids)
+    # Let the first four finish. A queued executor design would then start
+    # later work; the slot-gated design never retained it.
+    time.sleep(0.45)
+
+    assert len(calls) == insp._attached_probe_workers
