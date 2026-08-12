@@ -143,12 +143,22 @@ class CatalogClient:
         if not isinstance(body, list):
             return {}
         out: dict[str, WorkspaceWindows] = {}
+        duplicate_ids: set[str] = set()
         for entry in body:
             if not isinstance(entry, dict):
                 continue
             try:
                 workspace_id = entry["workspace_id"]
             except (KeyError, TypeError):
+                continue
+            # Servers predating canonical window collection can emit one
+            # entry per sibling. Never let response order choose window ids
+            # that attach will route to a different container.
+            if workspace_id in duplicate_ids:
+                continue
+            if workspace_id in out:
+                out.pop(workspace_id)
+                duplicate_ids.add(workspace_id)
                 continue
             windows: list[WindowInfo] = []
             for w in entry.get("windows") or []:

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+import time
 from typing import Protocol
 
 import docker
@@ -65,6 +67,13 @@ class Inspector(Protocol):
 
 
 class DockerInspector:
+    # Attached-client metadata is useful but must never make the bulk
+    # liveness endpoint wait for Docker's per-call timeout once per workspace.
+    # Shared slots bound both fan-out and the number of probes left running
+    # after a response has used up its small best-effort budget.
+    _attached_probe_workers = 4
+    _attached_probe_budget = 0.25
+
     def __init__(self, settings: Settings):
         self._settings = settings
         if settings.docker_host:
@@ -73,6 +82,9 @@ class DockerInspector:
             )
         else:
             self._client = docker.from_env(timeout=settings.docker_timeout)
+        self._attached_slots = threading.BoundedSemaphore(
+            self._attached_probe_workers
+        )
 
     # ---- helpers ----------------------------------------------------------
 
@@ -235,8 +247,23 @@ class DockerInspector:
 
     # ---- resolver (hot path) ---------------------------------------------
 
-    def resolve(self, ws_id: str) -> CanonicalContainer:
-        cands = self._candidates(ws_id)
+    def _resolve_candidates(
+        self, ws_id: str, cands: list[Container],
+        *, probe_single_activity: bool = True,
+    ) -> CanonicalContainer:
+        """Apply the one canonical-container policy to an existing candidate list.
+
+        Window collection already has all containers in hand, so sharing the
+        decision itself avoids a second Docker listing while ensuring attach
+        and display can never choose different siblings.
+
+        probe_single_activity=False skips the tmux exec on the (common)
+        single-candidate path for callers that only need the canonical
+        container id and discard tmux_work_activity (windows_many,
+        status_many). The choice of container is identical either way; the
+        sibling tie-break below always probes because activity IS the
+        decision there.
+        """
         if not cands:
             return CanonicalContainer(workspace_id=ws_id, container_id=None)
 
@@ -250,7 +277,10 @@ class DockerInspector:
                 container_name=c.name,
                 devpod_uid=self._uid(c),
                 state=c.status,
-                tmux_work_activity=self._tmux_work_activity(c),
+                tmux_work_activity=(
+                    self._tmux_work_activity(c) if probe_single_activity
+                    else -1
+                ),
             )
 
         # >= 2 candidates: the sibling case. Tie-break by tmux `work` activity.
@@ -285,6 +315,9 @@ class DockerInspector:
             tmux_work_activity=activity,
             sibling_ids=siblings,
         )
+
+    def resolve(self, ws_id: str) -> CanonicalContainer:
+        return self._resolve_candidates(ws_id, self._candidates(ws_id))
 
     # ---- deep inspect -----------------------------------------------------
 
@@ -374,40 +407,112 @@ class DockerInspector:
 
     # ---- bulk status (replaces _dvw_load_probe) --------------------------
 
+    def _attached_many(self, containers: list[Container]) -> dict[str, int]:
+        """Best-effort attached counts within one bounded response budget.
+
+        A shared semaphore bounds probes across overlapping/repeated requests.
+        There is deliberately no work queue: when all slots are occupied by
+        slow Docker calls, later probes immediately retain the API's safe
+        compatibility default 0 instead of building an unbounded backlog.
+        """
+        deadline = time.monotonic() + self._attached_probe_budget
+        attached: dict[str, int] = {}
+        result_lock = threading.Lock()
+        workers: list[threading.Thread] = []
+
+        def probe(c: Container) -> None:
+            try:
+                count = self._tmux_work_attached(c)
+                with result_lock:
+                    attached[c.id] = count
+            except Exception:
+                # _tmux_work_attached itself is fail-open, but keep the bulk
+                # endpoint robust if a future implementation raises.
+                return
+            finally:
+                self._attached_slots.release()
+
+        for c in containers:
+            if not self._attached_slots.acquire(blocking=False):
+                continue
+            worker = threading.Thread(
+                target=probe,
+                args=(c,),
+                name="dvw-attached",
+                daemon=True,
+            )
+            try:
+                worker.start()
+            except Exception:
+                self._attached_slots.release()
+                continue
+            workers.append(worker)
+
+        for worker in workers:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            worker.join(remaining)
+        with result_lock:
+            return dict(attached)
+
     def status_many(self, ids: list[str]) -> list[WorkspaceStatus]:
-        # Build a destination -> container map in one pass over devpod
-        # containers, then answer each id locally.
-        by_dest: dict[str, Container] = {}
-        # Count RUNNING containers per destination. Picking a winner below
-        # discards the fact that there WAS a duplicate, which is how a
-        # workspace could report `running` here while connect refused it as
-        # ambiguous. Count first, report it alongside the winner.
-        running_count: dict[str, int] = {}
+        # Group containers per destination in one pass over devpod
+        # containers, then answer each id locally. Running containers keep
+        # the full group so duplicates can be resolved canonically below;
+        # stopped ones only need a representative for liveness.
+        running_by_dest: dict[str, list[Container]] = {}
+        stopped_by_dest: dict[str, Container] = {}
         prefix = self._settings.workspace_mount_prefix
         for c in self._devpod_containers():
             wid = _ws_id_from_mounts(c.attrs.get("Mounts", []), prefix)
             if wid is None:
                 continue
             if c.status == "running":
-                running_count[wid] = running_count.get(wid, 0) + 1
-            # Prefer a running container if duplicates share a destination.
-            existing = by_dest.get(wid)
-            if existing is None or (
-                existing.status != "running" and c.status == "running"
-            ):
-                by_dest[wid] = c
+                running_by_dest.setdefault(wid, []).append(c)
+            else:
+                stopped_by_dest.setdefault(wid, c)
+
+        # Pick each workspace's container with the same canonical policy as
+        # attach/windows, so container_id/attached can never come from the
+        # wrong sibling. The tie-break execs only run for actual duplicates;
+        # the common single-candidate case stays exec-free.
+        selected: dict[str, Container] = {}
+        for ws_id in dict.fromkeys(ids):
+            running = running_by_dest.get(ws_id, [])
+            if len(running) == 1:
+                selected[ws_id] = running[0]
+            elif running:
+                resolved = self._resolve_candidates(
+                    ws_id, running, probe_single_activity=False
+                )
+                canonical = next(
+                    (c for c in running if c.id == resolved.container_id),
+                    None,
+                )
+                # ambiguous-no-tmux: the resolver refuses to pick, but every
+                # sibling reports the same liveness here and running_siblings
+                # already flags the duplication — keep the first listed.
+                selected[ws_id] = canonical if canonical else running[0]
+            elif ws_id in stopped_by_dest:
+                selected[ws_id] = stopped_by_dest[ws_id]
+
+        selected_running = {
+            c.id: c for c in selected.values() if c.status == "running"
+        }
+        attached = self._attached_many(list(selected_running.values()))
 
         out = []
         for ws_id in ids:
-            c = by_dest.get(ws_id)
+            c = selected.get(ws_id)
             out.append(
                 WorkspaceStatus(
                     id=ws_id,
                     liveness=self._liveness(c),
                     container_id=c.id if c else None,
                     devpod_uid=self._uid(c) if c else None,
-                    running_siblings=running_count.get(ws_id, 0),
-                    attached=self._tmux_work_attached(c) if c else 0,
+                    running_siblings=len(running_by_dest.get(ws_id, [])),
+                    attached=attached.get(c.id, 0) if c else 0,
                 )
             )
         return out
@@ -516,18 +621,38 @@ class DockerInspector:
         return attached, windows
 
     def windows_many(self) -> list[WorkspaceWindows]:
-        """Window snapshot for every running devpod container with a
-        resolvable workspace id (same iteration as waiting_windows)."""
+        """Window snapshots from the same canonical containers attach uses.
+
+        A workspace with multiple running siblings and no live tmux session is
+        deliberately omitted: resolve() refuses to guess in that case, so
+        exposing either sibling's window ids would make display and attach
+        disagree.
+        """
         out: list[WorkspaceWindows] = []
         prefix = self._settings.workspace_mount_prefix
+        by_workspace: dict[str, list[Container]] = {}
         for c in self._devpod_containers():
             if c.status != "running":
                 continue
             ws_id = _ws_id_from_mounts(c.attrs.get("Mounts", []), prefix)
             if ws_id is None:
                 continue
-            attached, windows = self._work_session_windows(c)
+            by_workspace.setdefault(ws_id, []).append(c)
+
+        for ws_id, candidates in by_workspace.items():
+            # probe_single_activity=False: only the container id is used
+            # here, so the common single-candidate case must stay at one
+            # exec per container (the window snapshot itself), not two.
+            resolved = self._resolve_candidates(
+                ws_id, candidates, probe_single_activity=False
+            )
+            if resolved.container_id is None:
+                continue
+            canonical = next(
+                c for c in candidates if c.id == resolved.container_id
+            )
+            attached, windows = self._work_session_windows(canonical)
             out.append(WorkspaceWindows(
-                workspace_id=ws_id, container_id=c.id,
+                workspace_id=ws_id, container_id=canonical.id,
                 attached=attached, windows=windows))
         return out

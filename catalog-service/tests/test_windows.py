@@ -68,6 +68,72 @@ def test_windows_many_bad_waiting_epoch_treated_not_waiting(monkeypatch):
     assert ww.windows[0].waiting_since is None
 
 
+def test_windows_many_uses_resolvers_canonical_sibling(monkeypatch):
+    canonical = FakeContainer(
+        "c-real", "real", "u-real", "/workspaces/ws-a",
+        tmux_work=200,
+        tmux_windows="@1\treal\t1\t200\t1754899000\tclaude\t1\n",
+    )
+    other = FakeContainer(
+        "c-other", "other", "u-other", "/workspaces/ws-a",
+        tmux_work=100,
+        tmux_windows="@9\twrong\t1\t100\t1754899999\tbash\t1\n",
+    )
+    # Put the noncanonical sibling last to reproduce the response-order bug
+    # that used to overwrite the canonical snapshot in the TUI client.
+    insp = _inspector([canonical, other], monkeypatch)
+
+    assert insp.resolve("ws-a").container_id == "c-real"
+    (snapshot,) = insp.windows_many()
+    assert snapshot.container_id == "c-real"
+    assert [w.window_id for w in snapshot.windows] == ["@1"]
+    assert [w.container_id for w in insp.waiting_windows()] == ["c-real"]
+
+
+def test_windows_many_single_candidate_costs_one_exec_per_container(monkeypatch):
+    # The snapshot itself is the only exec allowed on the common path: the
+    # canonical-container decision must not add a tmux activity probe when
+    # a workspace has exactly one running candidate (2N serial execs was a
+    # real latency regression against the TUI's request timeout).
+    calls: list[str] = []
+    containers = []
+    for i in range(3):
+        c = FakeContainer(
+            f"c{i}", f"n{i}", f"u{i}", f"/workspaces/ws-{i}",
+            tmux_windows=f"@{i}\tw\t1\t100\t\tbash\t1\n",
+        )
+        original = c.exec_run
+
+        def counted(cmd, demux=False, *, run=original):
+            calls.append(cmd[1])
+            return run(cmd, demux=demux)
+
+        c.exec_run = counted
+        containers.append(c)
+    insp = _inspector(containers, monkeypatch)
+
+    snapshots = insp.windows_many()
+
+    assert len(snapshots) == 3
+    assert calls == ["list-windows"] * 3
+
+
+def test_windows_many_omits_ambiguous_siblings_without_tmux(monkeypatch):
+    a = FakeContainer(
+        "c-a", "a", "u-a", "/workspaces/ws-a", tmux_work=None,
+        tmux_windows="@1\ta\t1\t10\t1754899000\tclaude\t1\n",
+    )
+    b = FakeContainer(
+        "c-b", "b", "u-b", "/workspaces/ws-a", tmux_work=None,
+        tmux_windows="@9\tb\t1\t20\t1754899999\tclaude\t1\n",
+    )
+    insp = _inspector([a, b], monkeypatch)
+
+    assert insp.resolve("ws-a").ambiguous is True
+    assert insp.windows_many() == []
+    assert insp.waiting_windows() == []
+
+
 def test_waiting_windows_projects_flagged_windows_newest_first(monkeypatch):
     # ws-a: one waiting window (older) + one non-waiting window.
     a = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a", tmux_windows=(
