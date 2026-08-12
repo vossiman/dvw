@@ -1,11 +1,13 @@
 /* Styling rules. Colours come from the registered Theme (see palette.py /
    app.py) — $accent, $bg, $fg, and the rest are theme variables, not
-   declared here. */
+   declared here.
 
-Screen {
-    background: $bg;
-    color: $fg;
-}
+   Deliberately NO bare `Screen { background: ... }` rule: the registered
+   Theme already makes $background/$foreground equal to $bg/$fg, so full
+   screens get these for free — and a Screen rule here would also match
+   every ModalScreen subclass (type selectors match subclasses, user CSS
+   beats DEFAULT_CSS), overriding the modal's translucent `$background 60%`
+   and blacking out the main screen behind the menu/confirm/wizard boxes. */
 
 /* Themed scrollbars everywhere — the defaults are harsh black. */
 * {

@@ -94,8 +94,11 @@ def inspect_lines(data: dict) -> list[tuple[str, str]]:
 
 
 def age(epoch: int, now: int) -> str:
-    """Elapsed time since `epoch` as a compact '<N>m' / '<N>h' string."""
+    """Elapsed time since `epoch` as a compact '<N>m' / '<N>h' / '<N>d'
+    string."""
     d = max(0, now - epoch)
+    if d >= 86_400:
+        return f"{d // 86_400}d"
     return f"{d // 3600}h" if d >= 3600 else f"{d // 60}m"
 
 
