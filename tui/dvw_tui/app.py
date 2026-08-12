@@ -214,7 +214,28 @@ class DvwApp(App):
             MenuScreen(workspace.id if workspace else None), on_result)
 
 
+def _ensure_truecolor() -> None:
+    """Default COLORTERM to truecolor so Rich doesn't downgrade the UI.
+
+    Rich picks the colour depth from COLORTERM first and only then guesses
+    from TERM's suffix — anything that isn't literally `-256color` (e.g.
+    `xterm-kitty`, `screen`) lands on the 16-colour ANSI palette, which
+    renders the tokyo theme as a DOS-era UI. COLORTERM is exactly the
+    variable the launch chain loses: ssh doesn't forward it and tmux never
+    sets it, so the bastion runs colour-blind while the same terminal
+    shows truecolor locally. Every terminal dvw is used from speaks
+    truecolor and the bastion tmux already forwards RGB
+    (tmux/tmux-local.conf); DVW_TUI_NO_TRUECOLOR=1 opts out for a
+    genuinely 16-colour terminal. Must run before DvwApp() — the app's
+    Rich console reads COLORTERM at construction time.
+    """
+    if os.environ.get("DVW_TUI_NO_TRUECOLOR") == "1":
+        return
+    os.environ.setdefault("COLORTERM", "truecolor")
+
+
 def main() -> None:
+    _ensure_truecolor()
     DvwApp().run()
 
 
