@@ -339,6 +339,27 @@ def test_status_many_attached_future_failure_fails_open(monkeypatch):
     assert status.attached == 0
 
 
+def test_status_many_duplicate_siblings_report_canonical_container(monkeypatch):
+    import app.docker_inspect as di
+
+    monkeypatch.setattr(di.os.path, "isdir", lambda path: path == "/exists")
+    canonical = FakeContainer("c-real", "real", "u-real", "/workspaces/ws-a",
+                              tmux_work=200, tmux_attached=2)
+    other = FakeContainer("c-other", "other", "u-other", "/workspaces/ws-a",
+                          tmux_work=100, tmux_attached=5)
+    # Noncanonical sibling listed first: the old first-listed pick would
+    # report c-other's id and attached count while attach went to c-real.
+    insp = _inspector([other, canonical], monkeypatch)
+
+    assert insp.resolve("ws-a").container_id == "c-real"
+    (status,) = insp.status_many(["ws-a"])
+    assert status.liveness == "alive"
+    assert status.container_id == "c-real"
+    assert status.devpod_uid == "u-real"
+    assert status.running_siblings == 2
+    assert status.attached == 2
+
+
 def test_repeated_slow_status_requests_do_not_queue_more_probes(monkeypatch):
     containers = [
         FakeContainer(f"c{i}", f"n{i}", f"u{i}", f"/workspaces/ws-{i}")

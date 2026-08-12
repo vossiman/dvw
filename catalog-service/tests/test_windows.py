@@ -90,6 +90,34 @@ def test_windows_many_uses_resolvers_canonical_sibling(monkeypatch):
     assert [w.container_id for w in insp.waiting_windows()] == ["c-real"]
 
 
+def test_windows_many_single_candidate_costs_one_exec_per_container(monkeypatch):
+    # The snapshot itself is the only exec allowed on the common path: the
+    # canonical-container decision must not add a tmux activity probe when
+    # a workspace has exactly one running candidate (2N serial execs was a
+    # real latency regression against the TUI's request timeout).
+    calls: list[str] = []
+    containers = []
+    for i in range(3):
+        c = FakeContainer(
+            f"c{i}", f"n{i}", f"u{i}", f"/workspaces/ws-{i}",
+            tmux_windows=f"@{i}\tw\t1\t100\t\tbash\t1\n",
+        )
+        original = c.exec_run
+
+        def counted(cmd, demux=False, *, run=original):
+            calls.append(cmd[1])
+            return run(cmd, demux=demux)
+
+        c.exec_run = counted
+        containers.append(c)
+    insp = _inspector(containers, monkeypatch)
+
+    snapshots = insp.windows_many()
+
+    assert len(snapshots) == 3
+    assert calls == ["list-windows"] * 3
+
+
 def test_windows_many_omits_ambiguous_siblings_without_tmux(monkeypatch):
     a = FakeContainer(
         "c-a", "a", "u-a", "/workspaces/ws-a", tmux_work=None,

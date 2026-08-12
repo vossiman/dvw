@@ -248,13 +248,21 @@ class DockerInspector:
     # ---- resolver (hot path) ---------------------------------------------
 
     def _resolve_candidates(
-        self, ws_id: str, cands: list[Container]
+        self, ws_id: str, cands: list[Container],
+        *, probe_single_activity: bool = True,
     ) -> CanonicalContainer:
         """Apply the one canonical-container policy to an existing candidate list.
 
         Window collection already has all containers in hand, so sharing the
         decision itself avoids a second Docker listing while ensuring attach
         and display can never choose different siblings.
+
+        probe_single_activity=False skips the tmux exec on the (common)
+        single-candidate path for callers that only need the canonical
+        container id and discard tmux_work_activity (windows_many,
+        status_many). The choice of container is identical either way; the
+        sibling tie-break below always probes because activity IS the
+        decision there.
         """
         if not cands:
             return CanonicalContainer(workspace_id=ws_id, container_id=None)
@@ -269,7 +277,10 @@ class DockerInspector:
                 container_name=c.name,
                 devpod_uid=self._uid(c),
                 state=c.status,
-                tmux_work_activity=self._tmux_work_activity(c),
+                tmux_work_activity=(
+                    self._tmux_work_activity(c) if probe_single_activity
+                    else -1
+                ),
             )
 
         # >= 2 candidates: the sibling case. Tie-break by tmux `work` activity.
@@ -446,45 +457,61 @@ class DockerInspector:
             return dict(attached)
 
     def status_many(self, ids: list[str]) -> list[WorkspaceStatus]:
-        # Build a destination -> container map in one pass over devpod
-        # containers, then answer each id locally.
-        by_dest: dict[str, Container] = {}
-        # Count RUNNING containers per destination. Picking a winner below
-        # discards the fact that there WAS a duplicate, which is how a
-        # workspace could report `running` here while connect refused it as
-        # ambiguous. Count first, report it alongside the winner.
-        running_count: dict[str, int] = {}
+        # Group containers per destination in one pass over devpod
+        # containers, then answer each id locally. Running containers keep
+        # the full group so duplicates can be resolved canonically below;
+        # stopped ones only need a representative for liveness.
+        running_by_dest: dict[str, list[Container]] = {}
+        stopped_by_dest: dict[str, Container] = {}
         prefix = self._settings.workspace_mount_prefix
         for c in self._devpod_containers():
             wid = _ws_id_from_mounts(c.attrs.get("Mounts", []), prefix)
             if wid is None:
                 continue
             if c.status == "running":
-                running_count[wid] = running_count.get(wid, 0) + 1
-            # Prefer a running container if duplicates share a destination.
-            existing = by_dest.get(wid)
-            if existing is None or (
-                existing.status != "running" and c.status == "running"
-            ):
-                by_dest[wid] = c
+                running_by_dest.setdefault(wid, []).append(c)
+            else:
+                stopped_by_dest.setdefault(wid, c)
 
-        selected_running: dict[str, Container] = {}
-        for ws_id in ids:
-            c = by_dest.get(ws_id)
-            if c is not None and c.status == "running":
-                selected_running[c.id] = c
+        # Pick each workspace's container with the same canonical policy as
+        # attach/windows, so container_id/attached can never come from the
+        # wrong sibling. The tie-break execs only run for actual duplicates;
+        # the common single-candidate case stays exec-free.
+        selected: dict[str, Container] = {}
+        for ws_id in dict.fromkeys(ids):
+            running = running_by_dest.get(ws_id, [])
+            if len(running) == 1:
+                selected[ws_id] = running[0]
+            elif running:
+                resolved = self._resolve_candidates(
+                    ws_id, running, probe_single_activity=False
+                )
+                canonical = next(
+                    (c for c in running if c.id == resolved.container_id),
+                    None,
+                )
+                # ambiguous-no-tmux: the resolver refuses to pick, but every
+                # sibling reports the same liveness here and running_siblings
+                # already flags the duplication — keep the first listed.
+                selected[ws_id] = canonical if canonical else running[0]
+            elif ws_id in stopped_by_dest:
+                selected[ws_id] = stopped_by_dest[ws_id]
+
+        selected_running = {
+            c.id: c for c in selected.values() if c.status == "running"
+        }
         attached = self._attached_many(list(selected_running.values()))
 
         out = []
         for ws_id in ids:
-            c = by_dest.get(ws_id)
+            c = selected.get(ws_id)
             out.append(
                 WorkspaceStatus(
                     id=ws_id,
                     liveness=self._liveness(c),
                     container_id=c.id if c else None,
                     devpod_uid=self._uid(c) if c else None,
-                    running_siblings=running_count.get(ws_id, 0),
+                    running_siblings=len(running_by_dest.get(ws_id, [])),
                     attached=attached.get(c.id, 0) if c else 0,
                 )
             )
@@ -613,7 +640,12 @@ class DockerInspector:
             by_workspace.setdefault(ws_id, []).append(c)
 
         for ws_id, candidates in by_workspace.items():
-            resolved = self._resolve_candidates(ws_id, candidates)
+            # probe_single_activity=False: only the container id is used
+            # here, so the common single-candidate case must stay at one
+            # exec per container (the window snapshot itself), not two.
+            resolved = self._resolve_candidates(
+                ws_id, candidates, probe_single_activity=False
+            )
             if resolved.container_id is None:
                 continue
             canonical = next(
