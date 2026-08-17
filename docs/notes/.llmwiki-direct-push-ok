@@ -1,0 +1,5 @@
+Opt-in marker for the llmwiki-distiller (aiCodingBaseSetup): docs-only
+note commits under docs/notes/ may be pushed directly to this repo's
+default branch. Remove this file to revert to the untracked handoff.
+See aiCodingBaseSetup docs/superpowers/specs/2026-08-09-llmwiki-distiller-design.md
+(revision 2026-08-17).
