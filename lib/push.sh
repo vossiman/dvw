@@ -67,10 +67,9 @@ _dvw_push_resolve_target() {
     esac
   fi
 
-  local sessions count
+  local sessions count=0
   sessions=$(_dvw_push_live_sessions)
-  count=$(grep -c . <<<"$sessions" 2>/dev/null || echo 0)
-  [[ -z "$sessions" ]] && count=0
+  [[ -n "$sessions" ]] && count=$(wc -l <<<"$sessions")
 
   if (( count == 0 )); then
     ui_error "push: not attached to any workspace from this machine — use dvw push --to <ws>"
@@ -86,7 +85,8 @@ _dvw_push_resolve_target() {
   # test seam and base-10 forcing (leading zeros would parse as octal).
   local sel
   if command -v fzf >/dev/null; then
-    sel=$(printf '%s\n' "$sessions" | fzf --prompt='push to> ' --height=40% --reverse) || return 1
+    sel=$(printf '%s\n' "$sessions" | fzf --prompt='push to> ' --height=40% --reverse) \
+      || { ui_error "push: selection cancelled"; return 1; }
   else
     local n i=0 line pick
     n=$count

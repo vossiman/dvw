@@ -86,3 +86,24 @@ _load() {
   run grep -qi 'catalog' "$ERRS"
   [ "$status" -eq 0 ]
 }
+
+@test "fzf cancellation (Esc) emits error and returns nonzero" {
+  _load
+  # Create stub fzf that simulates Esc (exit 130)
+  local bindir="$TMPDIR/bin"
+  mkdir -p "$bindir"
+  cat > "$bindir/fzf" <<'FZFSTUB'
+#!/bin/bash
+exit 130
+FZFSTUB
+  chmod +x "$bindir/fzf"
+
+  # Prepend bindir to PATH so our stub fzf is found
+  export PATH="$bindir:/usr/bin:/bin"
+
+  _dvw_push_live_sessions() { printf 'ws-a\nws-b\n'; }
+  run _dvw_push_resolve_target
+  [ "$status" -ne 0 ]
+  run grep -q 'selection cancelled' "$ERRS"
+  [ "$status" -eq 0 ]
+}
