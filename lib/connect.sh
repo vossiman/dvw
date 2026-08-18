@@ -193,6 +193,11 @@ _dvw_ssh_session() {
   local -a retry_opts=()
   markdir=$(mktemp -d "${TMPDIR:-/tmp}/dvw-ssh.XXXXXX") || return 1
   marker="$markdir/connected"
+  # Session registry for `dvw push`: which workspace this client process is
+  # attached to. Lifecycle rides the existing markdir trap — nothing new to
+  # clean up. pid lets readers skip dirs orphaned by SIGKILL (trap never ran).
+  printf '%s\n' "$ws" > "$markdir/workspace"
+  printf '%s\n' "$$" > "$markdir/pid"
   # Fires on every return path below, including the Ctrl-C one. It disarms
   # itself first: bash leaves a RETURN trap armed after the function that set
   # it returns, so without `trap - RETURN` it fires a second time when the

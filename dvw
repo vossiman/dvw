@@ -20,6 +20,8 @@ dvw_load_config
 # connect.sh so its definitions win.
 # shellcheck source=lib/connect-resolver.sh
 . "$DVW_ROOT/lib/connect-resolver.sh"
+# shellcheck source=lib/push.sh
+. "$DVW_ROOT/lib/push.sh"
 # shellcheck source=lib/commands.sh
 . "$DVW_ROOT/lib/commands.sh"
 # shellcheck source=lib/wizard.sh
