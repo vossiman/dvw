@@ -84,3 +84,17 @@ EOF
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+@test "live_sessions tolerates unreadable pid files (race with marker cleanup)" {
+  _load
+  mkdir -p "$TMPDIR/dvw-ssh.race"
+  printf 'ws-race\n' > "$TMPDIR/dvw-ssh.race/workspace"
+  printf '%s\n' "$$" > "$TMPDIR/dvw-ssh.race/pid"
+  # Make pid unreadable to simulate TOCTOU race: file exists at -f check,
+  # but becomes unreadable before read. Guards with `2>/dev/null || continue`
+  # must handle this without breaking the rc 0 contract.
+  chmod 000 "$TMPDIR/dvw-ssh.race/pid"
+  run bash -c "set -euo pipefail; TMPDIR='$TMPDIR'; source '$DVW_ROOT/lib/push.sh'; _dvw_push_live_sessions"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}

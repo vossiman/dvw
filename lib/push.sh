@@ -12,7 +12,8 @@ _dvw_push_live_sessions() {
   local d ws pid
   for d in "${TMPDIR:-/tmp}"/dvw-ssh.*/; do
     [[ -f "$d/workspace" && -f "$d/pid" ]] || continue
-    ws=$(<"$d/workspace"); pid=$(<"$d/pid")
+    ws=$(cat -- "$d/workspace" 2>/dev/null) || continue
+    pid=$(cat -- "$d/pid" 2>/dev/null) || continue
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
     kill -0 "$pid" 2>/dev/null || continue
     printf '%s\n' "$ws"
