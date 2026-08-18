@@ -48,6 +48,30 @@ that just pinged you. Zero waiting windows falls through to the normal dvw
 menu; exactly one connects you straight in; more than one gives you a
 picker, newest first.
 
+## Pasting files from your phone
+
+Termius mobile (7.5.0+) can paste images and files into a terminal: it
+uploads them over SFTP to `/tmp` **on jumpi** (named `<uuid>.<ext>`) and
+types that path into the terminal. Your prompt lives inside a workspace
+container, so the typed path is one `dvw push` away from being valid:
+
+1. **Tab 1** — attached to a workspace via `dvw`/`dvw attach`. At the agent
+   prompt type `look at ` and paste the image. Termius uploads it and types
+   `/tmp/<uuid>.png` into the prompt.
+2. **Tab 2** — a plain jumpi prompt: run `dvw push`. It picks your newest
+   upload and copies it to the **same path** inside the attached container,
+   printing that path.
+3. **Tab 1** — hit enter. The path Termius typed is now valid.
+
+Because the destination mirrors the source name under `/tmp`, nothing needs
+to be copied between tabs; tab 2's printed path is confirmation (and there
+to copy if you pasted the image before typing the prompt).
+
+Notes: paste-upload only works over the normal jumpi host — a forced-command
+key (the optional "jumpi ⏸" host) replaces the SFTP subsystem, so uploads
+fail there. `dvw push` refuses workspaces that aren't running rather than
+booting them silently.
+
 ## Optional: zero-keystroke attach
 
 If you want a Termius host that connects and drops you straight into the
