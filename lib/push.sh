@@ -68,6 +68,8 @@ _dvw_push_resolve_target() {
   fi
 
   local sessions count=0
+  # _dvw_push_live_sessions always returns rc 0 (it filters, never errors) —
+  # relied on here since this call site runs under errexit.
   sessions=$(_dvw_push_live_sessions)
   [[ -n "$sessions" ]] && count=$(wc -l <<<"$sessions")
 
@@ -120,12 +122,17 @@ _dvw_push_usage() {
 }
 
 # Copy the landed path to the local clipboard when a tool exists (desktop
-# nicety). Printing the path is the contract; this is best-effort and silent.
+# nicety). Printing the path is the contract; this is best-effort and silent
+# about failures. Returns 0 when a copy actually happened, 1 when no
+# clipboard tool was found — callers use the rc to decide whether to mention
+# the copy, never printing anything themselves.
 _dvw_push_copy_path() {
   local p="$1"
   if command -v wl-copy >/dev/null; then printf '%s' "$p" | wl-copy 2>/dev/null || true
   elif command -v xclip >/dev/null; then printf '%s' "$p" | xclip -selection clipboard 2>/dev/null || true
   elif command -v clip.exe >/dev/null; then printf '%s' "$p" | clip.exe 2>/dev/null || true
+  else
+    return 1
   fi
   return 0
 }
@@ -134,7 +141,8 @@ _dvw_push_copy_path() {
 # (Wayland), xclip (X11), PowerShell (WSL). Named clip-<HHMMSS>.png so the
 # mirrored container path is readable in an agent prompt.
 _dvw_push_clipboard_grab() {
-  local out="${TMPDIR:-/tmp}/clip-$(date +%H%M%S).png"
+  local out
+  out=$(mktemp "${TMPDIR:-/tmp}/clip-XXXXXX.png") || { ui_error "push: mktemp failed"; return 1; }
   if command -v wl-paste >/dev/null; then
     wl-paste --type image/png > "$out" 2>/dev/null || { ui_error "push: no image on the clipboard (wl-paste)"; rm -f "$out"; return 1; }
   elif command -v xclip >/dev/null; then
@@ -188,6 +196,14 @@ cmd_push() {
       return 1
     fi
     files=("$fresh")
+    # Spec: announce the auto-picked file before transfer so the user knows
+    # what "no args" resolved to. Best-effort/guarded: age display must never
+    # fail the push under set -euo pipefail.
+    local age now mtime
+    now=$(date +%s) || now=0
+    mtime=$(stat -c %Y "$fresh" 2>/dev/null) || mtime="$now"
+    age=$(( now - mtime )) 2>/dev/null || age=0
+    ui_info "pushing $(basename "$fresh") (uploaded ${age}s ago)"
   fi
 
   local f
@@ -201,20 +217,38 @@ cmd_push() {
 
   local ws
   ws=$(_dvw_push_resolve_target "$to") || return 1
+  # Materialize local devpod state from the catalog snapshot before touching
+  # the ssh alias — mirrors cmd_connect (lib/connect.sh:45-46). Without this,
+  # `--to <ws>` on a client that never registered <ws> writes a persistently
+  # wrong guessed-user alias block into ~/.ssh/config and then fails opaquely.
+  _dvw_ensure_local_devpod_state "$ws" || return 1
   _dvw_ensure_ssh_alias "$ws" || return 1
 
-  local base bytes rc
+  local base bytes rc src
   for f in "${files[@]}"; do
     base=$(basename "$f")
     bytes=$(stat -c %s "$f" 2>/dev/null || echo 0)
     rc=0
-    _dvw_run_or_print scp -q "$f" "${ws}.devpod:/tmp/" || rc=$?
+    # scp treats a leading `user@host:` colon or a leading `-` in the source
+    # specially; force a relative path unambiguous with `./` so a file named
+    # e.g. "foo:bar.png" or "-oProxyCommand=..." is never misparsed.
+    src="$f"
+    [[ "$src" == /* ]] || src="./$src"
+    _dvw_run_or_print scp -q "$src" "${ws}.devpod:/tmp/" || rc=$?
     if (( rc != 0 )); then
       ui_error "push: scp to ${ws}.devpod failed (rc=$rc) — remaining files skipped"
       return "$rc"
     fi
-    ui_status_ok "$base → $ws ($(( bytes / 1024 )) KB)"
-    _dvw_push_copy_path "/tmp/$base"
+    # Dry-run already printed the would-run scp line above; skip the status
+    # line, clipboard copy, and final path print — none of them are real.
+    if [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
+      continue
+    fi
+    if _dvw_push_copy_path "/tmp/$base"; then
+      ui_status_ok "$base → $ws ($(( bytes / 1024 )) KB, path copied to clipboard)"
+    else
+      ui_status_ok "$base → $ws ($(( bytes / 1024 )) KB)"
+    fi
     printf '%s\n' "/tmp/$base"
   done
 }

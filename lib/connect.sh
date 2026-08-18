@@ -196,6 +196,10 @@ _dvw_ssh_session() {
   # Session registry for `dvw push`: which workspace this client process is
   # attached to. Lifecycle rides the existing markdir trap — nothing new to
   # clean up. pid lets readers skip dirs orphaned by SIGKILL (trap never ran).
+  # This entry exists for the whole session call, including the reconnect
+  # backoff loop below, so a push landing during a reconnect window trusts a
+  # session that may be mid-retry rather than fully connected — accepted
+  # staleness window is bounded by the reconnect loop's own delays, ≤50s.
   printf '%s\n' "$ws" > "$markdir/workspace"
   printf '%s\n' "$$" > "$markdir/pid"
   # Fires on every return path below, including the Ctrl-C one. It disarms

@@ -38,6 +38,7 @@ _load() {
   # Boundary stubs: target known, alias present.
   _dvw_push_resolve_target() { printf 'stubws\n'; }
   _dvw_ensure_ssh_alias() { return 0; }
+  _dvw_ensure_local_devpod_state() { return 0; }
 }
 
 @test "explicit file: scp to <ws>.devpod:/tmp/ and bare path as final line" {
@@ -99,6 +100,15 @@ _load() {
   [ "$output" = "1" ]
 }
 
+@test "local devpod state guard failure aborts before scp, alias untouched" {
+  _load
+  _dvw_ensure_local_devpod_state() { return 1; }
+  printf 'data' > "$TMPDIR/shot.png"
+  run cmd_push "$TMPDIR/shot.png"
+  [ "$status" -ne 0 ]
+  [ ! -s "$SCP_ARGS" ]
+}
+
 @test "--to is passed through to resolve_target" {
   _load
   _dvw_push_resolve_target() { printf '%s\n' "TO:${1:-none}" > "$TMPDIR/resolve-arg"; printf 'stubws\n'; }
@@ -145,21 +155,26 @@ EOF
   [ "$status" -eq 0 ]
 }
 
-@test "copy_path uses first available tool, silent no-op without one" {
+@test "copy_path uses first available tool, rc 0 with a tool present" {
   _load
   cat > "$STUB_BIN/wl-copy" <<'EOF'
 #!/usr/bin/env bash
 cat > "$TMPDIR/copied"
 EOF
   chmod +x "$STUB_BIN/wl-copy"
-  _dvw_push_copy_path "/tmp/x.png"
-  [ "$(cat "$TMPDIR/copied")" = "/tmp/x.png" ]
-  rm "$STUB_BIN/wl-copy" "$TMPDIR/copied"
   run _dvw_push_copy_path "/tmp/x.png"
   [ "$status" -eq 0 ]
+  [ "$(cat "$TMPDIR/copied")" = "/tmp/x.png" ]
 }
 
-@test "--dry-run prints would-be scp and transfers nothing" {
+@test "copy_path is silent no-op returning rc 1 without a tool" {
+  _load
+  run _dvw_push_copy_path "/tmp/x.png"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "--dry-run prints would-be scp, transfers nothing, no phantom final path" {
   _load
   # _dvw_run_or_print speaks through ui_info, which _load silences — give it
   # a voice for this test only.
@@ -169,4 +184,16 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"would run: scp"* ]]
   [ ! -s "$SCP_ARGS" ]
+  run grep -qx '/tmp/shot.png' <<<"$output"
+  [ "$status" -ne 0 ]
+}
+
+@test "colon/dash-leading relative source is rewritten with ./ for scp" {
+  _load
+  cd "$TMPDIR"
+  printf 'data' > "foo:bar.png"
+  run cmd_push "foo:bar.png"
+  [ "$status" -eq 0 ]
+  run grep -qx './foo:bar.png' "$SCP_ARGS"
+  [ "$status" -eq 0 ]
 }
