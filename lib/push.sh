@@ -19,3 +19,29 @@ _dvw_push_live_sessions() {
     printf '%s\n' "$ws"
   done | sort -u
 }
+
+# Size gate, shared by fresh-pick and explicit-file paths. Silent: callers
+# word the error with the file name and the active cap.
+_dvw_push_check_size() {
+  local f="$1" cap_mb="${DVW_PUSH_MAX_SIZE_MB:-50}" bytes
+  bytes=$(stat -c %s "$f" 2>/dev/null) || return 1
+  (( bytes <= cap_mb * 1024 * 1024 ))
+}
+
+# Newest fresh Termius-style upload in ${TMPDIR:-/tmp}. Termius mobile names
+# SFTP paste-uploads as bare UUIDv4 + original extension (observed 2026-08-18;
+# undocumented upstream — recognizer only, never load-bearing: if it changes,
+# `dvw push <file>` still works). Prints the path; rc 1 (silent) when none.
+_dvw_push_pick_fresh() {
+  local fresh="${DVW_PUSH_FRESH_MINUTES:-10}" line f
+  while IFS= read -r line; do
+    f="${line#* }"
+    _dvw_push_check_size "$f" || continue
+    printf '%s\n' "$f"
+    return 0
+  done < <(find "${TMPDIR:-/tmp}" -maxdepth 1 -type f -user "$(id -un)" \
+      -mmin -"$fresh" -regextype posix-extended \
+      -regex '.*/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\.[A-Za-z0-9]+' \
+      -printf '%T@ %p\n' 2>/dev/null | sort -rn)
+  return 1
+}
