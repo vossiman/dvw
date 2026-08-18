@@ -20,6 +20,8 @@ dvw_load_config
 # connect.sh so its definitions win.
 # shellcheck source=lib/connect-resolver.sh
 . "$DVW_ROOT/lib/connect-resolver.sh"
+# shellcheck source=lib/push.sh
+. "$DVW_ROOT/lib/push.sh"
 # shellcheck source=lib/commands.sh
 . "$DVW_ROOT/lib/commands.sh"
 # shellcheck source=lib/wizard.sh
@@ -109,6 +111,8 @@ main() {
       cmd_status ;;
     attach)
       shift; cmd_attach "$@" ;;
+    push)
+      shift; cmd_push "$@" ;;
     doctor)
       cmd_doctor ;;
     audit)
@@ -123,7 +127,7 @@ main() {
         exit "$tui_rc"
       else
         ui_error "the dvw TUI is unavailable — $(_dvw_tui_unavailable_reason)"
-        ui_info "subcommands: <id> | attach | new | rm | stop | start | recreate | update | status | doctor | audit | config | -l"
+        ui_info "subcommands: <id> | attach | push | new | rm | stop | start | recreate | update | status | doctor | audit | config | -l"
         exit 1
       fi ;;
     *)
