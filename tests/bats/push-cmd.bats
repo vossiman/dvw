@@ -35,8 +35,9 @@ _load() {
   _dvw_log_action() { :; }
   source "$DVW_ROOT/lib/connect.sh"
   source "$DVW_ROOT/lib/push.sh"
-  # Boundary stubs: target known, alias present.
+  # Boundary stubs: target known and running, alias present.
   _dvw_push_resolve_target() { printf 'stubws\n'; }
+  _dvw_ws_container_state() { echo yes; }
   _dvw_ensure_ssh_alias() { return 0; }
   _dvw_ensure_local_devpod_state() { return 0; }
 }
@@ -196,4 +197,128 @@ EOF
   [ "$status" -eq 0 ]
   run grep -qx './foo:bar.png' "$SCP_ARGS"
   [ "$status" -eq 0 ]
+}
+
+@test "-- terminates options: a --prefixed filename is pushed, ./-rewritten" {
+  _load
+  cd "$TMPDIR"
+  printf 'data' > "./--weird.png"
+  run cmd_push -- --weird.png
+  [ "$status" -eq 0 ]
+  run grep -qx './--weird.png' "$SCP_ARGS"
+  [ "$status" -eq 0 ]
+}
+
+@test "stopped workspace is refused before scp even with a live session" {
+  _load
+  _dvw_ws_container_state() { echo no; }
+  printf 'data' > "$TMPDIR/shot.png"
+  run cmd_push "$TMPDIR/shot.png"
+  [ "$status" -eq 1 ]
+  [ ! -s "$SCP_ARGS" ]
+  run grep -q 'not running' "$ERRS"
+  [ "$status" -eq 0 ]
+}
+
+@test "unreachable catalog is refused before scp, not guessed" {
+  _load
+  _dvw_ws_container_state() { echo unknown; }
+  printf 'data' > "$TMPDIR/shot.png"
+  run cmd_push "$TMPDIR/shot.png"
+  [ "$status" -eq 1 ]
+  [ ! -s "$SCP_ARGS" ]
+  run grep -qi 'catalog' "$ERRS"
+  [ "$status" -eq 0 ]
+}
+
+@test "clipboard temp file is removed after a successful push" {
+  _load
+  cat > "$STUB_BIN/wl-paste" <<'EOF'
+#!/usr/bin/env bash
+printf 'PNGDATA'
+EOF
+  chmod +x "$STUB_BIN/wl-paste"
+  run cmd_push --clipboard
+  [ "$status" -eq 0 ]
+  run bash -c 'ls "$TMPDIR"/clip-*.png 2>/dev/null'
+  [ -z "$output" ]
+}
+
+@test "clipboard temp file is removed after a failed transfer" {
+  _load
+  cat > "$STUB_BIN/wl-paste" <<'EOF'
+#!/usr/bin/env bash
+printf 'PNGDATA'
+EOF
+  chmod +x "$STUB_BIN/wl-paste"
+  SCP_STUB_RC=1 run cmd_push --clipboard
+  [ "$status" -ne 0 ]
+  run bash -c 'ls "$TMPDIR"/clip-*.png 2>/dev/null'
+  [ -z "$output" ]
+}
+
+@test "clipboard grab with no tool leaves no temp file behind" {
+  _load
+  run _dvw_push_clipboard_grab
+  [ "$status" -eq 1 ]
+  run bash -c 'ls "$TMPDIR"/clip-*.png 2>/dev/null'
+  [ -z "$output" ]
+}
+
+@test "clipboard grab WSL wslpath failure leaves no temp file behind" {
+  _load
+  cat > "$STUB_BIN/powershell.exe" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$STUB_BIN/powershell.exe"
+  cat > "$STUB_BIN/wslpath" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$STUB_BIN/wslpath"
+  run _dvw_push_clipboard_grab
+  [ "$status" -eq 1 ]
+  run bash -c 'ls "$TMPDIR"/clip-*.png 2>/dev/null'
+  [ -z "$output" ]
+}
+
+@test "copy_path returns nonzero when the only tool present fails" {
+  _load
+  cat > "$STUB_BIN/wl-copy" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$STUB_BIN/wl-copy"
+  run _dvw_push_copy_path "/tmp/x.png"
+  [ "$status" -eq 1 ]
+}
+
+@test "copy_path falls back to the next tool when the first fails" {
+  _load
+  cat > "$STUB_BIN/wl-copy" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  cat > "$STUB_BIN/xclip" <<'EOF'
+#!/usr/bin/env bash
+cat > "$TMPDIR/copied"
+EOF
+  chmod +x "$STUB_BIN/wl-copy" "$STUB_BIN/xclip"
+  run _dvw_push_copy_path "/tmp/x.png"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TMPDIR/copied")" = "/tmp/x.png" ]
+}
+
+@test "failing clipboard tool: push succeeds but never claims a copy" {
+  _load
+  cat > "$STUB_BIN/wl-copy" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$STUB_BIN/wl-copy"
+  printf 'data' > "$TMPDIR/shot.png"
+  run cmd_push "$TMPDIR/shot.png"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"copied to clipboard"* ]]
 }

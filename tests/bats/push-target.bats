@@ -1,8 +1,10 @@
 #!/usr/bin/env bats
-# _dvw_push_resolve_target: live-session detection (one/many/none) and the
-# --to catalog gate. Catalog stubbed via _dvw_ws_container_state override;
-# sessions stubbed via _dvw_push_live_sessions override; picker exercised in
-# numbered-list mode (PATH without fzf), non-tty guarded by DVW_ASSUME_TTY.
+# _dvw_push_resolve_target: live-session detection (one/many/none) and --to
+# pass-through, plus the _dvw_push_require_running catalog gate that cmd_push
+# applies to every resolved target. Catalog stubbed via
+# _dvw_ws_container_state override; sessions stubbed via
+# _dvw_push_live_sessions override; picker exercised in numbered-list mode
+# (PATH without fzf), non-tty guarded by DVW_ASSUME_TTY.
 
 bats_require_minimum_version 1.5.0
 
@@ -61,27 +63,37 @@ _load() {
   [ "$status" -eq 0 ]
 }
 
-@test "--to target running per catalog resolves" {
+@test "--to resolves to the given name without consulting the catalog" {
   _load
-  _dvw_ws_container_state() { echo yes; }
+  # The RUNNING gate is cmd_push's job (once, for every path); resolution
+  # must not double-charge the catalog transport for it.
+  _dvw_ws_container_state() { echo consulted > "$TMPDIR/state-called"; echo no; }
   run _dvw_push_resolve_target explicitws
   [ "$status" -eq 0 ]
   [ "$output" = "explicitws" ]
+  [ ! -e "$TMPDIR/state-called" ]
 }
 
-@test "--to target not running is refused (auto-up footgun)" {
+@test "require_running passes a RUNNING workspace" {
+  _load
+  _dvw_ws_container_state() { echo yes; }
+  run _dvw_push_require_running explicitws
+  [ "$status" -eq 0 ]
+}
+
+@test "require_running refuses a stopped workspace (auto-up footgun)" {
   _load
   _dvw_ws_container_state() { echo no; }
-  run _dvw_push_resolve_target stoppedws
+  run _dvw_push_require_running stoppedws
   [ "$status" -eq 1 ]
   run grep -q 'not running' "$ERRS"
   [ "$status" -eq 0 ]
 }
 
-@test "--to with catalog unreachable is refused, not guessed" {
+@test "require_running with catalog unreachable refuses, not guesses" {
   _load
   _dvw_ws_container_state() { echo unknown; }
-  run _dvw_push_resolve_target somews
+  run _dvw_push_require_running somews
   [ "$status" -eq 1 ]
   run grep -qi 'catalog' "$ERRS"
   [ "$status" -eq 0 ]
