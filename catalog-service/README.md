@@ -111,7 +111,7 @@ git clone -b main https://github.com/vossiman/dvw.git /opt/dvw
 `host-install.sh` is idempotent: it symlinks `/opt/dvw-catalog` → the checkout
 (so the systemd unit is path-stable across pulls), creates the `/var/lib/dvw-catalog`
 data dir + its git-backup repo, `uv sync --frozen`s the venv, installs the units,
-adds a narrow passwordless-restart sudoers drop-in, enables + starts everything,
+adds a narrow passwordless-restart sudoers drop-in, reenables + starts everything,
 and smoke-tests `/v1/health`.
 
 **Updates** — one command on the box:
@@ -133,6 +133,29 @@ scp catalog.json       vossi@vossisrv:/var/lib/dvw-catalog/catalog.json
 scp ssh-blueprint.conf vossi@vossisrv:/var/lib/dvw-catalog/ssh-blueprint.conf
 # then on vossisrv (the .service suffix matches the passwordless sudoers rule):
 sudo systemctl restart dvw-catalog.service
+```
+
+### Lifecycle coupling to Docker
+
+The unit declares `Requires=docker.service` (it needs the Docker socket) and
+`WantedBy=multi-user.target docker.service`.
+
+The second `WantedBy` target is load-bearing and easy to drop by accident.
+`Requires=` propagates **stop but not start**: stopping Docker takes
+`dvw-catalog` down with it, and starting Docker again does *not* bring it back.
+Without the reverse `Wants`, any `systemctl stop docker` — a daemon upgrade, a
+`data-root` migration — leaves the service dead indefinitely, with no error in
+its journal beyond a clean shutdown. It was found this way on vossisrv on
+2026-08-20, 20 minutes after the fact, only because a client call failed.
+
+Because enablement symlinks are written at `enable` time, a change to
+`[Install]` reaches an already-installed host only via `systemctl reenable` —
+`daemon-reload` does not rewrite them, and plain `enable` only adds what is
+missing. Both `host-install.sh` and `host-update.sh` therefore run `reenable`
+(the sudoers drop-in whitelists it). To confirm on a host:
+
+```bash
+ls -l /etc/systemd/system/docker.service.wants/dvw-catalog.service
 ```
 
 ## SSH blueprint persistence

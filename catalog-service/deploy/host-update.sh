@@ -32,7 +32,19 @@ for u in dvw-catalog.service dvw-catalog-backup.service dvw-catalog-backup.timer
   fi
   rm -f "$rendered"
 done
-[ "$changed" = 1 ] && sudo systemctl daemon-reload
+if [ "$changed" = 1 ]; then
+  sudo systemctl daemon-reload
+  # A changed unit may carry a changed [Install] (WantedBy=), and daemon-reload
+  # does NOT rewrite enablement symlinks — only reenable does. Use sudo -n: a
+  # host installed before the sudoers drop-in gained `reenable` would otherwise
+  # sit at a password prompt in what is meant to be a hands-off update.
+  if ! sudo -n systemctl reenable dvw-catalog.service >/dev/null 2>&1; then
+    echo "WARN: could not reenable dvw-catalog.service without a password." >&2
+    echo "      [Install] changes (e.g. WantedBy=docker.service) are NOT active." >&2
+    echo "      Run once:  sudo systemctl reenable dvw-catalog.service" >&2
+    echo "      (or re-run host-install.sh to refresh the sudoers drop-in)" >&2
+  fi
+fi
 
 echo "==> restart"
 sudo systemctl restart dvw-catalog.service
