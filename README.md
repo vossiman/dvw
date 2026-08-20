@@ -236,7 +236,7 @@ Two mechanisms, depending on what changed:
 
 - **New aiCodingBaseSetup (config + CLIs) — no rebuild.** Inside the container: `aicoding-status` (what's behind), `aicoding-sync` (pull latest blueprint, reconcile config, update CLIs). Also runs automatically on every container start (`on-start.sh` → `aicoding-sync --boot`).
 - **Updated `devcontainer.json` (mounts/provisioning) — needs rebuild.** Mounts are fixed at container-create time, so from the laptop: `dvw recreate <id>`.
-- **New base image — rebuild, but mind the pin.** `devpod up --recreate` builds from the image pinned in the repo's *committed* `.devcontainer/devcontainer.json`. `aicoding-sync` refreshes that file in the container working tree but never commits it, so the repo copy drifts and a rebuild silently reinstalls the old image. `dvw pin-sync` opens the PR that fixes it; `dvw rebuild` also offers to run it when it spots a stale pin. Renovate covers the same ground on a weekly cron in each workspace repo.
+- **New base image — rebuild, but mind the pin.** `devpod up --recreate` builds from the image pinned in the repo's *committed* `.devcontainer/devcontainer.json`. `aicoding-sync` refreshes that file in the container working tree but never commits it, so the repo copy drifts and a rebuild silently reinstalls the old image. `dvw pin-sync` opens the PR that fixes it; `dvw rebuild` also offers to run it when it spots a stale pin. Nothing does this on a schedule — run it when the ⬆rebuild badge shows up.
 
 ## Multi-machine sync model
 

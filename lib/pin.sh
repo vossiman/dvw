@@ -11,10 +11,11 @@
 # pin, so `dvw rebuild` kept reinstalling the stale image and the ⬆rebuild
 # badge never cleared.
 #
-# Renovate now covers this on a weekly cron in the workspace repos; this
-# command is the on-demand path for "the badge is up and I want it fixed now".
-# The dvw catalog is the workspace registry, so consumer discovery is free —
-# no GitHub topic, no hand-kept list, no cross-repo PAT.
+# This is the ONLY thing that closes the loop: it runs when you ask it to,
+# because the badge is up and you want it fixed now. A bot raising a PR per
+# repo on a cron was considered and rejected (unwanted PR noise, user decision
+# 2026-08-20). The dvw catalog is the workspace registry, so consumer
+# discovery is free — no GitHub topic, no hand-kept list, no cross-repo PAT.
 
 DVW_PIN_BRANCH_PREFIX="${DVW_PIN_BRANCH_PREFIX:-chore/pin-devbox-base}"
 
