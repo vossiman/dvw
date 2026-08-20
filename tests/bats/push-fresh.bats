@@ -69,6 +69,37 @@ _load() {
   [ "$status" -eq 1 ]
 }
 
+@test "fresh_roots is just /tmp when TMPDIR is unset or /tmp" {
+  _load
+  run bash -c 'unset TMPDIR; source "$DVW_ROOT/lib/push.sh"; _dvw_push_fresh_roots'
+  [ "$output" = "/tmp" ]
+  TMPDIR=/tmp run _dvw_push_fresh_roots
+  [ "$output" = "/tmp" ]
+  TMPDIR=/tmp/ run _dvw_push_fresh_roots
+  [ "$output" = "/tmp" ]
+}
+
+@test "fresh_roots includes both a custom TMPDIR and /tmp" {
+  _load
+  TMPDIR=/run/user/1000 run _dvw_push_fresh_roots
+  [ "${lines[0]}" = "/run/user/1000" ]
+  [ "${lines[1]}" = "/tmp" ]
+}
+
+@test "custom TMPDIR still finds a Termius upload in /tmp" {
+  # Termius drops files in /tmp regardless of this process's TMPDIR (systemd
+  # user sessions often set TMPDIR=/run/user/<uid>); the documented no-arg
+  # phone flow must keep working then. Uses the real /tmp: unique UUID name,
+  # cleaned up on every path.
+  _load
+  local real_tmp_file="/tmp/$UUID_B.png"
+  printf x > "$real_tmp_file"
+  run _dvw_push_pick_fresh
+  rm -f "$real_tmp_file"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$real_tmp_file" ]
+}
+
 @test "check_size passes small files and fails oversized ones" {
   _load
   printf x > "$TMPDIR/small"

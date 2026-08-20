@@ -186,6 +186,28 @@ _dvw_rm_marker_dir() {
   return 0
 }
 
+# Identity token for a live process: "starttime:uid" from /proc, so a pid
+# number alone is never trusted across reuse (SIGKILL orphans a marker; the
+# kernel may hand the same pid to an unrelated process). Written into the
+# push session registry below; verified by _dvw_push_live_sessions
+# (lib/push.sh). Prints nothing where /proc is unavailable — callers treat
+# an empty token as "identity unknown" and fall back to plain pid liveness.
+# Always returns 0 (errexit-safe).
+_dvw_proc_identity() {
+  local pid="$1" statline rest uid
+  local -a f
+  # starttime is field 22 counted from field 1; comm (field 2) may contain
+  # spaces/parens, so cut everything through its *last* ") " first — after
+  # that, starttime is the 20th remaining field.
+  statline=$(cat "/proc/$pid/stat" 2>/dev/null) || return 0
+  rest="${statline##*) }"
+  read -ra f <<<"$rest" || return 0
+  (( ${#f[@]} >= 20 )) || return 0
+  uid=$(stat -c %u "/proc/$pid" 2>/dev/null) || return 0
+  printf '%s:%s\n' "${f[19]}" "$uid"
+  return 0
+}
+
 _dvw_ssh_session() {
   local ws="$1" win="${2:-}" rc=0 total=0 delay markdir marker established=0
   local max_total="${DVW_SSH_RECONNECT_TOTAL_MAX:-50}"
@@ -195,13 +217,24 @@ _dvw_ssh_session() {
   marker="$markdir/connected"
   # Session registry for `dvw push`: which workspace this client process is
   # attached to. Lifecycle rides the existing markdir trap — nothing new to
-  # clean up. pid lets readers skip dirs orphaned by SIGKILL (trap never ran).
-  # This entry exists for the whole session call, including the reconnect
-  # backoff loop below, so a push landing during a reconnect window trusts a
-  # session that may be mid-retry rather than fully connected — accepted
-  # staleness window is bounded by the reconnect loop's own delays, ≤50s.
+  # clean up. The static files below are written up front, but readers
+  # (_dvw_push_live_sessions) also require the `connected` marker, which only
+  # exists while an authenticated connection is (or was just) up: OpenSSH
+  # touches it via LocalCommand on auth, the loop below touches it when a
+  # live multiplex master proves auth, and the loop removes it after every
+  # ssh exit — so the entry is never selectable during the initial connect or
+  # a reconnect backoff window. (An earlier version published for the whole
+  # session call and claimed a ≤50s staleness bound; the real worst case with
+  # 50 retries × 10s ConnectTimeout plus backoff sleeps was ~12.5 minutes, in
+  # which a no---to push could pick a workspace that had been stopped and
+  # silently boot it via the alias.) pid + pid-start let readers skip dirs
+  # orphaned by SIGKILL (trap never ran) even when the kernel has reused the
+  # pid for an unrelated process.
   printf '%s\n' "$ws" > "$markdir/workspace"
   printf '%s\n' "$$" > "$markdir/pid"
+  local _ident
+  _ident=$(_dvw_proc_identity "$$")
+  [[ -n "$_ident" ]] && printf '%s\n' "$_ident" > "$markdir/pid-start"
   # Fires on every return path below, including the Ctrl-C one. It disarms
   # itself first: bash leaves a RETURN trap armed after the function that set
   # it returns, so without `trap - RETURN` it fires a second time when the
@@ -261,12 +294,17 @@ _dvw_ssh_session() {
     # `docker exec` shells (Cursor remote-ssh, non-tmux ssh) are unaffected —
     # exclusivity is scoped to the tmux path only.
     # A master alive before the attempt proves auth to this host works, and is
-    # what covers a session that rides one (OpenSSH skips LocalCommand then).
-    _dvw_ssh_master_alive "${ws}.devpod" && established=1
-    rm -f "$marker"
+    # what covers a session that rides one (OpenSSH skips LocalCommand then) —
+    # including for the push registry, whose `connected` marker would
+    # otherwise never appear for a session riding a master.
+    _dvw_ssh_master_alive "${ws}.devpod" && { established=1; touch "$marker"; }
     ssh -o PermitLocalCommand=yes -o "LocalCommand=touch '$marker'" \
       "${retry_opts[@]}" -t "${ws}.devpod" "$remote_command" || rc=$?
     [[ -e "$marker" ]] && established=1
+    # Withdraw the push registry's liveness signal the moment the connection
+    # is down: nothing between here and the next successful auth may treat
+    # this session as an attached, pushable workspace.
+    rm -f "$marker"
 
     case "$rc" in
       0)   return 0 ;;
