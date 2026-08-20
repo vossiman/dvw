@@ -26,6 +26,9 @@ dvw_load_config
 . "$DVW_ROOT/lib/commands.sh"
 # shellcheck source=lib/wizard.sh
 . "$DVW_ROOT/lib/wizard.sh"
+# pin.sh reuses wizard.sh's blueprint fetch — source it after.
+# shellcheck source=lib/pin.sh
+. "$DVW_ROOT/lib/pin.sh"
 # shellcheck source=lib/ui.sh
 . "$DVW_ROOT/lib/ui.sh"
 # shellcheck source=lib/update-check.sh
@@ -107,6 +110,8 @@ main() {
       shift; cmd_start "$@" ;;
     recreate|rebuild)
       shift; cmd_recreate "$@" ;;
+    pin-sync)
+      shift; cmd_pin_sync "$@" ;;
     status)
       cmd_status ;;
     attach)
@@ -127,7 +132,7 @@ main() {
         exit "$tui_rc"
       else
         ui_error "the dvw TUI is unavailable — $(_dvw_tui_unavailable_reason)"
-        ui_info "subcommands: <id> | attach | push | new | rm | stop | start | recreate | update | status | doctor | audit | config | -l"
+        ui_info "subcommands: <id> | attach | push | new | rm | stop | start | recreate | pin-sync | update | status | doctor | audit | config | -l"
         exit 1
       fi ;;
     *)

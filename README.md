@@ -35,7 +35,8 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
 | `dvw stop <id>` | `devpod stop` |
 | `dvw start <id>` | `devpod up` with the workspace's saved IDE |
-| `dvw recreate <id>` (alias `rebuild`) | rebuild the container (`devpod up --recreate`) — needed to pick up a changed `devcontainer.json` (mounts/hooks) |
+| `dvw recreate <id>` (alias `rebuild`) | rebuild the container (`devpod up --recreate`) — needed to pick up a changed `devcontainer.json` (mounts/hooks). Offers `pin-sync` first when the committed image pin is stale |
+| `dvw pin-sync [<id>…]` | open a PR per workspace repo whose committed devcontainer image pin is behind the blueprint (no args = every catalog workspace) |
 | `dvw update` | Update to the latest released tooling and refresh the version marker. Standalone checkout: pull `main` + reinstall. Submodule checkout: follow the parent's pins (ff the parent, check out pinned submodules, reinstall) — never commits or pushes. Startup/`dvw doctor` nudge when behind `origin/main`. |
 | `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
 | `dvw doctor` | health check: catalog endpoint + transport note, provider probe, catalog service, ssh-sync, devpod, per-orphan summary, duplicate-sibling containers |
@@ -235,6 +236,7 @@ Two mechanisms, depending on what changed:
 
 - **New aiCodingBaseSetup (config + CLIs) — no rebuild.** Inside the container: `aicoding-status` (what's behind), `aicoding-sync` (pull latest blueprint, reconcile config, update CLIs). Also runs automatically on every container start (`on-start.sh` → `aicoding-sync --boot`).
 - **Updated `devcontainer.json` (mounts/provisioning) — needs rebuild.** Mounts are fixed at container-create time, so from the laptop: `dvw recreate <id>`.
+- **New base image — rebuild, but mind the pin.** `devpod up --recreate` builds from the image pinned in the repo's *committed* `.devcontainer/devcontainer.json`. `aicoding-sync` refreshes that file in the container working tree but never commits it, so the repo copy drifts and a rebuild silently reinstalls the old image. `dvw pin-sync` opens the PR that fixes it; `dvw rebuild` also offers to run it when it spots a stale pin. Nothing does this on a schedule — run it when the ⬆rebuild badge shows up.
 
 ## Multi-machine sync model
 

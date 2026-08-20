@@ -19,6 +19,13 @@ branches.
 - **aicoding** owns in-container life (`devcontainer.json`, install/sync).
   dvw only seeds that file (`DVW_BLUEPRINT_DEVCONTAINER_URL`, tip-of-main by
   default) and orchestrates DevPod.
+- **Image pin reconciliation** (`lib/pin.sh`) is the one exception: aicoding's
+  boot sync rewrites a workspace's `.devcontainer/devcontainer.json` pin but
+  deliberately never commits it, while `devpod up --recreate` builds from the
+  committed copy. `dvw pin-sync` closes that gap with a PR per repo, and
+  `cmd_recreate` offers it before rebuilding onto a stale image. Consumer
+  discovery is free here — the catalog already lists every workspace's
+  `repo@branch`.
 
 ### Naming: “blueprint” means two things
 
