@@ -178,6 +178,12 @@ cmd_recreate() {
     ide=$(catalog_workspace_get "$id" | jq -r '.ide')
     [[ "$ide" == "ssh" ]] && ide="none"
   fi
+  # The committed pin is what devpod builds from, so a stale one silently
+  # rebuilds you onto the old image. Offer to fix it first; declining just
+  # proceeds. Fail-open — see _dvw_pin_preflight.
+  if declare -F _dvw_pin_preflight >/dev/null 2>&1; then
+    _dvw_pin_preflight "$id" || return 0
+  fi
   ui_action "recreating" "$id (ide=$ide)"
   _dvw_run_or_print devpod up "$id" --recreate --ide "$ide" || return 1
   catalog_workspace_set_devpod_state "$id" 2>/dev/null || true
