@@ -53,4 +53,10 @@ LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
-WantedBy=multi-user.target
+# multi-user.target: normal boot.
+# docker.service: Requires=docker.service (above) propagates STOP but not
+# START, so a `systemctl restart docker` would otherwise leave this service
+# dead until someone noticed. This reverse Wants brings it back up with
+# docker. Both symlinks are written at `systemctl enable`/`reenable` time;
+# changing this line only reaches an installed host via `reenable`.
+WantedBy=multi-user.target docker.service

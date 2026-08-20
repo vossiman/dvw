@@ -96,10 +96,10 @@ for u in dvw-catalog.service dvw-catalog-backup.service dvw-catalog-backup.timer
       "$SVC_DIR/deploy/$u" | sudo install -m 0644 /dev/stdin "/etc/systemd/system/$u"
 done
 # Narrow drop-in so host-update.sh can restart without a password prompt.
-# Scoped to exactly these three commands on this one unit. Comment out the
+# Scoped to exactly these four commands on this one unit. Comment out the
 # install below if you'd rather type your sudo password on each update.
 sudo install -m 0440 /dev/stdin /etc/sudoers.d/dvw-catalog <<SUDO
-$USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart dvw-catalog.service, /usr/bin/systemctl status dvw-catalog.service, /usr/bin/systemctl daemon-reload
+$USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart dvw-catalog.service, /usr/bin/systemctl status dvw-catalog.service, /usr/bin/systemctl reenable dvw-catalog.service, /usr/bin/systemctl daemon-reload
 SUDO
 sudo systemctl daemon-reload
 # enable --now STARTS an inactive unit but does NOT restart a running one, so
@@ -108,7 +108,11 @@ sudo systemctl daemon-reload
 # passes either way, because /v1/health exists in both builds. Enable, then
 # restart unconditionally: the whole point of a re-run is to pick up new code.
 # `restart` starts a stopped unit too, so this is correct on first install.
-sudo systemctl enable dvw-catalog.service
+# reenable, not enable: it REWRITES the [Install] symlinks instead of only
+# adding missing ones, so a change to WantedBy= (e.g. adding
+# docker.service) actually lands on hosts installed before that change.
+# On a not-yet-enabled unit it behaves exactly like enable.
+sudo systemctl reenable dvw-catalog.service
 sudo systemctl restart dvw-catalog.service
 sudo systemctl enable --now dvw-catalog-backup.timer
 
