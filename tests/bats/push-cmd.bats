@@ -8,13 +8,26 @@ bats_require_minimum_version 1.5.0
 
 UUID_A="570d7e98-a20a-4e6a-ab30-c4b3400ae490"
 
+# Every external tool the clipboard paths in lib/push.sh probe for. These must
+# be UNREACHABLE from the test PATH: several tests below assert the "no
+# clipboard tool present" branch, and absence cannot be faked with a stub.
+# See tests/bats/lib/sanitized-path.bash for the rationale and the incident
+# that produced it.
+CLIP_TOOLS="wl-copy wl-paste xclip xsel pbcopy clip.exe powershell.exe wslpath"
+
+setup_file() {
+  load "lib/sanitized-path.bash"
+  # shellcheck disable=SC2086  # word splitting is intended
+  sanitized_bin_init "$BATS_FILE_TMPDIR/sanitized-bin" $CLIP_TOOLS
+}
+
 setup() {
   TMPDIR=$(mktemp -d)
   export TMPDIR
   export HOME="$TMPDIR"
   STUB_BIN="$TMPDIR/stubbin"
   mkdir -p "$STUB_BIN"
-  export PATH="$STUB_BIN:/usr/bin:/bin"
+  export PATH="$STUB_BIN:$SANITIZED_BIN"
   SCP_ARGS="$TMPDIR/scp-args"; : > "$SCP_ARGS"
   export SCP_ARGS
   cat > "$STUB_BIN/scp" <<'EOF'
@@ -40,6 +53,23 @@ _load() {
   _dvw_ws_container_state() { echo yes; }
   _dvw_ensure_ssh_alias() { return 0; }
   _dvw_ensure_local_devpod_state() { return 0; }
+}
+
+# Guard: if this fails, the sanitized PATH stopped working and the clipboard
+# tests below are silently exercising the host's real tools (see CLIP_TOOLS).
+@test "no real clipboard tool is reachable from the test PATH" {
+  for t in $CLIP_TOOLS; do
+    run command -v "$t"
+    [ "$status" -ne 0 ] || {
+      echo "reachable: $t -> $output" >&2
+      false
+    }
+  done
+}
+
+@test "sanitized PATH still provides ordinary binaries" {
+  run command -v cat
+  [ "$status" -eq 0 ]
 }
 
 @test "explicit file: scp to <ws>.devpod:/tmp/ and bare path as final line" {

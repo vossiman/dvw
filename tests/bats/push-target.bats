@@ -4,14 +4,33 @@
 # applies to every resolved target. Catalog stubbed via
 # _dvw_ws_container_state override; sessions stubbed via
 # _dvw_push_live_sessions override; picker exercised in numbered-list mode
-# (PATH without fzf), non-tty guarded by DVW_ASSUME_TTY.
+# (fzf hidden via the sanitized PATH helper), non-tty guarded by
+# DVW_ASSUME_TTY.
 
 bats_require_minimum_version 1.5.0
+
+setup_file() {
+  load "lib/sanitized-path.bash"
+  # fzf must be genuinely absent, not merely un-stubbed: _dvw_push_resolve_target
+  # branches on `command -v fzf`, and the numbered-picker tests below only
+  # exercise the fallback if the probe fails. The previous
+  # `PATH="/usr/bin:/bin"  # no fzf` comment was wrong on any box with fzf
+  # installed (/usr/bin IS where it lives) — two tests failed there while
+  # headless CI stayed green. See tests/bats/lib/sanitized-path.bash.
+  sanitized_bin_init "$BATS_FILE_TMPDIR/sanitized-bin" fzf
+}
 
 setup() {
   TMPDIR=$(mktemp -d)
   export TMPDIR
-  export PATH="/usr/bin:/bin"   # no fzf: forces the numbered-list fallback
+  export PATH="$SANITIZED_BIN"   # no fzf: forces the numbered-list fallback
+}
+
+# Guard: if this fails, the sanitized PATH stopped working and the picker tests
+# below are silently exercising the host's real fzf.
+@test "fzf is not reachable from the test PATH" {
+  run command -v fzf
+  [ "$status" -ne 0 ]
 }
 
 teardown() { rm -rf "$TMPDIR"; }
@@ -111,7 +130,7 @@ FZFSTUB
   chmod +x "$bindir/fzf"
 
   # Prepend bindir to PATH so our stub fzf is found
-  export PATH="$bindir:/usr/bin:/bin"
+  export PATH="$bindir:$SANITIZED_BIN"
 
   _dvw_push_live_sessions() { printf 'ws-a\nws-b\n'; }
   run _dvw_push_resolve_target
