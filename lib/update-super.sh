@@ -32,9 +32,22 @@ _dvw_super_preflight() {
     ui_info "switch $super to main first"
     return 1
   fi
-  if [[ -n "$(git -C "$super" status --porcelain 2>/dev/null)" ]]; then
+  # Real dirt — parent files, or edits/untracked files inside a submodule.
+  # `--ignore-submodules=dirty` still reports a submodule whose HEAD moved off
+  # the pin, so subtract that case: it is checked separately below.
+  if [[ -n "$(git -C "$super" status --porcelain --ignore-submodules=all 2>/dev/null)" ]] \
+     || [[ "$(git -C "$super" status --porcelain 2>/dev/null)" \
+        != "$(git -C "$super" status --porcelain --ignore-submodules=dirty 2>/dev/null)" ]]; then
     ui_error "$name has uncommitted changes — refusing to update"
     ui_info "commit or stash first: git -C $super status"
+    return 1
+  fi
+  # Only submodule HEADs differ from the pin, worktrees clean. Typical cause:
+  # `git reset --hard` in the parent, which never moves submodule checkouts.
+  # Not in-progress work, but we don't silently move HEADs either.
+  if [[ -n "$(git -C "$super" status --porcelain --ignore-submodules=dirty 2>/dev/null)" ]]; then
+    ui_error "$name has submodules checked out off the pinned commit — refusing to update"
+    ui_info "re-pin them first: git -C $super submodule update --init"
     return 1
   fi
   return 0

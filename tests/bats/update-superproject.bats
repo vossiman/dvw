@@ -140,3 +140,15 @@ _advance_pin() {
   [ "$(git -C "$PARENT/sub" rev-parse HEAD)" = "$ssha" ]
   [ ! -s "$INSTALL_LOG" ]
 }
+
+@test "cmd_update: drifted-but-clean submodule HEAD gets a submodule-update hint, not 'uncommitted changes'" {
+  # `git reset --hard` in the parent does not move submodule checkouts, so the
+  # submodule HEAD ends up off the pin with a clean worktree. That is not
+  # in-progress work; tell the user the one command that fixes it.
+  git -C "$PARENT/sub" commit -q --allow-empty -m local-drift
+  run cmd_update
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"uncommitted changes"* ]]
+  [[ "$output" == *"off the pinned commit"* ]]
+  [[ "$output" == *"git -C $PARENT submodule update --init"* ]]
+}
