@@ -57,7 +57,7 @@ _wsl_bridge_seed_block() {
   cat <<CONF
 # Managed by dvw — do not edit. Routes *.devpod via WSL's devpod CLI.
 Host *.devpod
-  ForwardAgent yes
+  ForwardAgent no
   LogLevel error
   StrictHostKeyChecking no
   UserKnownHostsFile /dev/null

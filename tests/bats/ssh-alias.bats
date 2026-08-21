@@ -139,13 +139,13 @@ EOF
   [[ "$output" == *"# DevPod Start myws.devpod"* ]]
   [[ "$output" == *"# DevPod End myws.devpod"* ]]
   [[ "$output" == *"Host myws.devpod"* ]]
-  [[ "$output" == *'ProxyCommand "/home/u/.local/bin/devpod" ssh --stdio --context default --user codespace myws'* ]]
+  [[ "$output" == *'ProxyCommand "/home/u/.local/bin/devpod" ssh --stdio --agent-forwarding=false --context default --user codespace myws'* ]]
   [[ "$output" == *"User codespace"* ]]
 }
 
 @test "_dvw_render_ssh_alias_block: threads context and user through" {
   run _dvw_render_ssh_alias_block other vossi prod /bin/devpod
-  [[ "$output" == *"--context prod --user vossi other"* ]]
+  [[ "$output" == *"--agent-forwarding=false --context prod --user vossi other"* ]]
   [[ "$output" == *"User vossi"* ]]
 }
 
@@ -157,6 +157,23 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"user codespace"* ]]
   [[ "$output" == *"proxycommand"* ]]
+}
+
+# The workstation agent holds every passphrase-less key in ~/.ssh; forwarding
+# it hands all of them to every process in the container. Both lines below are
+# load-bearing: `devpod ssh` forwards over its own transport with
+# --agent-forwarding defaulting to true, so ForwardAgent no alone leaves the
+# agent reachable. Assert the effective ssh -G value, not just the directive.
+@test "_dvw_render_ssh_alias_block: agent forwarding is off in BOTH channels" {
+  block=$(_dvw_render_ssh_alias_block myws codespace default /bin/true)
+  [[ "$block" == *"--agent-forwarding=false"* ]]
+  [[ "$block" != *"ForwardAgent yes"* ]]
+
+  cfg="$TMPDIR/.ssh/agent-fwd-check"
+  printf '%s\n' "$block" > "$cfg"
+  run "$REAL_SSH" -F "$cfg" -G myws.devpod
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"forwardagent no"* ]]
 }
 
 # ---------------------------------------------------------------------------
