@@ -119,6 +119,37 @@ _load_up_guard_container_exists() {
   [ -z "$(ls -A "$DVW_UP_LOCK_DIR")" ]
 }
 
+# WIRING TEST. The reconcile logic in _dvw_ensure_ssh_alias is worthless if
+# nothing calls it after `devpod up` — and `devpod up --configure-ssh` (default
+# true) rewrites the stanza with `ForwardAgent yes` on every container start.
+# Assert the wrapper actually invokes the reconcile, not just that it could.
+@test "_dvw_safe_devpod_up: reconciles the ssh alias after a successful up" {
+  _load_up_guard
+  _dvw_ensure_ssh_alias() { echo "reconciled:$1" >> "$MODES_LOG"; return 0; }
+  run _dvw_safe_devpod_up myws --ide none
+  [ "$status" -eq 0 ]
+  grep -q "devpod up myws --ide none" "$MODES_LOG"
+  grep -qx "reconciled:myws" "$MODES_LOG"
+}
+
+@test "_dvw_safe_devpod_up: does NOT reconcile when the up failed" {
+  _load_up_guard
+  _dvw_run_or_print() { echo "$*" >> "$MODES_LOG"; return 1; }
+  _dvw_ensure_ssh_alias() { echo "reconciled:$1" >> "$MODES_LOG"; return 0; }
+  run _dvw_safe_devpod_up myws --ide none
+  [ "$status" -ne 0 ]
+  ! grep -q "reconciled:myws" "$MODES_LOG"
+}
+
+# A reconcile failure must never be reported as an up failure — callers branch
+# on this status to decide whether the container is usable.
+@test "_dvw_safe_devpod_up: a failing reconcile does not mask a successful up" {
+  _load_up_guard
+  _dvw_ensure_ssh_alias() { return 1; }
+  run _dvw_safe_devpod_up myws --ide none
+  [ "$status" -eq 0 ]
+}
+
 @test "_dvw_safe_devpod_up: refuses a second concurrent run for the same workspace" {
   _load_up_guard
   mkdir "$DVW_UP_LOCK_DIR/dvw-up-myws.lock"      # simulate a run in flight
