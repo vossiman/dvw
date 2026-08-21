@@ -691,17 +691,30 @@ _dvw_ssh_alias_present() {
 # Render a DevPod-shaped SSH alias block for <id> on stdout. Pure string
 # builder — no I/O, no globals. Field set and order mirror DevPod's own
 # stanzas exactly. Args: id user context devpod_bin.
+#
+# Agent forwarding is off, and it takes BOTH lines to keep it off. The
+# workstation's ssh-agent holds every passphrase-less key in ~/.ssh (on the
+# Mint desktop: 18, including four root keys and prod credentials — GNOME
+# Keyring auto-loads them, nobody opts in). Forwarding hands the whole set to
+# every process in the container, which can then sign as the user against any
+# host any of those keys reaches. Nothing in the devbox needs it: git uses
+# HTTPS + GH_TOKEN, and the one container->host job (memory-lanes shipping)
+# carries its own restricted key with IdentitiesOnly.
+#
+# `ForwardAgent no` alone is NOT enough — `devpod ssh` forwards the agent over
+# its own transport with --agent-forwarding defaulting to TRUE, independent of
+# any ssh_config directive. Dropping either line re-opens the hole.
 _dvw_render_ssh_alias_block() {
   local id="$1" user="$2" ctx="$3" bin="$4"
   cat <<EOF
 # DevPod Start ${id}.devpod
 Host ${id}.devpod
-  ForwardAgent yes
+  ForwardAgent no
   LogLevel error
   StrictHostKeyChecking no
   UserKnownHostsFile /dev/null
   HostKeyAlgorithms rsa-sha2-256,rsa-sha2-512,ssh-rsa
-  ProxyCommand "${bin}" ssh --stdio --context ${ctx} --user ${user} ${id}
+  ProxyCommand "${bin}" ssh --stdio --agent-forwarding=false --context ${ctx} --user ${user} ${id}
   User ${user}
 # DevPod End ${id}.devpod
 EOF
