@@ -186,6 +186,9 @@ cmd_recreate() {
   fi
   ui_action "recreating" "$id (ide=$ide)"
   _dvw_run_or_print devpod up "$id" --recreate --ide "$ide" || return 1
+  # devpod up rewrote its own SSH stanza (ForwardAgent yes) — reconcile it.
+  # This path bypasses _dvw_safe_devpod_up, so it needs its own call.
+  _dvw_ensure_ssh_alias "$id" || true
   catalog_workspace_set_devpod_state "$id" 2>/dev/null || true
 }
 

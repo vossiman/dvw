@@ -254,7 +254,16 @@ EOF
   [[ "$output" == *"user codespace"* ]]
 }
 
-@test "_dvw_ensure_ssh_alias: no-op when block already present (no duplicate)" {
+# Helper: stub out ssh + devpod so _dvw_ensure_ssh_alias can resolve a binary.
+_stub_ssh_and_devpod() {
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_BIN/ssh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_BIN/devpod"
+  chmod +x "$STUB_BIN/ssh" "$STUB_BIN/devpod"
+}
+
+@test "_dvw_ensure_ssh_alias: existing block is reconciled, never duplicated" {
+  _write_local_workspace_json myws default-my-abc12 vossisrv
+  _stub_ssh_and_devpod
   cat > "$DVW_SSH_CONFIG" <<'EOF'
 # DevPod Start myws.devpod
 Host myws.devpod
@@ -264,7 +273,115 @@ EOF
   run _dvw_ensure_ssh_alias myws
   [ "$status" -eq 0 ]
   [ "$(grep -cxF '# DevPod Start myws.devpod' "$DVW_SSH_CONFIG")" -eq 1 ]
+  # The existing User is authoritative (resolve tier 1) and survives.
   grep -q "User sentinel" "$DVW_SSH_CONFIG"
+}
+
+# THE REGRESSION THIS PR EXISTS FOR. `devpod up --configure-ssh` defaults true
+# and rewrites its own stanza with `ForwardAgent yes` and no
+# --agent-forwarding=false, undoing #48 on every container start. Reconcile
+# must repair that, or the fix is decorative.
+@test "_dvw_ensure_ssh_alias: repairs a DevPod-written block that re-enabled agent forwarding" {
+  _write_local_workspace_json myws default-my-abc12 vossisrv
+  _stub_ssh_and_devpod
+  cat > "$DVW_SSH_CONFIG" <<'EOF'
+# DevPod Start myws.devpod
+Host myws.devpod
+  ForwardAgent yes
+  LogLevel error
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  HostKeyAlgorithms rsa-sha2-256,rsa-sha2-512,ssh-rsa
+  ProxyCommand "/home/u/.local/bin/devpod" ssh --stdio --context default --user codespace myws
+  User codespace
+# DevPod End myws.devpod
+EOF
+  run _dvw_ensure_ssh_alias myws
+  [ "$status" -eq 0 ]
+  [ "$(grep -cxF '# DevPod Start myws.devpod' "$DVW_SSH_CONFIG")" -eq 1 ]
+  ! grep -q "ForwardAgent yes" "$DVW_SSH_CONFIG"
+  grep -q -- "--agent-forwarding=false" "$DVW_SSH_CONFIG"
+  # Assert the EFFECTIVE value, not the directive text.
+  run "$REAL_SSH" -F "$DVW_SSH_CONFIG" -G myws.devpod
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"forwardagent no"* ]]
+}
+
+@test "_dvw_ensure_ssh_alias: reconcile replaces IN PLACE, preserving position and neighbours" {
+  _write_local_workspace_json myws default-my-abc12 vossisrv
+  _stub_ssh_and_devpod
+  cat > "$DVW_SSH_CONFIG" <<'EOF'
+Host before-marker
+  User alice
+# DevPod Start myws.devpod
+Host myws.devpod
+  ForwardAgent yes
+  User codespace
+# DevPod End myws.devpod
+Host after-marker
+  User bob
+EOF
+  run _dvw_ensure_ssh_alias myws
+  [ "$status" -eq 0 ]
+  # Neighbours intact...
+  grep -q "Host before-marker" "$DVW_SSH_CONFIG"
+  grep -q "Host after-marker" "$DVW_SSH_CONFIG"
+  # ...and the block did not migrate to the end of the file.
+  before=$(grep -n "Host before-marker" "$DVW_SSH_CONFIG" | cut -d: -f1)
+  start=$(grep -n "# DevPod Start myws.devpod" "$DVW_SSH_CONFIG" | cut -d: -f1)
+  after=$(grep -n "Host after-marker" "$DVW_SSH_CONFIG" | cut -d: -f1)
+  [ "$before" -lt "$start" ]
+  [ "$start" -lt "$after" ]
+}
+
+@test "_dvw_ensure_ssh_alias: a conforming block is left byte-identical" {
+  _write_local_workspace_json myws default-my-abc12 vossisrv
+  _stub_ssh_and_devpod
+  run _dvw_ensure_ssh_alias myws          # first call writes it
+  [ "$status" -eq 0 ]
+  cp "$DVW_SSH_CONFIG" "$TMPDIR/expected"
+  run _dvw_ensure_ssh_alias myws          # second call must change nothing
+  [ "$status" -eq 0 ]
+  diff -q "$TMPDIR/expected" "$DVW_SSH_CONFIG"
+}
+
+@test "_dvw_ensure_ssh_alias: reconcile leaves a prefix-sharing id untouched" {
+  _write_local_workspace_json myws default-my-abc12 vossisrv
+  _stub_ssh_and_devpod
+  cat > "$DVW_SSH_CONFIG" <<'EOF'
+# DevPod Start myws.devpod
+Host myws.devpod
+  ForwardAgent yes
+  User codespace
+# DevPod End myws.devpod
+# DevPod Start myws-two.devpod
+Host myws-two.devpod
+  ForwardAgent yes
+  User codespace
+# DevPod End myws-two.devpod
+EOF
+  run _dvw_ensure_ssh_alias myws
+  [ "$status" -eq 0 ]
+  # The sibling keeps its own (stale) block — we only reconcile the id asked for.
+  run awk '/# DevPod Start myws-two.devpod/,/# DevPod End myws-two.devpod/' "$DVW_SSH_CONFIG"
+  [[ "$output" == *"ForwardAgent yes"* ]]
+  [ "$(grep -cxF '# DevPod Start myws-two.devpod' "$DVW_SSH_CONFIG")" -eq 1 ]
+}
+
+@test "_dvw_ensure_ssh_alias: reconciled file is still mode 600" {
+  _write_local_workspace_json myws default-my-abc12 vossisrv
+  _stub_ssh_and_devpod
+  cat > "$DVW_SSH_CONFIG" <<'EOF'
+# DevPod Start myws.devpod
+Host myws.devpod
+  ForwardAgent yes
+  User codespace
+# DevPod End myws.devpod
+EOF
+  chmod 600 "$DVW_SSH_CONFIG"
+  run _dvw_ensure_ssh_alias myws
+  [ "$status" -eq 0 ]
+  [ "$(stat -c %a "$DVW_SSH_CONFIG")" = "600" ]
 }
 
 @test "_dvw_ensure_ssh_alias: appends a separating newline (no jammed marker)" {

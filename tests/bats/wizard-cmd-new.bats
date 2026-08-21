@@ -86,6 +86,31 @@ setup() {
   grep -q "cat-add:wsx" "$BATS_TEST_TMPDIR/calls"
 }
 
+# WIRING: `devpod up` writes its own SSH stanza with `ForwardAgent yes`
+# (--configure-ssh defaults true). cmd_new calls devpod directly rather than
+# through _dvw_safe_devpod_up, so it needs its own reconcile call — without it
+# every freshly created workspace starts life forwarding the whole keyring.
+@test "cmd_new: reconciles the ssh alias after a successful devpod up" {
+  _dvw_ensure_ssh_alias() { echo "reconciled:$1" >> "$BATS_TEST_TMPDIR/calls"; return 0; }
+  run cmd_new --repo "$REMOTE" --branch main --name wsx --ide ssh --yes
+  [ "$status" -eq 0 ]
+  grep -qx "reconciled:wsx" "$BATS_TEST_TMPDIR/calls"
+}
+
+@test "cmd_new: does NOT reconcile when devpod up failed" {
+  devpod() {
+    case "$1" in
+      list) printf '[]' ;;
+      up) echo "up:$2" >> "$BATS_TEST_TMPDIR/calls"; return 1 ;;
+      delete) : ;;
+    esac
+  }
+  _dvw_ensure_ssh_alias() { echo "reconciled:$1" >> "$BATS_TEST_TMPDIR/calls"; return 0; }
+  run cmd_new --repo "$REMOTE" --branch main --name wsx --ide ssh --yes
+  [ "$status" -ne 0 ]
+  ! grep -q "reconciled:wsx" "$BATS_TEST_TMPDIR/calls"
+}
+
 @test "cmd_new: nonexistent branch errors naming available branches" {
   run cmd_new --repo "$REMOTE" --branch nope --name wsx --ide ssh --yes
   [ "$status" -eq 1 ]

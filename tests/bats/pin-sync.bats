@@ -92,6 +92,36 @@ setup() {
   ! echo "$output" | grep -q "SHOULD NOT ASK"
 }
 
+# WIRING: cmd_recreate calls `devpod up --recreate` directly, bypassing
+# _dvw_safe_devpod_up. --configure-ssh defaults true, so the rebuild rewrites
+# the stanza with `ForwardAgent yes`; without an explicit reconcile here every
+# `dvw recreate` silently re-opens full-keyring agent forwarding.
+_stub_recreate_deps() {
+  _dvw_ensure_local_devpod_state()     { return 0; }
+  _dvw_resolve_canonical_container()   { return 0; }
+  _dvw_reap_stale_masters()            { :; }
+  _dvw_pin_preflight()                 { return 0; }
+  catalog_workspace_set_devpod_state() { :; }
+  _dvw_run_or_print() { echo "ran:$*" >> "$BATS_TEST_TMPDIR/calls"; return "${UP_RC:-0}"; }
+  _dvw_ensure_ssh_alias() { echo "reconciled:$1" >> "$BATS_TEST_TMPDIR/calls"; return 0; }
+}
+
+@test "cmd_recreate: reconciles the ssh alias after the rebuild" {
+  _stub_recreate_deps
+  run cmd_recreate demo
+  [ "$status" -eq 0 ]
+  grep -q "ran:devpod up demo --recreate" "$BATS_TEST_TMPDIR/calls"
+  grep -qx "reconciled:demo" "$BATS_TEST_TMPDIR/calls"
+}
+
+@test "cmd_recreate: does NOT reconcile when the rebuild failed" {
+  _stub_recreate_deps
+  UP_RC=1
+  run cmd_recreate demo
+  [ "$status" -ne 0 ]
+  ! grep -q "reconciled:demo" "$BATS_TEST_TMPDIR/calls"
+}
+
 @test "rebuild pre-flight: a stale pin OFFERS pin-sync and aborts when accepted" {
   _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
   ui_confirm() { return 0; }          # user says yes

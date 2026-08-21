@@ -599,6 +599,12 @@ _dvw_safe_devpod_up() {
   _dvw_run_or_print devpod up "$id" "$@"
   local up_rc=$?
   rmdir "$lock" 2>/dev/null || true
+  # `devpod up` just (re)wrote its own SSH stanza over ours — reconcile it back
+  # to the dvw standard before anyone connects through it. Failure here must
+  # not mask the up's own exit status.
+  if [[ $up_rc -eq 0 ]]; then
+    _dvw_ensure_ssh_alias "$id" || true
+  fi
   return $up_rc
 }
 
@@ -781,8 +787,16 @@ _dvw_resolve_ssh_user() {
 _dvw_ensure_ssh_alias() {
   local id="$1" cfg="${DVW_SSH_CONFIG:-$HOME/.ssh/config}"
 
+  # NOTE: no early return when the block already exists. DevPod rewrites its
+  # own stanza (with its own `ForwardAgent yes`) on every `devpod up`
+  # --configure-ssh defaults true — and the ProxyCommand's *implicit* up on a
+  # cold workspace does it too, which no flag can disable (see _connect_ssh).
+  # So "already present" says nothing about whether it matches the standard.
+  # We render the desired block and reconcile the on-disk one to it.
+  local existing_block="" reconciling=0
   if _dvw_ssh_alias_present "$id"; then
-    return 0
+    reconciling=1
+    existing_block=$(_dvw_extract_ssh_alias_block "$id")
   fi
 
   local bin
@@ -800,25 +814,50 @@ _dvw_ensure_ssh_alias() {
   local block
   block=$(_dvw_render_ssh_alias_block "$id" "$user" "$ctx" "$bin")
 
+  # Already conforms — nothing to write. This is the common case on a warm
+  # machine, so it stays silent.
+  if (( reconciling )) && [[ "$existing_block" == "$block" ]]; then
+    return 0
+  fi
+
   mkdir -p "$(dirname "$cfg")"
   chmod 700 "$(dirname "$cfg")" 2>/dev/null || true
 
-  # Atomic, mode-preserving append with a guaranteed separating blank line.
-  # Rebuild the whole file via a tmp to avoid partial writes; normalize the
-  # existing content to end in exactly one newline before appending so the
-  # marker never gets jammed onto a no-trailing-newline last line.
   local tmp="$cfg.dvw.tmp"
-  {
-    if [[ -f "$cfg" ]]; then
-      sed -e :a -e '/^[[:space:]]*$/{$d;N;ba}' "$cfg"
-      printf '\n'
-    fi
-    printf '%s\n' "$block"
-  } > "$tmp"
+  if (( reconciling )); then
+    # Replace the block IN PLACE. Position matters: ssh is first-value-wins,
+    # and the dvw-managed `Host *.devpod` block is Include-d at the top of the
+    # file, so moving a per-workspace stanza to the end would silently reorder
+    # precedence. Print the replacement at the start marker, then swallow
+    # every line through the end marker.
+    awk -v s="# DevPod Start ${id}.devpod" \
+        -v e="# DevPod End ${id}.devpod" \
+        -v repl="$block" '
+      $0 == s { print repl; insec=1; next }
+      insec == 1 { if ($0 == e) insec=0; next }
+      { print }
+    ' "$cfg" > "$tmp"
+  else
+    # Atomic, mode-preserving append with a guaranteed separating blank line.
+    # Rebuild the whole file via a tmp to avoid partial writes; normalize the
+    # existing content to end in exactly one newline before appending so the
+    # marker never gets jammed onto a no-trailing-newline last line.
+    {
+      if [[ -f "$cfg" ]]; then
+        sed -e :a -e '/^[[:space:]]*$/{$d;N;ba}' "$cfg"
+        printf '\n'
+      fi
+      printf '%s\n' "$block"
+    } > "$tmp"
+  fi
   chmod 600 "$tmp"
   mv "$tmp" "$cfg"
 
-  ui_status_ok "registered ssh alias \"${id}.devpod\" (user=${user})"
+  if (( reconciling )); then
+    ui_status_ok "reconciled ssh alias \"${id}.devpod\" to the dvw standard"
+  else
+    ui_status_ok "registered ssh alias \"${id}.devpod\" (user=${user})"
+  fi
 }
 
 # True (status 0) iff `<id>.devpod` resolves to a ProxyCommand locally (i.e.
@@ -836,6 +875,18 @@ _dvw_alias_defined() {
 # DevPod start/end markers (so `myws` never strips `myws-extra`), rewrites the
 # file atomically via a tmp + mv, and re-asserts mode 600. Idempotent: a no-op
 # success when the block (or the config file) is absent.
+# Echo the `# DevPod Start/End <id>.devpod` block from ssh config, or nothing.
+# Pure reader — used to compare what is on disk against the current standard.
+_dvw_extract_ssh_alias_block() {
+  local id="$1" cfg="${DVW_SSH_CONFIG:-$HOME/.ssh/config}"
+  [[ -f "$cfg" ]] || return 0
+  awk -v s="# DevPod Start ${id}.devpod" -v e="# DevPod End ${id}.devpod" '
+    $0 == s { insec=1 }
+    insec == 1 { print }
+    $0 == e { insec=0 }
+  ' "$cfg"
+}
+
 _dvw_remove_ssh_alias() {
   local id="$1" cfg="${DVW_SSH_CONFIG:-$HOME/.ssh/config}"
   [[ -f "$cfg" ]] || return 0

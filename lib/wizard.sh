@@ -364,7 +364,11 @@ cmd_new() {
 
   # 6. Run devpod up
   ui_action "creating" "$name (ide=$devpod_ide)"
-  if ! devpod up "${repo}@${branch}" --id "$name" --ide "$devpod_ide"; then
+  if devpod up "${repo}@${branch}" --id "$name" --ide "$devpod_ide"; then
+    # devpod wrote its own SSH stanza (ForwardAgent yes) — reconcile it to the
+    # dvw standard. Best-effort: a fresh workspace is still usable without it.
+    _dvw_ensure_ssh_alias "$name" || true
+  else
     ui_error "devpod up failed; catalog not modified"
     # devpod registers the workspace entry (pinned to this @branch) BEFORE it
     # clones, so a failed clone leaves an orphan behind. Left in place, that
