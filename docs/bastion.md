@@ -72,6 +72,26 @@ key (the optional "jumpi ⏸" host) replaces the SFTP subsystem, so uploads
 fail there. `dvw push` refuses workspaces that aren't running rather than
 booting them silently.
 
+## Getting files back out
+
+The reverse direction is `dvw pull`, run from a plain jumpi prompt (tab 2).
+It reads the attached workspace's outbox — `out/` at the root of the
+container checkout — lists what is sitting there, and downloads what you pick
+into jumpi's current directory. From there Termius's own file browser can
+download it to the phone.
+
+```bash
+mkdir -p out          # in the container, once per project
+mv report.pdf out/    # whatever the agent produced
+
+dvw pull              # on jumpi: pick from the list
+dvw pull --all        # or take everything
+```
+
+Nothing is deleted on the container side, so pulling twice — to the phone and
+to a laptop — is fine; emptying `out/` is the project's job. Like `push`,
+`pull` refuses a workspace the catalog doesn't report running.
+
 ## Optional: zero-keystroke attach
 
 If you want a Termius host that connects and drops you straight into the
