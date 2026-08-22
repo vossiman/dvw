@@ -54,6 +54,21 @@ setup() {
   [[ "$output" == none$'\t'* ]]
 }
 
+# review 2026-08-21: any gh failure used to `return 0`, classifying transient
+# network/auth errors as "unpinned" and silently passing preflight.
+@test "repo pin lookup: a transient gh failure is unknown (rc 1), not none" {
+  gh() { echo "gh: error (HTTP 502)" >&2; return 1; }
+  run _dvw_repo_pin vossiman/demo main
+  [ "$status" -ne 0 ]
+}
+
+@test "repo pin lookup: HTTP 404 stays 'none' (rc 0, empty output)" {
+  gh() { echo "gh: Not Found (HTTP 404)" >&2; return 1; }
+  run _dvw_repo_pin vossiman/demo main
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 @test "repo slug: both remote forms the fleet uses resolve to owner/name" {
   run _dvw_repo_slug "git@github.com:vossiman/demo.git"
   [ "$output" = "vossiman/demo" ]
@@ -82,6 +97,47 @@ setup() {
   [ "$status" -eq 0 ]
   ! echo "$output" | grep -q "SHOULD NOT RUN"
   echo "$output" | grep -q "already at"
+}
+
+# review 2026-08-21: every PR failing still returned 0, so automation saw a
+# healthy run while nothing was synced.
+@test "pin-sync: a failed PR open fails the command" {
+  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
+  _dvw_pin_open_pr() { return 1; }
+  run cmd_pin_sync demo
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "couldn't open the PR"
+}
+
+@test "pin-sync: catalog discovery failure is not a silent success" {
+  catalog_workspace_ids() { return 1; }
+  run cmd_pin_sync
+  [ "$status" -ne 0 ]
+}
+
+# review 2026-08-21: the digest-only sed no-oped on tag pins, PUT a
+# byte-identical file and reported an empty PR as success.
+@test "pin PR: a tag-pinned repo gets its tag rewritten, not an empty PR" {
+  local tagged='{"image":"ghcr.io/vossiman/devbox-base:2026-08-01"}'
+  gh() {
+    if [[ "$*" == *"pr list -R vossiman/demo"* ]]; then printf '\n'; return 0; fi
+    if [[ "$*" == *" -X PUT "*repos/vossiman/demo/contents/* ]]; then
+      local i; for ((i=1; i<=$#; i++)); do [[ "${!i}" == content=* ]] && break; done
+      printf '%s' "${!i#content=}" | base64 -d > "$BATS_TEST_TMPDIR/put.json"
+      return 0
+    fi
+    if [[ "$*" == *repos/vossiman/demo/contents/.devcontainer/devcontainer.json* ]]; then
+      jq -n --arg c "$(printf '%s' "$tagged" | base64 -w0)" '{sha:"deadbeef",content:$c}'
+      return 0
+    fi
+    if [[ "$*" == *repos/vossiman/demo/git/ref/heads/main* ]]; then printf 'abc123\n'; return 0; fi
+    if [[ "$*" == *repos/vossiman/demo/git/refs* ]]; then return 0; fi
+    if [[ "$*" == *"pr create -R vossiman/demo"* ]]; then printf 'https://github.com/vossiman/demo/pull/9\n'; return 0; fi
+    echo "unexpected gh call: $*" >&2; return 99
+  }
+  run _dvw_pin_open_pr vossiman/demo main "ghcr.io/vossiman/devbox-base:2026-08-12"
+  [ "$status" -eq 0 ]
+  grep -q 'devbox-base:2026-08-12' "$BATS_TEST_TMPDIR/put.json"
 }
 
 @test "rebuild pre-flight: a current pin passes straight through" {

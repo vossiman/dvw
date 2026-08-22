@@ -58,10 +58,25 @@ _dvw_repo_slug() {
 
 # Committed pin of <slug>@<branch>. Empty output + rc 0 means "no devcontainer
 # image there" (nothing to sync); rc 1 means the lookup itself failed.
+#
+# The distinction matters (review 2026-08-21): collapsing every gh failure
+# into rc 0 classified transient network/auth/rate-limit errors as "unpinned",
+# which preflight silently passed. Only HTTP 404 means the file genuinely
+# isn't there; anything else is unknown.
 _dvw_repo_pin() {
-  local slug="$1" branch="$2" body
+  local slug="$1" branch="$2" body errfile rc=0
+  errfile=$(mktemp) || return 1
   body=$(gh api "repos/$slug/contents/.devcontainer/devcontainer.json?ref=$branch" \
-           --jq '.content' 2>/dev/null) || return 0
+           --jq '.content' 2>"$errfile") || rc=$?
+  if (( rc != 0 )); then
+    if grep -qi '404\|Not Found' "$errfile"; then
+      rm -f "$errfile"
+      return 0
+    fi
+    rm -f "$errfile"
+    return 1
+  fi
+  rm -f "$errfile"
   printf '%s' "$body" | tr -d '\n' | base64 -d 2>/dev/null \
     | jq -r '.image // empty' 2>/dev/null || return 1
 }
@@ -97,13 +112,36 @@ _dvw_pin_open_pr() {
   meta=$(gh api "repos/$slug/contents/.devcontainer/devcontainer.json?ref=$base" 2>/dev/null) || return 1
   sha=$(jq -r '.sha' <<<"$meta") || return 1
   tmp=$(mktemp) || return 1
-  jq -r '.content' <<<"$meta" | tr -d '\n' | base64 -d > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
-  # Rewrite only the digest inside the existing pin — same format-preserving
-  # sed the blueprint's own CI self-pin uses, so comments/ordering survive.
-  sed -i -E "s|(ghcr\.io/[^\"@]+@)sha256:[0-9a-f]{64}|\1${image##*@}|" "$tmp"
-  if ! jq -e . "$tmp" >/dev/null 2>&1; then
-    rm -f "$tmp"; ui_error "$slug: rewritten devcontainer.json is not valid JSON — skipped"; return 1
+  orig=$(mktemp) || { rm -f "$tmp"; return 1; }
+  jq -r '.content' <<<"$meta" | tr -d '\n' | base64 -d > "$tmp" 2>/dev/null \
+    || { rm -f "$tmp" "$orig"; return 1; }
+  cp "$tmp" "$orig"
+  # Rewrite only the image ref inside the existing pin — same
+  # format-preserving approach as the blueprint's own CI self-pin, so
+  # comments/ordering survive. Digest pins rewrite the digest; tag pins
+  # rewrite the tag segment (review 2026-08-21: the digest-only sed no-oped
+  # on tag-pinned repos, PUT a byte-identical file and reported an empty PR
+  # as success).
+  if [[ "$image" == *@sha256:[0-9a-f]{64} ]]; then
+    sed -i -E "s|(ghcr\.io/[^\"@]+@)sha256:[0-9a-f]{64}|\1${image##*@}|" "$tmp"
+  else
+    local ref="${image#ghcr.io/}"
+    local img_repo="${ref%%:*}" esc_repo="${ref%%:*}" esc_tag="${ref##*:}"
+    esc_repo="${esc_repo//|/\\|}"; esc_repo="${esc_repo//&/\\&}"
+    esc_tag="${esc_tag//|/\\|}"; esc_tag="${esc_tag//&/\\&}"
+    sed -i -E "s|(ghcr\.io/${esc_repo}:)[^\"@]+|\1${esc_tag}|" "$tmp"
   fi
+  # Whatever the strategy: a byte-identical result would PUT nothing and open
+  # an empty PR — report that honestly instead.
+  if cmp -s "$tmp" "$orig"; then
+    rm -f "$tmp" "$orig"
+    ui_error "$slug: couldn't rewrite the pin in place (non-digest or unexpected format) — needs a manual update"
+    return 1
+  fi
+  if ! jq -e . "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp" "$orig"; ui_error "$slug: rewritten devcontainer.json is not valid JSON — skipped"; return 1
+  fi
+  rm -f "$orig"
 
   head=$(gh api "repos/$slug/git/ref/heads/$base" --jq '.object.sha' 2>/dev/null) || { rm -f "$tmp"; return 1; }
   gh api -X POST "repos/$slug/git/refs" -f ref="refs/heads/$branch" -f sha="$head" >/dev/null 2>&1 || true
@@ -119,15 +157,21 @@ _dvw_pin_open_pr() {
   printf '%s\n' "$url"
 }
 
-# _dvw_pin_state <id> — prints "<state>\t<slug>\t<branch>\t<current>" where
-# state is ok | stale | none | unknown. Never fails the caller.
+# _dvw_pin_state <id> [<blueprint-pin>] — prints
+# "<state>\t<slug>\t<branch>\t<current>" where state is ok | stale | none |
+# unknown. Never fails the caller. Passing the blueprint pin skips a redundant
+# fetch per workspace (cmd_pin_sync already resolved it once).
 _dvw_pin_state() {
-  local id="$1" ws repo branch slug cur bp
+  local id="$1" bp_arg="${2:-}" ws repo branch slug cur bp
   ws=$(catalog_workspace_get "$id" 2>/dev/null) || { printf 'unknown\t\t\t\n'; return 0; }
   repo=$(jq -r '.repo // empty' <<<"$ws"); branch=$(jq -r '.branch // empty' <<<"$ws")
   slug=$(_dvw_repo_slug "$repo") || { printf 'unknown\t%s\t%s\t\n' "$repo" "$branch"; return 0; }
   [[ -n "$branch" ]] || { printf 'unknown\t%s\t\t\n' "$slug"; return 0; }
-  bp=$(_dvw_blueprint_pin) || { printf 'unknown\t%s\t%s\t\n' "$slug" "$branch"; return 0; }
+  if [[ -z "$bp_arg" ]]; then
+    bp=$(_dvw_blueprint_pin) || { printf 'unknown\t%s\t%s\t\n' "$slug" "$branch"; return 0; }
+  else
+    bp="$bp_arg"
+  fi
   cur=$(_dvw_repo_pin "$slug" "$branch") || { printf 'unknown\t%s\t%s\t\n' "$slug" "$branch"; return 0; }
   if [[ -z "$cur" ]]; then
     printf 'none\t%s\t%s\t\n' "$slug" "$branch"
@@ -154,15 +198,23 @@ cmd_pin_sync() {
   if (($# > 0)); then
     ids=("$@")
   else
-    mapfile -t ids < <(catalog_workspace_ids) || return 1
+    # Not `mapfile < <(...)`: a failing catalog in the process substitution
+    # fed mapfile nothing and the run "succeeded" with 0/0/0 (review
+    # 2026-08-21). Discovery failure must fail the command.
+    local ids_raw
+    ids_raw=$(catalog_workspace_ids) || {
+      ui_error "couldn't list catalog workspaces — pin-sync cannot know what to sync"
+      return 1
+    }
+    mapfile -t ids <<<"$ids_raw"
   fi
 
   ui_banner "dvw pin-sync" "blueprint: $(_dvw_pin_short "$bp")"
 
-  local id line state slug branch cur url n_stale=0 n_ok=0 n_skip=0
+  local id line state slug branch cur url n_stale=0 n_ok=0 n_skip=0 n_fail=0
   for id in "${ids[@]}"; do
     [[ -n "$id" ]] || continue
-    line=$(_dvw_pin_state "$id")
+    line=$(_dvw_pin_state "$id" "$bp")
     IFS=$'\t' read -r state slug branch cur <<<"$line"
     case "$state" in
       ok)
@@ -178,6 +230,7 @@ cmd_pin_sync() {
           [[ -n "$url" ]] && ui_status_ok "  PR: $url"
         else
           ui_status_fail "  couldn't open the PR for $slug@$branch"
+          n_fail=$((n_fail + 1))
         fi ;;
       *)
         ui_status_warn "$id — couldn't determine the pin (not a GitHub repo, or lookup failed)"
@@ -188,6 +241,9 @@ cmd_pin_sync() {
   printf '\n'
   ui_info "$n_ok current · $n_stale stale · $n_skip skipped"
   [[ $n_stale -gt 0 ]] && ui_info "merge the PRs, then: dvw rebuild <id>"
+  # Automation reads the exit status: every PR failing while the command
+  # returns 0 made unattended runs look healthy (review 2026-08-21).
+  (( n_fail > 0 )) && return 1
   return 0
 }
 

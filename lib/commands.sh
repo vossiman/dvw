@@ -441,6 +441,31 @@ cmd_doctor() {
     warn=$((warn+1))
   fi
 
+  # ssh alias CONTENT drift (review 2026-08-21): DevPod rewrites its stanza
+  # with `ForwardAgent yes` and an un-pinned ProxyCommand on every `devpod up`,
+  # and the #49 reconcile only runs when that workspace is connected from THIS
+  # machine — a block that went stale stays stale indefinitely. Agent
+  # forwarding is a security failure, not style: both lines exist to keep the
+  # workstation's agent out of every container process.
+  local _drift_line _drift_id _drift_kind
+  local -a _agent_bad=() _fwd_bad=()
+  while IFS= read -r _drift_line; do
+    [[ -z "$_drift_line" ]] && continue
+    IFS=$'\t' read -r _drift_id _drift_kind <<<"$_drift_line"
+    case "$_drift_kind" in
+      agent) _agent_bad+=("$_drift_id") ;;
+      proxy) _fwd_bad+=("$_drift_id") ;;
+    esac
+  done < <(_dvw_doctor_scan_alias_drift)
+  if (( ${#_agent_bad[@]} > 0 )); then
+    ui_status_fail "ssh aliases forwarding the agent: ${_agent_bad[*]} (ForwardAgent yes) — run \`dvw <id>\` once to reconcile"
+    fail=$((fail+1))
+  fi
+  if (( ${#_fwd_bad[@]} > 0 )); then
+    ui_status_warn "ssh aliases missing --agent-forwarding=false in ProxyCommand: ${_fwd_bad[*]} — devpod re-forwards over its own transport without it"
+    warn=$((warn+1))
+  fi
+
   # devpod
   local devpod_providers=""
   local -a needed_providers=() missing_providers=()
