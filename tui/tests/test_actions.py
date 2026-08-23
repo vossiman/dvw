@@ -76,16 +76,15 @@ def test_new_check_devcontainer():
 
 
 def test_new_create_full_flags():
-    assert actions.new_create("R", "b", "n", "cursor",
+    assert actions.new_create("R", "b", "n",
                               init_empty=True, seed_devcontainer=True) == [
         "dvw", "new", "--repo", "R", "--branch", "b", "--name", "n",
-        "--ide", "cursor", "--init-empty", "--seed-devcontainer", "--yes"]
+        "--init-empty", "--seed-devcontainer", "--yes"]
 
 
 def test_new_create_minimal():
-    assert actions.new_create("R", "b", "n", "ssh") == [
-        "dvw", "new", "--repo", "R", "--branch", "b", "--name", "n",
-        "--ide", "ssh", "--yes"]
+    assert actions.new_create("R", "b", "n") == [
+        "dvw", "new", "--repo", "R", "--branch", "b", "--name", "n", "--yes"]
 
 
 def test_run_captured_split_discards_stderr():

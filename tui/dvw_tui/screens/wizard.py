@@ -1,8 +1,11 @@
-"""New-workspace wizard. Gathers repo/branch/name/ide; all *doing* stays in
+"""New-workspace wizard. Gathers repo/branch/name; all *doing* stays in
 bash — the app runs the flag-form `dvw new … --yes` suspended afterwards.
 
 Steps: repo (catalog list + free input) -> branches (thread worker) ->
-devcontainer check (thread worker) -> name -> ide -> summary confirm.
+devcontainer check (thread worker) -> name -> summary confirm.
+
+No IDE step: every workspace is created `ssh`; Cursor is a per-connect
+choice from the main menu, not a property of the workspace.
 
 Two rules govern the workers: the thread body never touches widgets (UI
 mutation is marshalled with `App.call_from_thread`), and nothing may run
@@ -28,7 +31,6 @@ from .confirm import ConfirmScreen
 
 NEW_REPO_OPTION = "+ enter new…"
 NEW_REPO_ID = "__new__"
-IDES = ("cursor", "ssh")
 
 
 @dataclass
@@ -36,7 +38,6 @@ class WizardResult:
     repo: str
     branch: str
     name: str
-    ide: str
     init_empty: bool = False
     seed_devcontainer: bool = False
 
@@ -53,7 +54,6 @@ class WizardScreen(ModalScreen["WizardResult | None"]):
         self._repo = ""
         self._branch = ""
         self._name = ""
-        self._ide = IDES[0]
         self._init_empty = False
         self._seed = False
         self._done = False
@@ -239,32 +239,6 @@ class WizardScreen(ModalScreen["WizardResult | None"]):
             Input(value=default_workspace_name(self._repo, self._branch),
                   max_length=DEVPOD_NAME_MAX, id="wizard-name-input"))
 
-    # ---- step: ide ---------------------------------------------------------
-
-    async def _default_ide(self) -> str:
-        """The catalog's global `ide` default (what the old gum wizard's
-        `catalog_default ide` read), falling back to IDES[0] on any error,
-        absence, or unknown value."""
-        try:
-            value = (await self.app.client.defaults()).get("ide", "")
-        except Exception:
-            return IDES[0]
-        return value if value in IDES else IDES[0]
-
-    async def _step_ide(self) -> None:
-        default = await self._default_ide()
-        await self._swap(
-            Static("ide", classes="wizard-label"),
-            OptionList(*[Option(ide, id=ide) for ide in IDES],
-                       id="wizard-ide-list"))
-        # _swap highlights row 0; move to the catalog default if different.
-        if default != IDES[0]:
-            try:
-                self.query_one("#wizard-ide-list",
-                               OptionList).highlighted = IDES.index(default)
-            except NoMatches:
-                pass
-
     # ---- step: summary -----------------------------------------------------
 
     def _step_summary(self) -> None:
@@ -272,14 +246,14 @@ class WizardScreen(ModalScreen["WizardResult | None"]):
             if confirmed:
                 self._finish(WizardResult(
                     repo=self._repo, branch=self._branch, name=self._name,
-                    ide=self._ide, init_empty=self._init_empty,
+                    init_empty=self._init_empty,
                     seed_devcontainer=self._seed))
             else:
-                self._later(self._step_ide)
+                self._later(self._step_name)
 
         self.app.push_screen(
             ConfirmScreen(f"Create {self._name} from {self._repo}"
-                          f"@{self._branch} ({self._ide})?"),
+                          f"@{self._branch}?"),
             on_result)
 
     # ---- events ------------------------------------------------------------
@@ -296,9 +270,6 @@ class WizardScreen(ModalScreen["WizardResult | None"]):
                 await self._repo_chosen(value)
         elif list_id == "wizard-branch-list":
             await self._branch_chosen(value)
-        elif list_id == "wizard-ide-list":
-            self._ide = value
-            self._step_summary()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "wizard-repo-input":
@@ -314,4 +285,4 @@ class WizardScreen(ModalScreen["WizardResult | None"]):
                             title="dvw", severity="warning")
                 return
             self._name = name
-            await self._step_ide()
+            self._step_summary()

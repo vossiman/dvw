@@ -39,8 +39,10 @@ def _default_provider() -> str:
 
 
 class Defaults(BaseModel):
+    # `ide` used to live here; `extra="allow"` keeps legacy catalog files
+    # loading. New workspaces are always `ssh` — Cursor is opened per-connect
+    # from the menu, not stored as a workspace property.
     model_config = ConfigDict(extra="allow")
-    ide: str = "cursor"
     provider: str = Field(default_factory=_default_provider)
 
 
@@ -59,7 +61,7 @@ class Workspace(BaseModel):
     id: str = Field(pattern=_ID_PATTERN, min_length=1, max_length=128)
     repo: str
     branch: str
-    ide: str = "cursor"
+    ide: str = "ssh"
     provider: str = Field(default_factory=_default_provider)
     # Defaults are None (not auto-stamped) so loading a hand-edited/partial
     # legacy entry round-trips faithfully without jumping to the top of MRU.
@@ -134,7 +136,6 @@ class RepoUpsert(BaseModel):
 
 class DefaultsUpdate(BaseModel):
     model_config = ConfigDict(extra="allow")
-    ide: str | None = None
     provider: str | None = None
 
 

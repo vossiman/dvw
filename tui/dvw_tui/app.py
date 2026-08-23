@@ -179,7 +179,7 @@ class DvwApp(App):
             if result is None:
                 return
             self._run_suspended(actions.new_create(
-                result.repo, result.branch, result.name, result.ide,
+                result.repo, result.branch, result.name,
                 init_empty=result.init_empty,
                 seed_devcontainer=result.seed_devcontainer))
 

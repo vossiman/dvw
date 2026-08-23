@@ -47,6 +47,20 @@ setup() {
   echo "$output" | grep -q "usage: dvw new"
 }
 
+@test "cmd_new: --ide omitted defaults to ssh (devpod --ide none, catalog ide=ssh)" {
+  devpod() {
+    case "$1" in
+      list) printf '[]' ;;
+      up) echo "up:$*" >> "$BATS_TEST_TMPDIR/calls" ;;
+    esac
+  }
+  catalog_workspace_add() { echo "cat-add:$1 ide=$4" >> "$BATS_TEST_TMPDIR/calls"; }
+  run cmd_new --repo "$REMOTE" --branch main --name wsx --yes
+  [ "$status" -eq 0 ]
+  grep -q -- "--ide none" "$BATS_TEST_TMPDIR/calls"
+  grep -q "cat-add:wsx ide=ssh" "$BATS_TEST_TMPDIR/calls"
+}
+
 @test "cmd_new: bad --ide errors" {
   run cmd_new --repo "$REMOTE" --branch main --name x --ide vim --yes
   [ "$status" -eq 1 ]

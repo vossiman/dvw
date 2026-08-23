@@ -53,7 +53,7 @@ async def create_workspace(body: WorkspaceCreate, store: StoreDep) -> Workspace:
         id=body.id,
         repo=body.repo,
         branch=body.branch,
-        ide=body.ide or defaults.ide,
+        ide=body.ide or "ssh",
         provider=body.provider or defaults.provider,
         created_on=body.created_on,
         created_at=now,

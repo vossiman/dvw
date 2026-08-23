@@ -46,7 +46,7 @@ auth + `0660 vossi:vossi` socket perms *is* the auth boundary.
 | **`GET /workspaces/{id}/container`** | **resolve canonical container** (bind-mount + tmux tie-break) |
 | **`GET /workspaces/{id}/inspect`** | **deep inspect**: state, health, mounts, cpu/mem, disk, liveness |
 | `GET /repos` · `GET /repos/by-url` · `POST` | repo MRU + per-repo last branch |
-| `GET /defaults` · `PUT /defaults` | global ide/provider defaults |
+| `GET /defaults` · `PUT /defaults` | global provider default |
 | `GET /blueprint` · `PUT /blueprint` | effective SSH blueprint; PUT remains compatible with whole-file clients |
 | `GET /blueprint/custom` · `PUT /blueprint/custom` | persistent operator overrides with optimistic revision checks |
 | `GET /containers/status` | bulk liveness (alive/stale/stopped/absent) — replaces dvw's SSH probe |

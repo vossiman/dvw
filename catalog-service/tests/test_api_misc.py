@@ -25,10 +25,10 @@ def test_health_reports_docker_down(client, inspector):
 
 
 def test_defaults_get_update(client):
-    assert client.get("/v1/defaults").json() == {"ide": "cursor", "provider": "vossisrv"}
-    r = client.put("/v1/defaults", json={"ide": "vscode"})
-    assert r.json()["ide"] == "vscode"
-    assert client.get("/v1/defaults").json()["provider"] == "vossisrv"
+    assert client.get("/v1/defaults").json() == {"provider": "vossisrv"}
+    r = client.put("/v1/defaults", json={"provider": "other"})
+    assert r.json()["provider"] == "other"
+    assert client.get("/v1/defaults").json()["provider"] == "other"
 
 
 def test_repos_upsert_list_mru(client):

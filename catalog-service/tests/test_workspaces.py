@@ -13,7 +13,7 @@ def test_create_get_list(client):
     assert r.status_code == 201
     body = r.json()
     assert body["id"] == "proj-git-main"
-    assert body["ide"] == "cursor"  # default from catalog defaults
+    assert body["ide"] == "ssh"  # fixed default; cursor is a per-connect choice
     assert body["provider"] == "vossisrv"
 
     r = client.get("/v1/workspaces/proj-git-main")

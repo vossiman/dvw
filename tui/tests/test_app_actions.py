@@ -287,13 +287,10 @@ async def test_wizard_result_runs_flag_form_new(fake_client, fake_new_cli, monke
         await pilot.pause(0.2)
         await pilot.press("enter")        # name
         await pilot.pause()
-        await pilot.press("enter")        # ide
-        await pilot.pause()
         await pilot.press("y")            # summary
         await pilot.pause()
     assert runs == [["dvw", "new", "--repo", "git@github.com:vossiman/alpha.git",
-                     "--branch", "main", "--name", "alpha-main",
-                     "--ide", "cursor", "--yes"]]
+                     "--branch", "main", "--name", "alpha-main", "--yes"]]
 
 
 async def test_wizard_abort_runs_nothing(fake_client, fake_new_cli, monkeypatch):
