@@ -190,7 +190,7 @@ _parse_devpod_ids() {
 DEVPOD_NAME_MAX=48
 
 _new_usage() {
-  ui_info "usage: dvw new --repo <url> --name <name> --ide cursor|ssh [--branch <b>] [--init-empty] [--seed-devcontainer] [--yes]"
+  ui_info "usage: dvw new --repo <url> --name <name> [--branch <b>] [--ide ssh|cursor] [--init-empty] [--seed-devcontainer] [--yes]"
 }
 
 # Resolve <repo>'s branch list, retrying the SSH form for HTTPS github URLs
@@ -235,7 +235,9 @@ cmd_new() {
   # Reject a value that's missing or looks like the next flag (e.g. `--repo
   # --name x`, a common typo when a value is accidentally omitted) rather
   # than silently swallowing the following flag as this one's value.
-  local repo="" branch="" name="" ide="" init_empty=0 seed_devc=0 yes=0
+  # --ide defaults to ssh: every connect starts as ssh, Cursor is picked per
+  # connect from the menu. `cursor` stays accepted for scripted callers.
+  local repo="" branch="" name="" ide="ssh" init_empty=0 seed_devc=0 yes=0
   while (($#)); do
     case "$1" in
       --repo)   [[ -n "${2:-}" && "$2" != --* ]] || { ui_error "dvw new: --repo requires a value"; _new_usage; return 1; }
@@ -255,7 +257,7 @@ cmd_new() {
   [[ -z "$repo" ]] && { ui_error "dvw new: --repo is required"; _new_usage; return 1; }
   [[ -z "$name" ]] && { ui_error "dvw new: --name is required"; _new_usage; return 1; }
   case "$ide" in cursor|ssh) ;; *)
-    ui_error "dvw new: --ide must be cursor or ssh (got: ${ide:-<empty>})"; _new_usage; return 1 ;;
+    ui_error "dvw new: --ide must be ssh or cursor (got: ${ide:-<empty>})"; _new_usage; return 1 ;;
   esac
   if [[ -z "$branch" ]]; then
     if (( init_empty )); then branch="main"; else

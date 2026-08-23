@@ -33,9 +33,6 @@ class FakeClient:
                 ],
             ),
         }
-        # Global catalog defaults, shaped like GET /v1/defaults. Tests mutate
-        # this to exercise the wizard's IDE preselection.
-        self.defaults_body = {"ide": "cursor", "provider": "vossisrv"}
         self._workspaces = [
             Workspace(id="alpha", repo="git@github.com:vossiman/alpha.git",
                       branch="main", ide="cursor", provider="vossisrv",
@@ -86,10 +83,6 @@ class FakeClient:
         # picked from the OptionList.
         return ["https://github.com/vossiman/alpha.git",
                 "https://github.com/vossiman/beta.git"]
-
-    async def defaults(self):
-        self._check()
-        return dict(self.defaults_body)
 
     async def windows(self):
         # Mirrors the real client's fail-open degradation: errors yield {}

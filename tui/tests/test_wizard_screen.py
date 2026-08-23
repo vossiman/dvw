@@ -25,8 +25,6 @@ async def test_happy_path_dismisses_with_result(fake_client, fake_new_cli):
         await pilot.pause(0.2)            # devcontainer check (rc 0 -> no confirm)
         await pilot.press("enter")        # accept default name
         await pilot.pause()
-        await pilot.press("enter")        # IDE default (cursor)
-        await pilot.pause()
         await pilot.press("y")            # summary confirm
         await pilot.pause()
     assert len(results) == 1 and results[0] is not None
@@ -34,7 +32,6 @@ async def test_happy_path_dismisses_with_result(fake_client, fake_new_cli):
     assert r.repo == "git@github.com:vossiman/alpha.git"   # resolved URL wins
     assert r.branch == "main"
     assert r.name == "alpha-main"
-    assert r.ide == "cursor"
     assert not r.init_empty and not r.seed_devcontainer
 
 
@@ -127,8 +124,6 @@ async def test_empty_repo_offers_init(fake_client, fake_new_cli):
         await pilot.pause()
         await pilot.press("enter")        # name
         await pilot.pause()
-        await pilot.press("enter")        # ide
-        await pilot.pause()
         await pilot.press("y")            # summary
         await pilot.pause()
     r = results[0]
@@ -171,8 +166,6 @@ async def test_missing_devcontainer_offers_seed(fake_client, fake_new_cli):
         await pilot.pause()
         await pilot.press("enter")        # name
         await pilot.pause()
-        await pilot.press("enter")        # ide
-        await pilot.pause()
         await pilot.press("y")
         await pilot.pause()
     assert results[0].seed_devcontainer
@@ -196,8 +189,6 @@ async def test_missing_devcontainer_decline_continues(fake_client, fake_new_cli)
         await pilot.pause()
         await pilot.press("enter")        # name
         await pilot.pause()
-        await pilot.press("enter")        # ide
-        await pilot.pause()
         await pilot.press("y")
         await pilot.pause()
     assert results[0] is not None and not results[0].seed_devcontainer
@@ -217,8 +208,6 @@ async def test_uninspectable_devcontainer_continues(fake_client, fake_new_cli):
         await pilot.press("enter")        # branch
         await pilot.pause(0.2)
         await pilot.press("enter")        # name (no confirm shown)
-        await pilot.pause()
-        await pilot.press("enter")        # ide
         await pilot.pause()
         await pilot.press("y")
         await pilot.pause()
@@ -256,8 +245,6 @@ async def test_custom_name_is_sanitized(fake_client, fake_new_cli):
                           "exclamation_mark")
         await pilot.press("enter")
         await pilot.pause()
-        await pilot.press("enter")        # ide
-        await pilot.pause()
         await pilot.press("y")
         await pilot.pause()
     assert results[0].name == "my-repo"
@@ -283,8 +270,6 @@ async def test_blank_name_stays_on_name_step(fake_client, fake_new_cli):
         await pilot.press("o", "k")
         await pilot.press("enter")
         await pilot.pause()
-        await pilot.press("enter")        # ide
-        await pilot.pause()
         await pilot.press("y")
         await pilot.pause()
     assert results[0].name == "ok"
@@ -309,15 +294,13 @@ async def test_new_repo_option_opens_free_input(fake_client, fake_new_cli):
         await pilot.pause(0.2)
         await pilot.press("enter")        # name
         await pilot.pause()
-        await pilot.press("enter")        # ide
-        await pilot.pause()
         await pilot.press("y")
         await pilot.pause()
     # line 1 of --list-branches output is the resolved URL and wins
     assert results[0].repo == "git@github.com:vossiman/alpha.git"
 
 
-async def test_ide_ssh_can_be_selected(fake_client, fake_new_cli):
+async def test_summary_decline_returns_to_name_step(fake_client, fake_new_cli):
     app = DvwApp(client=fake_client)
     results = []
     async with app.run_test() as pilot:
@@ -330,103 +313,16 @@ async def test_ide_ssh_can_be_selected(fake_client, fake_new_cli):
         await pilot.press("enter")        # branch
         await pilot.pause(0.2)
         await pilot.press("enter")        # name
-        await pilot.pause()
-        await pilot.press("down")         # cursor -> ssh
-        await pilot.press("enter")
-        await pilot.pause()
-        await pilot.press("y")
-        await pilot.pause()
-    assert results[0].ide == "ssh"
-
-
-async def test_summary_decline_returns_to_ide_step(fake_client, fake_new_cli):
-    app = DvwApp(client=fake_client)
-    results = []
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.push_screen(WizardScreen(), results.append)
-        await pilot.pause()
-        await pilot.press("down")
-        await pilot.press("enter")
-        await pilot.pause(0.2)
-        await pilot.press("enter")        # branch
-        await pilot.pause(0.2)
-        await pilot.press("enter")        # name
-        await pilot.pause()
-        await pilot.press("enter")        # ide
         await pilot.pause()
         await pilot.press("n")            # decline summary
         await pilot.pause()
         assert results == []
-        assert app.screen.query("#wizard-ide-list")
-        await pilot.press("enter")        # ide again
+        assert app.screen.query("#wizard-name-input")
+        await pilot.press("enter")        # name again
         await pilot.pause()
         await pilot.press("y")
         await pilot.pause()
     assert results[0] is not None
-
-
-# ---- IDE default from the catalog ------------------------------------------
-
-
-async def _drive_to_ide(pilot):
-    """repo -> branch -> name, leaving the IDE OptionList on screen."""
-    await pilot.press("down")
-    await pilot.press("enter")            # repo
-    await pilot.pause(0.2)
-    await pilot.press("enter")            # branch
-    await pilot.pause(0.2)
-    await pilot.press("enter")            # accept default name
-    await pilot.pause()
-
-
-async def test_ide_step_preselects_catalog_default(fake_client, fake_new_cli):
-    """Spec parity with the old gum wizard's `catalog_default ide`."""
-    fake_client.defaults_body = {"ide": "ssh", "provider": "vossisrv"}
-    app = DvwApp(client=fake_client)
-    results = []
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.push_screen(WizardScreen(), results.append)
-        await pilot.pause()
-        await _drive_to_ide(pilot)
-        ide_list = app.screen.query_one("#wizard-ide-list", OptionList)
-        assert ide_list.highlighted == 1                       # "ssh" row
-        await pilot.press("enter")        # accept the preselected default
-        await pilot.pause()
-        await pilot.press("y")
-        await pilot.pause()
-    assert results[0].ide == "ssh"
-
-
-async def test_ide_step_falls_back_to_cursor_when_catalog_fails(
-    fake_client, fake_new_cli
-):
-    async def boom():
-        raise RuntimeError("catalog down")
-
-    fake_client.defaults = boom
-    app = DvwApp(client=fake_client)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.push_screen(WizardScreen())
-        await pilot.pause()
-        await _drive_to_ide(pilot)
-        ide_list = app.screen.query_one("#wizard-ide-list", OptionList)
-        assert ide_list.highlighted == 0                       # "cursor"
-
-
-async def test_ide_step_ignores_unknown_catalog_default(fake_client,
-                                                        fake_new_cli):
-    fake_client.defaults_body = {"ide": "emacs"}
-    app = DvwApp(client=fake_client)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.push_screen(WizardScreen())
-        await pilot.pause()
-        await _drive_to_ide(pilot)
-        assert app.screen.query_one("#wizard-ide-list",
-                                    OptionList).highlighted == 0
 
 
 # ---- stdout contract vs. stderr noise (real subprocess, no canned result) ---
@@ -469,8 +365,6 @@ async def test_branch_parse_ignores_stderr_noise(fake_client, tmp_path,
         await pilot.press("enter")        # branch "main"
         await pilot.pause(0.5)
         await pilot.press("enter")        # name
-        await pilot.pause()
-        await pilot.press("enter")        # ide
         await pilot.pause()
         await pilot.press("y")
         await pilot.pause()
