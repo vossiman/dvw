@@ -222,6 +222,21 @@ _advance_super_remote() {
   [ "$(dvw_update_behind_count)" = "1" ]
 }
 
+@test "refresh: never touches the submodules' refs (submodule.recurse=true)" {
+  # Regression (2026-08-23): with submodule.recurse=true the check's fetch
+  # recursed into every submodule and raced `dvw update`'s foreground pull on
+  # the submodules' origin/main ("cannot lock ref ... is at X but expected Y").
+  # The check only needs the parent's origin/main.
+  _make_super
+  git -C "$PARENT" config submodule.recurse true
+  _advance_remote 2          # sub's remote main moves; the pin does not
+  _advance_super_remote 1
+  local before; before=$(git -C "$PARENT/sub" rev-parse origin/main)
+  DVW_UPDATE_SYNC=1 dvw_update_refresh_if_stale
+  [ "$(dvw_update_behind_count)" = "1" ]
+  [ "$(git -C "$PARENT/sub" rev-parse origin/main)" = "$before" ]
+}
+
 @test "nudge: superproject mode names the parent and says run: dvw update" {
   _make_super
   _write_cache "$(date +%s)" 2

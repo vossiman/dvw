@@ -52,12 +52,20 @@ _dvw_update_cache_stale() {
 # multiple branches." We only need origin/main updated for the rev-list below —
 # which --no-write-fetch-head still does — so skipping the FETCH_HEAD write
 # removes the shared file the two fetches were racing on.
+#
+# --no-recurse-submodules is load-bearing for the same reason. The repo may set
+# `submodule.recurse=true` (devMachine does), which makes every fetch recurse
+# into the submodules — so the background check and the foreground pull in
+# `dvw update` each update the submodules' origin/main too, and whichever is
+# second fails with "cannot lock ref 'refs/remotes/origin/main': is at X but
+# expected Y" (seen 2026-08-23 on devpod/memory-lanes). The rev-list below only
+# needs the superproject's origin/main; submodule refs are never read here.
 _dvw_update_do_refresh() {
   local cache behind now tmp repo
   cache=$(dvw_update_cache_path)
   repo=$(dvw_update_target_repo)
   mkdir -p "$(dirname "$cache")" 2>/dev/null || return 0
-  git -C "$repo" fetch -q --no-write-fetch-head origin main 2>/dev/null || return 0
+  git -C "$repo" fetch -q --no-write-fetch-head --no-recurse-submodules origin main 2>/dev/null || return 0
   behind=$(git -C "$repo" rev-list --count HEAD..origin/main 2>/dev/null)
   case "$behind" in ''|*[!0-9]*) behind=0 ;; esac
   now=$(date +%s)
