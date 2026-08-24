@@ -887,6 +887,29 @@ _dvw_extract_ssh_alias_block() {
   ' "$cfg"
 }
 
+# _dvw_doctor_scan_alias_drift — for every catalog workspace with a local
+# `<id>.devpod` block, print "<id>\t<kind>" when the on-disk block has
+# drifted from the dvw standard:
+#   agent — ForwardAgent yes (forwards the workstation's keyring; security)
+#   proxy — ProxyCommand without --agent-forwarding=false (devpod's own
+#           transport re-forwards regardless of any ssh_config directive)
+# Read-only; used by `dvw doctor`. Review 2026-08-21: #49 reconciles only on
+# connect, so stale blocks elsewhere never healed on their own.
+_dvw_doctor_scan_alias_drift() {
+  local wid blk
+  while IFS= read -r wid; do
+    [[ -z "$wid" ]] && continue
+    _dvw_ssh_alias_present "$wid" || continue
+    blk=$(_dvw_extract_ssh_alias_block "$wid")
+    [[ -z "$blk" ]] && continue
+    if grep -Eqi '^[[:space:]]*ForwardAgent[[:space:]]+yes' <<<"$blk"; then
+      printf '%s\tagent\n' "$wid"
+    elif ! grep -q -- '--agent-forwarding=false' <<<"$blk"; then
+      printf '%s\tproxy\n' "$wid"
+    fi
+  done < <(catalog_read 2>/dev/null | jq -r '.workspaces[]?.id' 2>/dev/null)
+}
+
 _dvw_remove_ssh_alias() {
   local id="$1" cfg="${DVW_SSH_CONFIG:-$HOME/.ssh/config}"
   [[ -f "$cfg" ]] || return 0

@@ -54,6 +54,21 @@ setup() {
   [[ "$output" == none$'\t'* ]]
 }
 
+# review 2026-08-21: any gh failure used to `return 0`, classifying transient
+# network/auth errors as "unpinned" and silently passing preflight.
+@test "repo pin lookup: a transient gh failure is unknown (rc 1), not none" {
+  gh() { echo "gh: error (HTTP 502)" >&2; return 1; }
+  run _dvw_repo_pin vossiman/demo main
+  [ "$status" -ne 0 ]
+}
+
+@test "repo pin lookup: HTTP 404 stays 'none' (rc 0, empty output)" {
+  gh() { echo "gh: Not Found (HTTP 404)" >&2; return 1; }
+  run _dvw_repo_pin vossiman/demo main
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 @test "repo slug: both remote forms the fleet uses resolve to owner/name" {
   run _dvw_repo_slug "git@github.com:vossiman/demo.git"
   [ "$output" = "vossiman/demo" ]
@@ -82,6 +97,81 @@ setup() {
   [ "$status" -eq 0 ]
   ! echo "$output" | grep -q "SHOULD NOT RUN"
   echo "$output" | grep -q "already at"
+}
+
+# review 2026-08-21: every PR failing still returned 0, so automation saw a
+# healthy run while nothing was synced.
+@test "pin-sync: a failed PR open fails the command" {
+  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
+  _dvw_pin_open_pr() { return 1; }
+  run cmd_pin_sync demo
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "couldn't open the PR"
+}
+
+@test "pin-sync: catalog discovery failure is not a silent success" {
+  catalog_workspace_ids() { return 1; }
+  run cmd_pin_sync
+  [ "$status" -ne 0 ]
+}
+
+_install_pin_pr_gh_stub() {
+  PIN_FILE_CONTENT="$1"
+  gh() {
+    if [[ "$*" == *"pr list -R vossiman/demo"* ]]; then printf '\n'; return 0; fi
+    if [[ "$*" == *" -X PUT "*repos/vossiman/demo/contents/* ]]; then
+      local i; for ((i=1; i<=$#; i++)); do [[ "${!i}" == content=* ]] && break; done
+      printf '%s' "${!i#content=}" | base64 -d > "$BATS_TEST_TMPDIR/put.json"
+      return 0
+    fi
+    if [[ "$*" == *repos/vossiman/demo/contents/.devcontainer/devcontainer.json* ]]; then
+      jq -n --arg c "$(printf '%s' "$PIN_FILE_CONTENT" | base64 -w0)" '{sha:"deadbeef",content:$c}'
+      return 0
+    fi
+    if [[ "$*" == *repos/vossiman/demo/git/ref/heads/main* ]]; then printf 'abc123\n'; return 0; fi
+    if [[ "$*" == *repos/vossiman/demo/git/refs* ]]; then return 0; fi
+    if [[ "$*" == *"pr create -R vossiman/demo"* ]]; then printf 'https://github.com/vossiman/demo/pull/9\n'; return 0; fi
+    echo "unexpected gh call: $*" >&2; return 99
+  }
+}
+
+# review 2026-08-21: the digest-only sed no-oped on tag pins, PUT a
+# byte-identical file and reported an empty PR as success. The production
+# transition is tag -> blueprint digest, not the tag -> tag case alone.
+@test "pin PR: an existing tag is replaced by the blueprint digest" {
+  _install_pin_pr_gh_stub '{"image":"ghcr.io/vossiman/devbox-base:2026-08-01"}'
+  run _dvw_pin_open_pr vossiman/demo main "$BP_IMAGE"
+  [ "$status" -eq 0 ]
+  grep -qF "$BP_IMAGE" "$BATS_TEST_TMPDIR/put.json"
+}
+
+@test "pin PR: registry-less existing refs are replaced completely" {
+  _install_pin_pr_gh_stub '{"image":"vossiman/devbox-base:old.tag"}'
+  run _dvw_pin_open_pr vossiman/demo main "$BP_IMAGE"
+  [ "$status" -eq 0 ]
+  grep -qF "$BP_IMAGE" "$BATS_TEST_TMPDIR/put.json"
+}
+
+@test "pin PR: JSONC comments around the image key survive" {
+  _install_pin_pr_gh_stub $'{\n  // old example: "image": "example.invalid/do-not-edit:latest"\n  "image": "ghcr.io/vossiman/devbox-base:old.tag", // keep this note\n  "customizations": {}\n}'
+  run _dvw_pin_open_pr vossiman/demo main "$BP_IMAGE"
+  [ "$status" -eq 0 ]
+  grep -qF "$BP_IMAGE" "$BATS_TEST_TMPDIR/put.json"
+  grep -qF '"image": "example.invalid/do-not-edit:latest"' "$BATS_TEST_TMPDIR/put.json"
+  grep -qF '// keep this note' "$BATS_TEST_TMPDIR/put.json"
+}
+
+# review 2026-08-24: a `/* */` block-comment example ahead of the real property
+# was rewritten instead of the pin. The file changed, so the no-op guard never
+# fired and a stale pin was PUT as a "successful" PR.
+@test "pin PR: a block-comment image example is not mistaken for the pin" {
+  _install_pin_pr_gh_stub $'{\n  /*\n  "image": "example.invalid/do-not-edit:latest",\n  */\n  "image": "ghcr.io/vossiman/devbox-base:old.tag"\n}'
+  run _dvw_pin_open_pr vossiman/demo main "$BP_IMAGE"
+  [ "$status" -eq 0 ]
+  # the real pin is rewritten...
+  grep -qF "$BP_IMAGE" "$BATS_TEST_TMPDIR/put.json"
+  # ...and the commented example survives byte-identically.
+  grep -qF '"image": "example.invalid/do-not-edit:latest"' "$BATS_TEST_TMPDIR/put.json"
 }
 
 @test "rebuild pre-flight: a current pin passes straight through" {
