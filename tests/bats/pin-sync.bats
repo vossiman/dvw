@@ -115,10 +115,8 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
-# review 2026-08-21: the digest-only sed no-oped on tag pins, PUT a
-# byte-identical file and reported an empty PR as success.
-@test "pin PR: a tag-pinned repo gets its tag rewritten, not an empty PR" {
-  local tagged='{"image":"ghcr.io/vossiman/devbox-base:2026-08-01"}'
+_install_pin_pr_gh_stub() {
+  PIN_FILE_CONTENT="$1"
   gh() {
     if [[ "$*" == *"pr list -R vossiman/demo"* ]]; then printf '\n'; return 0; fi
     if [[ "$*" == *" -X PUT "*repos/vossiman/demo/contents/* ]]; then
@@ -127,7 +125,7 @@ setup() {
       return 0
     fi
     if [[ "$*" == *repos/vossiman/demo/contents/.devcontainer/devcontainer.json* ]]; then
-      jq -n --arg c "$(printf '%s' "$tagged" | base64 -w0)" '{sha:"deadbeef",content:$c}'
+      jq -n --arg c "$(printf '%s' "$PIN_FILE_CONTENT" | base64 -w0)" '{sha:"deadbeef",content:$c}'
       return 0
     fi
     if [[ "$*" == *repos/vossiman/demo/git/ref/heads/main* ]]; then printf 'abc123\n'; return 0; fi
@@ -135,9 +133,32 @@ setup() {
     if [[ "$*" == *"pr create -R vossiman/demo"* ]]; then printf 'https://github.com/vossiman/demo/pull/9\n'; return 0; fi
     echo "unexpected gh call: $*" >&2; return 99
   }
-  run _dvw_pin_open_pr vossiman/demo main "ghcr.io/vossiman/devbox-base:2026-08-12"
+}
+
+# review 2026-08-21: the digest-only sed no-oped on tag pins, PUT a
+# byte-identical file and reported an empty PR as success. The production
+# transition is tag -> blueprint digest, not the tag -> tag case alone.
+@test "pin PR: an existing tag is replaced by the blueprint digest" {
+  _install_pin_pr_gh_stub '{"image":"ghcr.io/vossiman/devbox-base:2026-08-01"}'
+  run _dvw_pin_open_pr vossiman/demo main "$BP_IMAGE"
   [ "$status" -eq 0 ]
-  grep -q 'devbox-base:2026-08-12' "$BATS_TEST_TMPDIR/put.json"
+  grep -qF "$BP_IMAGE" "$BATS_TEST_TMPDIR/put.json"
+}
+
+@test "pin PR: registry-less existing refs are replaced completely" {
+  _install_pin_pr_gh_stub '{"image":"vossiman/devbox-base:old.tag"}'
+  run _dvw_pin_open_pr vossiman/demo main "$BP_IMAGE"
+  [ "$status" -eq 0 ]
+  grep -qF "$BP_IMAGE" "$BATS_TEST_TMPDIR/put.json"
+}
+
+@test "pin PR: JSONC comments around the image key survive" {
+  _install_pin_pr_gh_stub $'{\n  // old example: "image": "example.invalid/do-not-edit:latest"\n  "image": "ghcr.io/vossiman/devbox-base:old.tag", // keep this note\n  "customizations": {}\n}'
+  run _dvw_pin_open_pr vossiman/demo main "$BP_IMAGE"
+  [ "$status" -eq 0 ]
+  grep -qF "$BP_IMAGE" "$BATS_TEST_TMPDIR/put.json"
+  grep -qF '"image": "example.invalid/do-not-edit:latest"' "$BATS_TEST_TMPDIR/put.json"
+  grep -qF '// keep this note' "$BATS_TEST_TMPDIR/put.json"
 }
 
 @test "rebuild pre-flight: a current pin passes straight through" {

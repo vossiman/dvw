@@ -116,31 +116,37 @@ _dvw_pin_open_pr() {
   jq -r '.content' <<<"$meta" | tr -d '\n' | base64 -d > "$tmp" 2>/dev/null \
     || { rm -f "$tmp" "$orig"; return 1; }
   cp "$tmp" "$orig"
-  # Rewrite only the image ref inside the existing pin — same
-  # format-preserving approach as the blueprint's own CI self-pin, so
-  # comments/ordering survive. Digest pins rewrite the digest; tag pins
-  # rewrite the tag segment (review 2026-08-21: the digest-only sed no-oped
-  # on tag-pinned repos, PUT a byte-identical file and reported an empty PR
-  # as success).
-  if [[ "$image" == *@sha256:[0-9a-f]{64} ]]; then
-    sed -i -E "s|(ghcr\.io/[^\"@]+@)sha256:[0-9a-f]{64}|\1${image##*@}|" "$tmp"
-  else
-    local ref="${image#ghcr.io/}"
-    local img_repo="${ref%%:*}" esc_repo="${ref%%:*}" esc_tag="${ref##*:}"
-    esc_repo="${esc_repo//|/\\|}"; esc_repo="${esc_repo//&/\\&}"
-    esc_tag="${esc_tag//|/\\|}"; esc_tag="${esc_tag//&/\\&}"
-    sed -i -E "s|(ghcr\.io/${esc_repo}:)[^\"@]+|\1${esc_tag}|" "$tmp"
+  # Rewrite the complete image property, not a tag/digest suffix selected
+  # from the NEW ref. The latter could handle tag->tag and digest->digest but
+  # still failed the real migration: an existing tag moving to the blueprint's
+  # digest. Replacing the quoted value handles both directions, nested/dotted
+  # repository names, and an existing ref with or without a registry prefix,
+  # while preserving JSONC comments and all surrounding formatting.
+  [[ "$image" =~ ^[A-Za-z0-9._:/@-]+$ ]] || {
+    rm -f "$tmp" "$orig"
+    ui_error "$slug: blueprint image ref contains unsupported characters"
+    return 1
+  }
+  local esc_image="$image"
+  esc_image="${esc_image//\\/\\\\}"
+  esc_image="${esc_image//&/\\&}"
+  esc_image="${esc_image//|/\\|}"
+  sed -i -E "0,/^[[:space:]]*\"image\"[[:space:]]*:/s|^([[:space:]]*\"image\"[[:space:]]*:[[:space:]]*\")[^\"]+\"|\1${esc_image}\"|" "$tmp"
+  if cmp -s "$tmp" "$orig"; then
+    # Also support a compact object (`{"image": ...}`), while requiring a
+    # JSON delimiter before the key so a commented-out example is not edited.
+    sed -i -E "0,/([,{][[:space:]]*\"image\"[[:space:]]*:[[:space:]]*\")[^\"]+\"/s||\1${esc_image}\"|" "$tmp"
   fi
   # Whatever the strategy: a byte-identical result would PUT nothing and open
   # an empty PR — report that honestly instead.
   if cmp -s "$tmp" "$orig"; then
     rm -f "$tmp" "$orig"
-    ui_error "$slug: couldn't rewrite the pin in place (non-digest or unexpected format) — needs a manual update"
+    ui_error "$slug: couldn't rewrite the image property in place (unexpected format) — needs a manual update"
     return 1
   fi
-  if ! jq -e . "$tmp" >/dev/null 2>&1; then
-    rm -f "$tmp" "$orig"; ui_error "$slug: rewritten devcontainer.json is not valid JSON — skipped"; return 1
-  fi
+  # Do not run jq over the decoded file here: devcontainer.json is JSONC and
+  # real repositories legitimately carry comments. The constrained ref above
+  # plus the quoted-value replacement cannot introduce JSON/JSONC syntax.
   rm -f "$orig"
 
   head=$(gh api "repos/$slug/git/ref/heads/$base" --jq '.object.sha' 2>/dev/null) || { rm -f "$tmp"; return 1; }
