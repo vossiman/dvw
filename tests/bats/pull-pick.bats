@@ -101,6 +101,28 @@ EOF
 # selection grammar (numbered fallback)
 # ---------------------------------------------------------------------------
 
+@test "numbered picker header names the origin workspace" {
+  _load
+  DVW_ASSUME_TTY=1
+  DVW_PULL_FROM_WS=myws
+  printf '1\n' | _dvw_pull_select a.txt >/dev/null 2>"$TMPDIR/pick-err"
+  grep -q 'myws' "$TMPDIR/pick-err"
+}
+
+# The real fzf stays unreachable (setup_file); this test installs a per-test
+# STUB fzf in STUB_BIN — which precedes SANITIZED_BIN on PATH — to capture the
+# argv the picker hands it.
+@test "fzf picker names the origin workspace in its prompt or header" {
+  _load
+  printf '#!/usr/bin/env bash\nprintf "%%s\\\\n" "$*" > "$FZF_ARGS"\nhead -n1\n' > "$STUB_BIN/fzf"
+  chmod +x "$STUB_BIN/fzf"
+  export FZF_ARGS="$TMPDIR/fzf-args"
+  DVW_PULL_FROM_WS=myws
+  result=$(_dvw_pull_select a.txt </dev/null)
+  [ "$result" = "a.txt" ]
+  grep -q 'myws' "$FZF_ARGS"
+}
+
 @test "numbered pick: single index" {
   _load
   DVW_ASSUME_TTY=1

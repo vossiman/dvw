@@ -344,6 +344,15 @@ _pull_with_input() {
   [ "$output" = "1" ]
 }
 
+@test "success line names the origin workspace, not just the file" {
+  _load
+  _stub_ssh '12\treport.pdf\x00'
+  cd "$DEST"
+  run cmd_pull report.pdf
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK: stubws:out/report.pdf → ./report.pdf"* ]]
+}
+
 @test "landed local paths are printed, one per line" {
   _load
   _stub_ssh '12\treport.pdf\x00'
