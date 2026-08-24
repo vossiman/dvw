@@ -19,6 +19,10 @@ _dvw_pull_remote_dir() { printf '/workspaces/%s/out\n' "$1"; }
 # set -e. Populated by cmd_pull; an empty map just omits the column.
 declare -gA DVW_PULL_SIZES=()
 
+# Origin workspace for the pickers' prompt/header, so an interactive pull
+# says WHOSE outbox is on screen. Set by cmd_pull; empty just omits it.
+declare -g DVW_PULL_FROM_WS=""
+
 _dvw_pull_usage() {
   ui_error "usage: dvw pull [<file>...] [--from <ws>] [--all]"
 }
@@ -101,11 +105,14 @@ _dvw_pull_select() {
   n=${#pickable[@]}
   (( n > 0 )) || { ui_error "pull: nothing selectable"; return 1; }
 
+  # Both pickers name the origin workspace, so the user sees whose outbox
+  # they are choosing from before the first byte moves.
+  local origin="${DVW_PULL_FROM_WS:-}"
   if command -v fzf >/dev/null; then
     local sel
     sel=$(printf '%s\n' "${pickable[@]}" \
-      | fzf --multi --prompt='pull> ' --height=40% --reverse \
-            --header='TAB to select several, ENTER to confirm') \
+      | fzf --multi --prompt="pull${origin:+ $origin}> " --height=40% --reverse \
+            --header="${origin:+$origin outbox — }TAB to select several, ENTER to confirm") \
       || { ui_error "pull: selection cancelled"; return 1; }
     [[ -n "$sel" ]] || { ui_error "pull: nothing selected"; return 1; }
     printf '%s\n' "$sel"
@@ -113,6 +120,7 @@ _dvw_pull_select() {
   fi
 
   local i
+  if [[ -n "$origin" ]]; then printf '%s outbox:\n' "$origin" >&2; fi
   for (( i = 0; i < n; i++ )); do
     printf '%2d) %s%s\n' "$((i + 1))" "${DVW_PULL_SIZES[${pickable[i]}]:+${DVW_PULL_SIZES[${pickable[i]}]}  }" "${pickable[i]}" >&2
   done
@@ -361,6 +369,7 @@ cmd_pull() {
     # Exported for the numbered picker's size column; scoped to this call.
     declare -gA DVW_PULL_SIZES=()
     for w in "${names[@]}"; do DVW_PULL_SIZES["$w"]="${sizes[$w]}"; done
+    DVW_PULL_FROM_WS="$ws"
     local sel
     sel=$(_dvw_pull_select "${names[@]}") || return 1
     mapfile -t selected <<<"$sel"
@@ -402,7 +411,7 @@ cmd_pull() {
     if [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
       continue
     fi
-    ui_status_ok "$w → $dest (${sizes[$w]})"
+    ui_status_ok "$ws:out/$w → $dest (${sizes[$w]})"
     printf '%s\n' "$dest"
   done
 }
