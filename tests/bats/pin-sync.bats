@@ -161,6 +161,19 @@ _install_pin_pr_gh_stub() {
   grep -qF '// keep this note' "$BATS_TEST_TMPDIR/put.json"
 }
 
+# review 2026-08-24: a `/* */` block-comment example ahead of the real property
+# was rewritten instead of the pin. The file changed, so the no-op guard never
+# fired and a stale pin was PUT as a "successful" PR.
+@test "pin PR: a block-comment image example is not mistaken for the pin" {
+  _install_pin_pr_gh_stub $'{\n  /*\n  "image": "example.invalid/do-not-edit:latest",\n  */\n  "image": "ghcr.io/vossiman/devbox-base:old.tag"\n}'
+  run _dvw_pin_open_pr vossiman/demo main "$BP_IMAGE"
+  [ "$status" -eq 0 ]
+  # the real pin is rewritten...
+  grep -qF "$BP_IMAGE" "$BATS_TEST_TMPDIR/put.json"
+  # ...and the commented example survives byte-identically.
+  grep -qF '"image": "example.invalid/do-not-edit:latest"' "$BATS_TEST_TMPDIR/put.json"
+}
+
 @test "rebuild pre-flight: a current pin passes straight through" {
   _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
   ui_confirm() { echo "SHOULD NOT ASK"; return 0; }

@@ -96,7 +96,7 @@ _dvw_pin_short() {
 _dvw_pin_open_pr() {
   local slug="$1" base="$2" image="$3"
   local branch="$DVW_PIN_BRANCH_PREFIX-$(_dvw_pin_short "$image")"
-  local existing meta sha head tmp url
+  local existing meta sha head tmp url orig target_line
 
   existing=$(gh pr list -R "$slug" --head "$branch" --state open \
                --json url --jq '.[0].url // empty' 2>/dev/null) || existing=""
@@ -131,11 +131,27 @@ _dvw_pin_open_pr() {
   esc_image="${esc_image//\\/\\\\}"
   esc_image="${esc_image//&/\\&}"
   esc_image="${esc_image//|/\\|}"
-  sed -i -E "0,/^[[:space:]]*\"image\"[[:space:]]*:/s|^([[:space:]]*\"image\"[[:space:]]*:[[:space:]]*\")[^\"]+\"|\1${esc_image}\"|" "$tmp"
-  if cmp -s "$tmp" "$orig"; then
-    # Also support a compact object (`{"image": ...}`), while requiring a
-    # JSON delimiter before the key so a commented-out example is not edited.
-    sed -i -E "0,/([,{][[:space:]]*\"image\"[[:space:]]*:[[:space:]]*\")[^\"]+\"/s||\1${esc_image}\"|" "$tmp"
+  # Rewrite the value on the first *real* image property — one that is not
+  # inside a `/* */` block or after a `//` line comment. Anchoring sed on
+  # `"image"` alone rewrote a commented-out example instead, leaving the real
+  # pin stale while the changed file reported success (review 2026-08-24). awk
+  # tracks comment state (POSIX; no backrefs) to pick the line; sed then does
+  # the proven quoted-value replacement on exactly that line.
+  target_line=$(awk '
+    BEGIN { inblock = 0 }
+    {
+      code = $0
+      gsub(/\/\*[^*]*\*+([^/*][^*]*\*+)*\//, "", code)   # same-line /* ... */
+      if (inblock) {
+        if (match(code, /\*\//)) { code = substr(code, RSTART + RLENGTH); inblock = 0 }
+        else { code = "" }
+      }
+      if (match(code, /\/\*/)) { code = substr(code, 1, RSTART - 1); inblock = 1 }
+      sub(/\/\/.*/, "", code)                            # // line comment
+      if (code ~ /"image"[[:space:]]*:/) { print NR; exit }
+    }' "$tmp")
+  if [[ -n "$target_line" ]]; then
+    sed -i -E "${target_line}s|(\"image\"[[:space:]]*:[[:space:]]*\")[^\"]+\"|\1${esc_image}\"|" "$tmp"
   fi
   # Whatever the strategy: a byte-identical result would PUT nothing and open
   # an empty PR — report that honestly instead.
