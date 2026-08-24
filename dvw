@@ -22,6 +22,9 @@ dvw_load_config
 . "$DVW_ROOT/lib/connect-resolver.sh"
 # shellcheck source=lib/push.sh
 . "$DVW_ROOT/lib/push.sh"
+# pull.sh reuses push.sh's target resolution and RUNNING gate — source it after.
+# shellcheck source=lib/pull.sh
+. "$DVW_ROOT/lib/pull.sh"
 # shellcheck source=lib/commands.sh
 . "$DVW_ROOT/lib/commands.sh"
 # shellcheck source=lib/wizard.sh
@@ -121,6 +124,8 @@ main() {
       shift; cmd_attach "$@" ;;
     push)
       shift; cmd_push "$@" ;;
+    pull)
+      shift; cmd_pull "$@" ;;
     doctor)
       cmd_doctor ;;
     audit)
@@ -135,7 +140,7 @@ main() {
         exit "$tui_rc"
       else
         ui_error "the dvw TUI is unavailable — $(_dvw_tui_unavailable_reason)"
-        ui_info "subcommands: <id> | attach | push | new | rm | stop | start | recreate | pin-sync | update | status | doctor | audit | config | -l"
+        ui_info "subcommands: <id> | attach | push | pull | new | rm | stop | start | recreate | pin-sync | update | status | doctor | audit | config | -l"
         exit 1
       fi ;;
     *)
