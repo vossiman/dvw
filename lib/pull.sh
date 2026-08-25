@@ -8,6 +8,12 @@
 # commands have exactly the same "which workspace, and is it safe to touch its
 # alias" problem, and pull must not drift from push's answer.
 
+# Pull's cap mirrors push's (spec): it defaults to push's effective cap —
+# which push.sh has already resolved, since it is always sourced first — so
+# the default lives in exactly one place. Set DVW_PULL_MAX_SIZE_MB to split
+# the directions.
+: "${DVW_PULL_MAX_SIZE_MB:=$DVW_PUSH_MAX_SIZE_MB}"
+
 # The outbox for a workspace. One place, so the listing and the transfers can
 # never disagree about where files come from.
 _dvw_pull_remote_dir() { printf '/workspaces/%s/out\n' "$1"; }
@@ -377,7 +383,7 @@ cmd_pull() {
 
   # Size gate for everything selected, before the first byte moves: a run that
   # is going to refuse a file should refuse it before half the set has landed.
-  local cap_mb="${DVW_PULL_MAX_SIZE_MB:-50}" bytes
+  local cap_mb="$DVW_PULL_MAX_SIZE_MB" bytes
   for w in "${selected[@]}"; do
     bytes="${sizes[bytes:$w]:-0}"
     if (( bytes > cap_mb * 1024 * 1024 )); then

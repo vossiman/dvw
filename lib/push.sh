@@ -32,10 +32,15 @@ _dvw_push_live_sessions() {
   done | sort -u
 }
 
+# One default size cap for both transfer directions — pull mirrors push and
+# must not drift from it (pull spec). Each direction stays independently
+# overridable in the environment; only the default is shared.
+: "${DVW_PUSH_MAX_SIZE_MB:=200}"
+
 # Size gate, shared by fresh-pick and explicit-file paths. Silent: callers
 # word the error with the file name and the active cap.
 _dvw_push_check_size() {
-  local f="$1" cap_mb="${DVW_PUSH_MAX_SIZE_MB:-50}" bytes
+  local f="$1" cap_mb="$DVW_PUSH_MAX_SIZE_MB" bytes
   bytes=$(stat -c %s -- "$f" 2>/dev/null) || return 1
   (( bytes <= cap_mb * 1024 * 1024 ))
 }
@@ -259,7 +264,7 @@ cmd_push() {
     if ! fresh=$(_dvw_push_pick_fresh); then
       roots_msg=$(_dvw_push_fresh_roots | head -1)
       [[ "$roots_msg" != /tmp ]] && roots_msg="$roots_msg or /tmp"
-      ui_error "push: nothing fresh to push — no <uuid>.<ext> file of yours in $roots_msg newer than ${DVW_PUSH_FRESH_MINUTES:-10} min and under ${DVW_PUSH_MAX_SIZE_MB:-50} MB"
+      ui_error "push: nothing fresh to push — no <uuid>.<ext> file of yours in $roots_msg newer than ${DVW_PUSH_FRESH_MINUTES:-10} min and under ${DVW_PUSH_MAX_SIZE_MB} MB"
       ui_info "  push a specific file instead: dvw push <file>"
       return 1
     fi
@@ -278,7 +283,7 @@ cmd_push() {
   for f in "${files[@]}"; do
     [[ -f "$f" ]] || { ui_error "push: no such file: $f"; return 1; }
     _dvw_push_check_size "$f" || {
-      ui_error "push: $f exceeds the ${DVW_PUSH_MAX_SIZE_MB:-50} MB cap"
+      ui_error "push: $f exceeds the ${DVW_PUSH_MAX_SIZE_MB} MB cap"
       return 1
     }
   done
