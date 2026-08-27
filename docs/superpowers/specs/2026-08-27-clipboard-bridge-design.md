@@ -75,21 +75,27 @@ same backend-selection order (WSL first — fixes the WSLg `wl-paste`
 
 ### 2. SSH blueprint managed block v3 (dvw: catalog-service)
 
-`blueprint_store.py`: `MANAGED_VERSION = 3`, adding to `Host *.devpod`:
+`blueprint_store.py`: `MANAGED_VERSION = 3`, adding after the
+`Host *.devpod` stanza:
 
 ```
-RemoteForward /tmp/dvw-clip.sock %d/.dvw/clip.sock
+Match host "*.devpod" exec "test -S %d/.dvw/clip.sock"
+  RemoteForward /tmp/dvw-clip.sock %d/.dvw/clip.sock
 ```
 
-(`%d` = local user's home; RemoteForward accepts tokens.) v2 kept in
-`_MANAGED_BLOCKS` for migration, per the existing pattern. Clients
-without a running clipd are unaffected: the remote bind succeeds, and a
-shim connect just fails → "no image in clipboard".
+(`%d` = local user's home; both `Match exec` and `RemoteForward` accept
+tokens — validated against real OpenSSH with `ssh -G`: the forward
+appears only when the socket exists, and only for `*.devpod`.) v2 kept
+in `_MANAGED_BLOCKS` for migration, per the existing pattern.
 
-ControlMaster (already in the block) means one forward per client; on
-reconnect devpod's sshd unlinks the stale container socket, so the
-newest client owns it (last-writer-wins — pastes reach the most
-recently connected machine, matching intuition).
+The `Match exec` guard is load-bearing, not cosmetic: devpod's sshd
+unlinks the previous container socket on every new bind (last-writer-
+wins). An unconditional forward would let a clipd-less client — jumpi,
+i.e. every phone attach — bind the container socket and steal the
+bridge from a desktop client that can actually serve images. With the
+guard, only clients with a live clipd request the forward; among those,
+the newest wins (pastes reach the most recently connected machine,
+matching intuition).
 
 ### 3. Container shims (aicoding blueprint)
 

@@ -409,9 +409,15 @@ def test_managed_block_v3_adds_clipboard_remote_forward(tmp_path):
     # unaffected (bind succeeds, connects just fail).
     assert MANAGED_VERSION == 3
     assert "RemoteForward /tmp/dvw-clip.sock %d/.dvw/clip.sock" in MANAGED_BLOCK
-    # The forward must sit inside the *.devpod block, after the Host line.
-    host_idx = MANAGED_BLOCK.index("Host *.devpod")
-    assert MANAGED_BLOCK.index("RemoteForward") > host_idx
+    # The forward is guarded by Match exec on the clipd socket: a client
+    # without a running clipd (jumpi, phones) must not request the forward,
+    # or its attach would steal the container socket from a desktop client
+    # that can actually serve images.
+    match_idx = MANAGED_BLOCK.index('Match host "*.devpod" exec "test -S %d/.dvw/clip.sock"')
+    assert MANAGED_BLOCK.index("RemoteForward") > match_idx
+    # And the Match guard must come after the Host block so it does not
+    # swallow the Host block's options.
+    assert match_idx > MANAGED_BLOCK.index("Host *.devpod")
 
 
 def test_v2_document_still_recognized_as_generated(tmp_path):
