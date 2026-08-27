@@ -278,3 +278,10 @@ teardown() { rm -rf "$TMPDIR"; }
   [ "$status" -eq 0 ]
   [ -f "$target/keep" ]
 }
+
+@test "session runner ensures the clipboard bridge before connecting" {
+  printf '0|connected\n' > "$SSH_RESULTS"
+  _dvw_clipd_ensure_quiet() { touch "$TMPDIR/clipd-ensured"; }
+  _dvw_ssh_session stubws
+  [[ -f "$TMPDIR/clipd-ensured" ]]
+}

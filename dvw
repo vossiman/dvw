@@ -14,6 +14,8 @@ dvw_load_config
 . "$DVW_ROOT/lib/ssh-sync.sh"
 # shellcheck source=lib/wsl-bridge.sh
 . "$DVW_ROOT/lib/wsl-bridge.sh"
+# shellcheck source=lib/clipd.sh
+. "$DVW_ROOT/lib/clipd.sh"
 # shellcheck source=lib/connect.sh
 . "$DVW_ROOT/lib/connect.sh"
 # Service-backed overrides for the resolver/probe functions. MUST come after
@@ -126,6 +128,8 @@ main() {
       shift; cmd_push "$@" ;;
     pull)
       shift; cmd_pull "$@" ;;
+    clipd)
+      shift; cmd_clipd "$@" ;;
     doctor)
       cmd_doctor ;;
     audit)
@@ -140,7 +144,7 @@ main() {
         exit "$tui_rc"
       else
         ui_error "the dvw TUI is unavailable — $(_dvw_tui_unavailable_reason)"
-        ui_info "subcommands: <id> | attach | push | pull | new | rm | stop | start | recreate | pin-sync | update | status | doctor | audit | config | -l"
+        ui_info "subcommands: <id> | attach | push | pull | clipd | new | rm | stop | start | recreate | pin-sync | update | status | doctor | audit | config | -l"
         exit 1
       fi ;;
     *)
