@@ -117,3 +117,18 @@ _load() {
   hash -r
   run -0 _dvw_clipd_ensure_quiet
 }
+
+@test "dispatch: dvw clipd <sub> reaches cmd_clipd" {
+  # dispatch.bats-style: source the entry script, stub pre-dispatch machinery.
+  source "$DVW_ROOT/dvw"
+  ui_progress() { shift; "$@"; }
+  dvw_update_refresh_if_stale() { :; }
+  dvw_update_maybe_nudge() { :; }
+  catalog_init_if_missing() { :; }
+  ssh_sync_refresh() { :; }
+  wsl_bridge_refresh() { :; }
+  cmd_clipd() { printf '%s\n' "$@" > "$TMPDIR/clipd-argv"; }
+  main clipd status
+  run -0 cat "$TMPDIR/clipd-argv"
+  [[ "$output" == "status" ]]
+}

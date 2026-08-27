@@ -210,6 +210,13 @@ _dvw_proc_identity() {
 
 _dvw_ssh_session() {
   local ws="$1" win="${2:-}" rc=0 total=0 delay markdir marker established=0
+  # Clipboard bridge: make sure clipd is up before ssh evaluates the
+  # blueprint's Match-exec guard (the guard requests the RemoteForward only
+  # when the clipd socket exists). Guarded type-check: connect.sh is sourced
+  # standalone in tests and on hosts where clipd.sh isn't loaded.
+  if type _dvw_clipd_ensure_quiet >/dev/null 2>&1; then
+    _dvw_clipd_ensure_quiet
+  fi
   local max_total="${DVW_SSH_RECONNECT_TOTAL_MAX:-50}"
   local connect_timeout="${DVW_SSH_RECONNECT_CONNECT_TIMEOUT:-10}"
   local -a retry_opts=()
