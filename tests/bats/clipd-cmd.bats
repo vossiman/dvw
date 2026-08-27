@@ -132,3 +132,30 @@ _load() {
   run -0 cat "$TMPDIR/clipd-argv"
   [[ "$output" == "status" ]]
 }
+
+@test "clipd ensure: restarts the daemon when the clipd script changed" {
+  # A dvw update that changes clipd must not leave the old code running
+  # forever — ensure compares the script's content hash against the one
+  # recorded at start and restarts on mismatch.
+  _load
+  export DVW_CLIPD_SCRIPT="$TMPDIR/dvw-clipd.py"
+  printf '# v1\n' > "$DVW_CLIPD_SCRIPT"
+  cmd_clipd ensure
+  pid1=$(cat "$HOME/.dvw/clipd.pid")
+  printf '# v2\n' > "$DVW_CLIPD_SCRIPT"
+  run -0 cmd_clipd ensure
+  pid2=$(cat "$HOME/.dvw/clipd.pid")
+  [[ "$pid1" != "$pid2" ]]
+  kill -0 "$pid2"
+  ! kill -0 "$pid1" 2>/dev/null
+}
+
+@test "clipd ensure: unchanged script keeps the running daemon (same pid)" {
+  _load
+  export DVW_CLIPD_SCRIPT="$TMPDIR/dvw-clipd.py"
+  printf '# v1\n' > "$DVW_CLIPD_SCRIPT"
+  cmd_clipd ensure
+  pid1=$(cat "$HOME/.dvw/clipd.pid")
+  run -0 cmd_clipd ensure
+  [[ "$(cat "$HOME/.dvw/clipd.pid")" == "$pid1" ]]
+}

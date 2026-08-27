@@ -104,11 +104,13 @@ if ($img -eq $null) {{ exit 1 }};
 $img.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
 """
 
+# Sent to powershell VERBATIM — single braces. (Only _PSH_GRAB goes through
+# .format() and therefore escapes its braces.)
 _PSH_PROBE = """
 Add-Type -AssemblyName System.Windows.Forms;
 $data = [System.Windows.Forms.Clipboard]::GetDataObject();
 if ($data -ne $null -and ($data.GetDataPresent('PNG') -or
-    [System.Windows.Forms.Clipboard]::ContainsImage())) {{ exit 0 }};
+    [System.Windows.Forms.Clipboard]::ContainsImage())) { exit 0 };
 exit 1
 """
 
