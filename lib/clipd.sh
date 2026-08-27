@@ -11,6 +11,14 @@ _dvw_clipd_dir() { echo "$HOME/.dvw"; }
 _dvw_clipd_pidfile() { echo "$(_dvw_clipd_dir)/clipd.pid"; }
 _dvw_clipd_socket() { echo "$(_dvw_clipd_dir)/clip.sock"; }
 _dvw_clipd_log() { echo "$(_dvw_clipd_dir)/clipd.log"; }
+_dvw_clipd_script() { echo "${DVW_CLIPD_SCRIPT:-$DVW_ROOT/clipd/dvw-clipd.py}"; }
+_dvw_clipd_hashfile() { echo "$(_dvw_clipd_dir)/clipd.script-hash"; }
+
+# Content hash of the clipd script, empty if unreadable. Content, not mtime:
+# git checkouts and dvw update rewrite mtimes without changing bytes.
+_dvw_clipd_script_hash() {
+  sha256sum "$(_dvw_clipd_script)" 2>/dev/null | cut -d' ' -f1
+}
 
 # Running pid from the pidfile, empty if absent or dead.
 _dvw_clipd_live_pid() {
@@ -23,9 +31,18 @@ _dvw_clipd_live_pid() {
 }
 
 _dvw_clipd_ensure() {
-  local pid
+  local pid hash
   pid=$(_dvw_clipd_live_pid)
-  [[ -n "$pid" ]] && return 0
+  hash=$(_dvw_clipd_script_hash)
+  if [[ -n "$pid" ]]; then
+    # A daemon started from the same script bytes stays; a dvw update that
+    # changed clipd must not leave the old code running forever.
+    if [[ -n "$hash" && "$hash" == "$(cat "$(_dvw_clipd_hashfile)" 2>/dev/null)" ]]; then
+      return 0
+    fi
+    kill "$pid" 2>/dev/null || true
+    rm -f "$(_dvw_clipd_pidfile)" "$(_dvw_clipd_socket)"
+  fi
   command -v python3 >/dev/null || {
     ui_error "clipd: python3 not found — clipboard bridge unavailable"
     return 1
@@ -34,8 +51,9 @@ _dvw_clipd_ensure() {
   dir=$(_dvw_clipd_dir)
   mkdir -p "$dir"
   chmod 700 "$dir"
-  ( setsid python3 "$DVW_ROOT/clipd/dvw-clipd.py" --socket "$(_dvw_clipd_socket)" \
+  ( setsid python3 "$(_dvw_clipd_script)" --socket "$(_dvw_clipd_socket)" \
       >> "$(_dvw_clipd_log)" 2>&1 & echo $! > "$(_dvw_clipd_pidfile)" ) </dev/null
+  printf '%s\n' "$hash" > "$(_dvw_clipd_hashfile)"
   # Confirm it came up; a server that dies instantly must not leave a pidfile.
   sleep 0.2
   pid=$(_dvw_clipd_live_pid)

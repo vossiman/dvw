@@ -121,3 +121,19 @@ STUB
   run -0 curl -s --unix-socket "$SOCK" http://x/targets
   [[ "$output" == "image/png" ]]
 }
+
+@test "clipd: powershell probe/grab templates have correct brace usage" {
+  # _PSH_PROBE is sent to powershell verbatim (no .format), so it must not
+  # contain doubled braces; _PSH_GRAB goes through .format and must. A
+  # doubled brace in the probe made /targets permanently empty on WSL
+  # (live failure 2026-08-27): powershell got literal '{{ exit 0 }}' and
+  # the probe never exited 0.
+  run -0 python3 - "$DVW_ROOT/clipd/dvw-clipd.py" <<'PY'
+import sys, importlib.util
+spec = importlib.util.spec_from_file_location("clipd", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+assert "{{" not in m._PSH_PROBE, "_PSH_PROBE has format-escaped braces but is never formatted"
+assert "{{" in m._PSH_GRAB and "{win_path}" in m._PSH_GRAB
+m._PSH_GRAB.format(win_path="C:\\x.png")  # must not raise
+PY
+}
