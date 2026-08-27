@@ -23,10 +23,28 @@ import socketserver
 import subprocess
 import sys
 import tempfile
+import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
 SUBPROCESS_TIMEOUT = 5
+
+# WSL without Windows PATH interop (appendWindowsPath=false, or a daemon
+# started from an environment that stripped /mnt/c/...) has no powershell.exe
+# on PATH — resolve it explicitly. Overridable for tests/exotic installs.
+_POWERSHELL_FALLBACK = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+
+
+def _powershell():
+    override = os.environ.get("DVW_CLIPD_POWERSHELL")
+    if override:
+        return override
+    found = shutil.which("powershell.exe")
+    if found:
+        return found
+    if os.path.exists(_POWERSHELL_FALLBACK):
+        return _POWERSHELL_FALLBACK
+    return None
 
 
 def _run(cmd, **kwargs):
@@ -97,11 +115,15 @@ exit 1
 
 class WslBackend(Backend):
     def targets(self):
-        p = _run(["powershell.exe", "-NoProfile", "-Command", _PSH_PROBE])
+        psh = _powershell()
+        if psh is None:
+            return []
+        p = _run([psh, "-NoProfile", "-Command", _PSH_PROBE])
         return ["image/png"] if p.returncode == 0 else []
 
     def fetch(self, mime):
-        if mime != "image/png":
+        psh = _powershell()
+        if psh is None or mime != "image/png":
             return None
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             out = f.name
@@ -111,7 +133,7 @@ class WslBackend(Backend):
                 return None
             win_path = wp.stdout.decode().strip()
             p = _run(
-                ["powershell.exe", "-NoProfile", "-Command",
+                [psh, "-NoProfile", "-Command",
                  _PSH_GRAB.format(win_path=win_path.replace("'", "''"))]
             )
             if p.returncode != 0:
@@ -167,13 +189,32 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        # Crash-proof by contract: an exception here kills the connection
+        # mid-request and the container-side curl sees "empty reply", which
+        # reads as a broken bridge. A missing tool (powershell.exe off PATH
+        # on WSL, live failure 2026-08-27) must degrade to "no image", and
+        # anything unexpected must answer 500, not die silently.
+        try:
+            self._do_get_inner()
+        except Exception:
+            traceback.print_exc()
+            try:
+                self._respond(500, b"clipd internal error (see clipd.log)\n")
+            except OSError:
+                pass
+
+    def _do_get_inner(self):
         backend = self.server.backend
         parsed = urllib.parse.urlparse(self.path)
         if backend is None:
             self._respond(500, b"no clipboard backend available\n")
             return
         if parsed.path == "/targets":
-            body = "".join(f"{t}\n" for t in _image_targets(backend))
+            try:
+                targets = _image_targets(backend)
+            except (subprocess.TimeoutExpired, OSError):
+                targets = []
+            body = "".join(f"{t}\n" for t in targets)
             self._respond(200, body.encode())
             return
         if parsed.path == "/clip":
@@ -184,7 +225,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 data = backend.fetch(mime)
-            except subprocess.TimeoutExpired:
+            except (subprocess.TimeoutExpired, OSError):
                 data = None
             if not data:
                 self._respond(404, b"no image on the clipboard\n")

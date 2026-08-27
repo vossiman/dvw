@@ -94,3 +94,30 @@ _start_server() {
   run -0 curl -s --unix-socket "$SOCK" http://x/targets
   [[ "$output" == *"image/png"* ]]
 }
+
+@test "clipd: missing backend tool yields empty targets and 404, never a crash" {
+  # Regression: on WSL without Windows PATH interop, powershell.exe was
+  # absent, the spawn raised FileNotFoundError, the handler died, and every
+  # request surfaced as curl 52 "empty reply" (live failure, 2026-08-27).
+  export DVW_CLIPD_BACKEND=wsl   # container has no powershell.exe at all
+  _start_server
+  run -0 curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" http://x/targets
+  [[ "$output" == "200" ]]
+  run -0 curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" 'http://x/clip?type=image/png'
+  [[ "$output" == "404" ]]
+}
+
+@test "clipd: powershell.exe resolves via absolute fallback when not on PATH" {
+  export DVW_CLIPD_BACKEND=wsl
+  FAKE_WIN="$TMPDIR/mnt/c/Windows/System32/WindowsPowerShell/v1.0"
+  mkdir -p "$FAKE_WIN"
+  cat > "$FAKE_WIN/powershell.exe" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$FAKE_WIN/powershell.exe"
+  export DVW_CLIPD_POWERSHELL="$FAKE_WIN/powershell.exe"
+  _start_server
+  run -0 curl -s --unix-socket "$SOCK" http://x/targets
+  [[ "$output" == "image/png" ]]
+}
