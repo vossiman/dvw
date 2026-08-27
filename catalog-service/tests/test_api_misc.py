@@ -48,7 +48,9 @@ def test_blueprint_seed_then_update(client):
     assert "Host *.devpod" in content
     assert "ServerAliveInterval 5" in content
     assert "ServerAliveCountMax 3" in content
-    assert r.json()["managed_version"] == 2
+    from app.blueprint_store import MANAGED_VERSION
+
+    assert r.json()["managed_version"] == MANAGED_VERSION
     assert r.json()["migration_status"] == "fresh_initialized"
     assert r.json()["revision"].startswith("sha256:")
     assert r.headers["etag"] == f'"{r.json()["revision"]}"'
@@ -57,7 +59,7 @@ def test_blueprint_seed_then_update(client):
     client.put("/v1/blueprint", json={"content": "Host foo\n  User bar\n"})
     r = client.get("/v1/blueprint")
     assert r.json()["content"].startswith("Host foo\n  User bar\n\n")
-    assert "# BEGIN DVW MANAGED DEFAULTS version=2" in r.json()["content"]
+    assert f"# BEGIN DVW MANAGED DEFAULTS version={MANAGED_VERSION}" in r.json()["content"]
     assert r.json()["version"] > 0
 
 

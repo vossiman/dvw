@@ -401,3 +401,23 @@ def test_older_metadata_schema_is_upgraded(tmp_path):
         "schema_version": 1,
         "managed_version": MANAGED_VERSION,
     }
+
+
+def test_managed_block_v3_adds_clipboard_remote_forward(tmp_path):
+    # The clipboard bridge rides the shared alias block: every client gets
+    # the reverse unix-socket forward; clients without a running clipd are
+    # unaffected (bind succeeds, connects just fail).
+    assert MANAGED_VERSION == 3
+    assert "RemoteForward /tmp/dvw-clip.sock %d/.dvw/clip.sock" in MANAGED_BLOCK
+    # The forward must sit inside the *.devpod block, after the Host line.
+    host_idx = MANAGED_BLOCK.index("Host *.devpod")
+    assert MANAGED_BLOCK.index("RemoteForward") > host_idx
+
+
+def test_v2_document_still_recognized_as_generated(tmp_path):
+    # A client holding a v2 effective document between GET and PUT must have
+    # its managed block recognized and replaced, not preserved as custom.
+    from app.blueprint_store import _MANAGED_BLOCKS, extract_custom_content
+
+    v2_doc = "Host buildbox\n  User builder\n\n" + _MANAGED_BLOCKS[2]
+    assert extract_custom_content(v2_doc).rstrip("\n") == "Host buildbox\n  User builder"
