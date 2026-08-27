@@ -196,7 +196,13 @@ _dvw_push_copy_path() {
 # caller, which is responsible for removing it after the transfer.
 _dvw_push_clipboard_grab() {
   local tool
-  if command -v wl-paste >/dev/null; then tool=wl-paste
+  # WSL detection outranks tool discovery: WSLg installs wl-paste and sets
+  # WAYLAND_DISPLAY, but its bridge exposes clipboard images as image/bmp
+  # only, so the wl-paste branch fails without falling through — the
+  # powershell branch is the one that actually works there. (Clipboard-bridge
+  # spec, R3 finding.)
+  if wsl_bridge_is_wsl && command -v powershell.exe >/dev/null; then tool=powershell
+  elif command -v wl-paste >/dev/null; then tool=wl-paste
   elif command -v xclip >/dev/null; then tool=xclip
   elif command -v powershell.exe >/dev/null; then tool=powershell
   else

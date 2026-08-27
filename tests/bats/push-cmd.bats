@@ -47,6 +47,7 @@ _load() {
   ui_action() { :; }
   _dvw_log_action() { :; }
   source "$DVW_ROOT/lib/connect.sh"
+  source "$DVW_ROOT/lib/wsl-bridge.sh"
   source "$DVW_ROOT/lib/push.sh"
   # Boundary stubs: target known and running, alias present.
   _dvw_push_resolve_target() { printf 'stubws\n'; }
@@ -351,4 +352,37 @@ EOF
   run cmd_push "$TMPDIR/shot.png"
   [ "$status" -eq 0 ]
   [[ "$output" != *"copied to clipboard"* ]]
+}
+
+@test "clipboard grab on WSL uses powershell even when wl-paste is installed" {
+  # WSLg ships wl-paste but bridges clipboard images as image/bmp only, so
+  # `wl-paste --type image/png` fails without falling through — the WSL
+  # detection must outrank tool discovery (R3 finding, clipboard-bridge spec).
+  _load
+  export WSL_DISTRO_NAME=Ubuntu
+  cat > "$STUB_BIN/wl-paste" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  cat > "$STUB_BIN/wslpath" <<'STUB'
+#!/usr/bin/env bash
+printf 'C:\\fake\\%s\n' "$(basename "$2")"
+STUB
+  cat > "$STUB_BIN/powershell.exe" <<'STUB'
+#!/usr/bin/env bash
+# fake grab: find the target path in the -Command payload via the marker
+# file the test wrote; just write PNG bytes where the caller expects them.
+printf 'PSDATA' > "$(cat "$TMPDIR/expected-out")"
+exit 0
+STUB
+  chmod +x "$STUB_BIN/wl-paste" "$STUB_BIN/wslpath" "$STUB_BIN/powershell.exe"
+  # The grab passes a mktemp path into powershell via wslpath; intercept it.
+  mktemp() { command mktemp "$@" | tee "$TMPDIR/mktemp-out"; }
+  export -f mktemp
+  # povershell stub needs the real out path: wire it through a file.
+  ln -sf "$TMPDIR/mktemp-out" "$TMPDIR/expected-out"
+  run _dvw_push_clipboard_grab
+  [ "$status" -eq 0 ]
+  [ "$(cat "$output")" = "PSDATA" ]
+  unset WSL_DISTRO_NAME
 }
