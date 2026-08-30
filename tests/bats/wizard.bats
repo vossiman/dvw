@@ -111,6 +111,61 @@ EOF
   [ "$output" = "https://gitlab.com/group/proj.git" ]
 }
 
+# _canonicalize_repo_url: the workspace form is HTTPS since the 2026-06
+# cutover (containers auth github over HTTPS; an SSH origin cloned into a
+# container cannot push). Accepts SSH forms and the owner/name shorthands.
+
+@test "_canonicalize_repo_url: converts scp-style ssh url" {
+  run _canonicalize_repo_url "git@github.com:vossiman/hackertyper.git"
+  [ "$output" = "https://github.com/vossiman/hackertyper.git" ]
+}
+
+@test "_canonicalize_repo_url: converts ssh:// url" {
+  run _canonicalize_repo_url "ssh://git@github.com/vossiman/hackertyper.git"
+  [ "$output" = "https://github.com/vossiman/hackertyper.git" ]
+}
+
+@test "_canonicalize_repo_url: adds missing .git suffix" {
+  run _canonicalize_repo_url "git@github.com:vossiman/hackertyper"
+  [ "$output" = "https://github.com/vossiman/hackertyper.git" ]
+}
+
+@test "_canonicalize_repo_url: expands gh: shorthand" {
+  run _canonicalize_repo_url "gh:vossiman/hackertyper"
+  [ "$output" = "https://github.com/vossiman/hackertyper.git" ]
+}
+
+@test "_canonicalize_repo_url: expands bare owner/name shorthand" {
+  run _canonicalize_repo_url "vossiman/hackertyper"
+  [ "$output" = "https://github.com/vossiman/hackertyper.git" ]
+}
+
+@test "_canonicalize_repo_url: owner/name that exists as a local path passes through" {
+  mkdir -p "$BATS_TEST_TMPDIR/canon/some/repo"
+  cd "$BATS_TEST_TMPDIR/canon"
+  run _canonicalize_repo_url "some/repo"
+  [ "$output" = "some/repo" ]
+}
+
+@test "_canonicalize_repo_url: strips embedded token/userinfo from https" {
+  run _canonicalize_repo_url "https://ghp_secret@github.com/vossiman/hackertyper.git"
+  [ "$output" = "https://github.com/vossiman/hackertyper.git" ]
+}
+
+@test "_canonicalize_repo_url: idempotent on the canonical form" {
+  run _canonicalize_repo_url "https://github.com/vossiman/hackertyper.git"
+  [ "$output" = "https://github.com/vossiman/hackertyper.git" ]
+}
+
+@test "_canonicalize_repo_url: leaves non-github urls and paths unchanged" {
+  run _canonicalize_repo_url "git@gitlab.com:group/proj.git"
+  [ "$output" = "git@gitlab.com:group/proj.git" ]
+  run _canonicalize_repo_url "https://gitlab.com/group/proj.git"
+  [ "$output" = "https://gitlab.com/group/proj.git" ]
+  run _canonicalize_repo_url "/tmp/some/local/repo.git"
+  [ "$output" = "/tmp/some/local/repo.git" ]
+}
+
 # _init_empty_repo: seeds an empty remote with an initial commit so `dvw new`
 # can proceed (added 2026-06-16 after a freshly-created, commit-less repo made
 # the wizard dead-end on "couldn't list branches"). Tested against a local bare

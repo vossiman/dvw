@@ -126,7 +126,7 @@ class WizardScreen(ModalScreen["WizardResult | None"]):
         await self._swap(
             Static("repo (url, owner/name, or gh:owner/name)",
                    classes="wizard-label"),
-            Input(placeholder="git@github.com:owner/repo.git",
+            Input(placeholder="https://github.com/owner/repo",
                   id="wizard-repo-input"))
 
     async def _repo_chosen(self, repo: str) -> None:
