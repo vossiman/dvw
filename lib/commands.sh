@@ -282,6 +282,23 @@ _dvw_doctor_check_uv() {
   return 1
 }
 
+# `devpod up` clones the workspace repo over HTTPS and answers the container's
+# credential request by running `git credential fill` on THIS machine, so a
+# client without a github HTTPS credential helper can't create workspaces
+# from private repos, even when its SSH github auth is fine. Config-only
+# check: never touches the network, never reads a credential value.
+_dvw_doctor_check_github_https() {
+  local helpers
+  helpers=$({ git config --get-all credential.https://github.com.helper
+              git config --get-all credential.helper; } 2>/dev/null | grep -v '^$' || true)
+  if [[ -n "$helpers" ]]; then
+    ui_status_ok "github HTTPS auth: git credential helper configured"
+    return 0
+  fi
+  ui_status_warn "github HTTPS auth: no git credential helper — \`dvw new\` clones over HTTPS, so private repos will fail (fix: \`gh auth setup-git\`)"
+  return 1
+}
+
 # Print one line per running sibling of a duplicated workspace, with the two
 # facts that actually decide which to remove:
 #
@@ -516,6 +533,9 @@ cmd_doctor() {
 
   # uv (powers the TUI)
   _dvw_doctor_check_uv || warn=$((warn+1))
+
+  # github HTTPS credentials (workspace clones run over HTTPS)
+  _dvw_doctor_check_github_https || warn=$((warn+1))
 
   # dvw version vs origin/main (advisory; never a doctor failure). Guarded so
   # the check is a no-op if update-check.sh wasn't sourced (e.g. a test that

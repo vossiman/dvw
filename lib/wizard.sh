@@ -14,16 +14,47 @@ _parse_remote_branches() {
 }
 
 # Convert an HTTPS github.com URL to its SSH equivalent; echo anything else
-# unchanged. github.com only — in the devbox git authenticates github over the
-# forwarded ssh-agent, so an HTTPS clone has no credential helper and ls-remote
-# dies with "exit status 128". The transform drops any userinfo/token and
-# normalizes to a single .git suffix. Pure (no network) → unit-testable.
+# unchanged. github.com only. This is a HOST-SIDE PROBE FALLBACK, not the
+# workspace URL: since the 2026-06 HTTPS cutover the canonical form is HTTPS
+# (see _canonicalize_repo_url), but a client whose only github auth is SSH
+# keys (typical desktop) can still ls-remote/seed over this form. The
+# transform drops any userinfo/token and normalizes to a single .git suffix.
+# Pure (no network) → unit-testable.
 _github_https_to_ssh() {
   local url="$1"
   case "$url" in
     https://github.com/*|https://*@github.com/*)
       url=$(printf '%s\n' "$url" \
         | sed -E 's#^https://([^@/]+@)?github\.com/#git@github.com:#; s#(\.git)?$#.git#')
+      ;;
+  esac
+  printf '%s\n' "$url"
+}
+
+# Canonicalize a repo reference to the HTTPS github.com URL a new workspace
+# should carry. Containers authenticate github over HTTPS (gh helper +
+# git-credential-aicoding); an SSH origin cloned into a container has no key
+# and no agent, so every later push dies with "Permission denied (publickey)".
+# Accepts the SSH forms plus the `owner/name` and `gh:owner/name` shorthands
+# the TUI advertises. Anything else (non-github hosts, local paths, an
+# `owner/name` that exists as a local path) passes through unchanged. Drops
+# userinfo/tokens and normalizes to a single .git suffix. Pure aside from the
+# local-path existence check → unit-testable.
+_canonicalize_repo_url() {
+  local url="$1"
+  case "$url" in
+    git@github.com:*/*|ssh://git@github.com/*/*|gh:*/*|https://github.com/*|https://*@github.com/*)
+      url=$(printf '%s\n' "$url" | sed -E '
+        s#^git@github\.com:#https://github.com/#
+        s#^ssh://git@github\.com/#https://github.com/#
+        s#^gh:#https://github.com/#
+        s#^https://([^@/]+@)?github\.com/#https://github.com/#
+        s#(\.git)?/?$#.git#')
+      ;;
+    *)
+      if [[ "$url" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ && ! -e "$url" ]]; then
+        url="https://github.com/${url%.git}.git"
+      fi
       ;;
   esac
   printf '%s\n' "$url"
@@ -194,8 +225,11 @@ _new_usage() {
 }
 
 # Resolve <repo>'s branch list, retrying the SSH form for HTTPS github URLs
-# (no credential helper in the devbox). stdout: resolved URL first, then one
-# branch per line. rc: 0 branches found, 3 reachable-but-empty, 2 unreachable.
+# (for clients whose only github auth is SSH keys). stdout: the PROBE URL
+# first (the form that answered; host-side git ops should use it), then one
+# branch per line. Callers own the canonical/store URL, which stays HTTPS
+# regardless of which form the probe needed. rc: 0 branches found,
+# 3 reachable-but-empty, 2 unreachable.
 _new_resolve_branches() {
   local repo="$1" branches rc=0
   if branches=$(_fetch_remote_branches "$repo"); then rc=0; else rc=$?; fi
@@ -219,8 +253,15 @@ cmd_new() {
   # Comes before the devpod prerequisite check: neither needs devpod or a name.
   if [[ "${1:-}" == "--list-branches" ]]; then
     [[ -n "${2:-}" ]] || { _new_usage; return 1; }
-    local prc=0
-    _new_resolve_branches "$2" || prc=$?
+    local canon out prc=0
+    canon=$(_canonicalize_repo_url "$2")
+    if out=$(_new_resolve_branches "$canon"); then prc=0; else prc=$?; fi
+    [[ $prc -eq 2 ]] && return 2
+    # Line 1 of the resolver is the probe URL, which may be the SSH fallback.
+    # The TUI adopts line 1 as the workspace repo, so emit the canonical
+    # HTTPS URL there instead.
+    printf '%s\n' "$canon"
+    tail -n +2 <<<"$out"
     return "$prc"
   fi
   if [[ "${1:-}" == "--check-devcontainer" ]]; then
@@ -265,17 +306,28 @@ cmd_new() {
     fi
   fi
 
-  # Resolve branches; handle empty/unreachable.
-  local resolved rc=0 branches did_init=0 repo_in="$repo"
+  # Canonicalize: the workspace URL is always the HTTPS github form (SSH
+  # origins cloned into containers cannot push; containers auth over HTTPS).
+  local repo_in="$repo"
+  repo=$(_canonicalize_repo_url "$repo")
+  if [[ "$repo" != "$repo_in" ]]; then
+    ui_info "using HTTPS form for github: $repo"
+  fi
+
+  # Resolve branches; handle empty/unreachable. probe_repo is the URL form
+  # that actually answered on THIS host (may be the SSH fallback when the
+  # client has no HTTPS credential helper); all host-side git operations use
+  # it. The workspace itself keeps the canonical HTTPS $repo.
+  local resolved rc=0 branches did_init=0 probe_repo
   if resolved=$(_new_resolve_branches "$repo"); then rc=0; else rc=$?; fi
   if [[ $rc -eq 2 ]]; then
-    ui_error "couldn't list branches for $repo — check the URL, your network, or SSH auth"
+    ui_error "couldn't list branches for $repo — check the URL, your network, or git auth"
     return 1
   fi
-  repo=$(head -n1 <<<"$resolved")
+  probe_repo=$(head -n1 <<<"$resolved")
   branches=$(tail -n +2 <<<"$resolved")
-  if [[ "$repo" != "$repo_in" ]]; then
-    ui_info "using SSH form for github (HTTPS has no credential helper here): $repo"
+  if [[ "$probe_repo" != "$repo" ]]; then
+    ui_status_warn "this host answered github only over SSH; \`devpod up\` clones over HTTPS and may fail for private repos (fix: gh auth setup-git; see dvw doctor)"
   fi
   if [[ $rc -eq 3 ]]; then
     if (( ! init_empty )); then
@@ -283,7 +335,7 @@ cmd_new() {
       return 1
     fi
     ui_action "initializing" "$repo (initial commit on $branch)"
-    if ! _init_empty_repo "$repo" "$branch"; then
+    if ! _init_empty_repo "$probe_repo" "$branch"; then
       ui_error "failed to initialize empty repo: $repo — check your push access"
       return 1
     fi
@@ -304,11 +356,11 @@ cmd_new() {
   # Devcontainer presence (skipped when we just seeded the repo ourselves).
   if (( ! did_init )); then
     local devc_rc=0
-    _branch_has_devcontainer "$repo" "$branch" || devc_rc=$?
+    _branch_has_devcontainer "$probe_repo" "$branch" || devc_rc=$?
     if [[ $devc_rc -eq 1 ]]; then
       if (( seed_devc )); then
         ui_action "seeding" "blueprint devcontainer.json onto $branch"
-        if _seed_devcontainer_on_branch "$repo" "$branch"; then
+        if _seed_devcontainer_on_branch "$probe_repo" "$branch"; then
           ui_status_ok "seeded .devcontainer/devcontainer.json on '$branch'"
         else
           ui_error "seeding failed (blueprint fetch or push) — continuing; the container will come up bare"

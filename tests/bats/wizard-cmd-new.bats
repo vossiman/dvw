@@ -73,13 +73,12 @@ setup() {
   echo "$output" | grep -q "usage: dvw new"
 }
 
-# _new_resolve_branches retries the SSH form when the HTTPS form fails (no
-# credential helper in the devbox). Stub _fetch_remote_branches directly —
-# fail for the https URL, succeed for its ssh equivalent — which matches
-# what _github_https_to_ssh would actually produce, and confirms cmd_new
-# surfaces the swap to the user instead of silently using a different URL
-# than the one they passed.
-@test "cmd_new: notes the HTTPS->SSH swap when the resolved repo URL differs from the one passed" {
+# The workspace URL stays canonical HTTPS even when this host can only probe
+# github over SSH. Stub _fetch_remote_branches to fail for the HTTPS URL and
+# answer for its SSH equivalent (exactly what _github_https_to_ssh produces):
+# devpod/catalog must get the HTTPS form, host-side probes the SSH form, and
+# the user gets a warning that the clone itself may fail without HTTPS auth.
+@test "cmd_new: keeps HTTPS for the workspace when only the SSH probe answers" {
   _fetch_remote_branches() {
     case "$1" in
       https://github.com/foo/bar.git) return 1 ;;
@@ -87,10 +86,28 @@ setup() {
       *) return 1 ;;
     esac
   }
+  _branch_has_devcontainer() { echo "devc-probe:$1" >> "$BATS_TEST_TMPDIR/calls"; return 0; }
   run cmd_new --repo https://github.com/foo/bar.git --branch main --name wsx --ide ssh --yes
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "using SSH form for github"
-  echo "$output" | grep -q "git@github.com:foo/bar.git"
+  echo "$output" | grep -q "answered github only over SSH"
+  grep -q "up:https://github.com/foo/bar.git@main" "$BATS_TEST_TMPDIR/calls"
+  grep -q "devc-probe:git@github.com:foo/bar.git" "$BATS_TEST_TMPDIR/calls"
+}
+
+# Pasting the SSH form is fine: it converts to HTTPS up front and everything
+# downstream (probe, devpod, catalog) sees the canonical URL.
+@test "cmd_new: converts a pasted SSH URL to HTTPS" {
+  _fetch_remote_branches() {
+    case "$1" in
+      https://github.com/foo/bar.git) printf 'main\n'; return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  _branch_has_devcontainer() { return 0; }
+  run cmd_new --repo git@github.com:foo/bar.git --branch main --name wsx --ide ssh --yes
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "using HTTPS form for github"
+  grep -q "up:https://github.com/foo/bar.git@main" "$BATS_TEST_TMPDIR/calls"
 }
 
 @test "cmd_new: happy path creates workspace non-interactively" {
@@ -187,6 +204,34 @@ setup() {
 @test "new --list-branches: unreachable repo rc 2" {
   run cmd_new --list-branches "$BATS_TEST_TMPDIR/does-not-exist.git"
   [ "$status" -eq 2 ]
+}
+
+# TUI contract: line 1 is what the wizard adopts as the workspace repo, so it
+# must be the canonical HTTPS URL even when only the SSH probe answered.
+@test "new --list-branches: prints canonical HTTPS url when input was SSH and only SSH answers" {
+  _fetch_remote_branches() {
+    case "$1" in
+      git@github.com:foo/bar.git) printf 'dev\nmain\n'; return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  run cmd_new --list-branches git@github.com:foo/bar.git
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | sed -n 1p)" = "https://github.com/foo/bar.git" ]
+  echo "$output" | sed -n 2p | grep -qx "dev"
+  echo "$output" | sed -n 3p | grep -qx "main"
+}
+
+@test "new --list-branches: expands owner/name shorthand to HTTPS" {
+  _fetch_remote_branches() {
+    case "$1" in
+      https://github.com/foo/bar.git) printf 'main\n'; return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  run cmd_new --list-branches foo/bar
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | sed -n 1p)" = "https://github.com/foo/bar.git" ]
 }
 
 @test "new --check-devcontainer: missing devcontainer rc 1" {
