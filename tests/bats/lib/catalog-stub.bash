@@ -64,23 +64,44 @@ EOF
 }
 
 # Parse a curl argv (without the leading `curl`): pull out -X METHOD and the
-# request path from the URL (http://localhost<path>), read any body from stdin,
-# then hand off to the test's catalog_route. Defined here so it can be dumped
-# into the dispatcher file via `declare -f`.
+# request path from the URL (http://localhost<path>), read any body/config
+# from stdin or a --data-binary file, then hand off to the test's
+# catalog_route. Defined here so it can be dumped into the dispatcher file
+# via `declare -f`.
+#
+# The credential travels via `--config -` (a curl config file on stdin, see
+# lib/catalog-http-lib.sh), never as a -H argument, so this shim reads that
+# config off stdin and extracts the `header = "..."` line. When a JSON body
+# is also present it arrives via `--data-binary @<file>` instead (stdin is
+# already spoken for by the config).
 _stub_parse_curl() {
-  local method="GET" url="" path="" body="" has_data=0 auth=""
+  local method="GET" url="" path="" body="" auth="" data_arg="" cfg_stdin=0
   while (( $# )); do
     case "$1" in
       -X) method="$2"; shift 2 ;;
       -H) [[ "$2" == [Aa]uthorization:* ]] && auth="$2"; shift 2 ;;
-      --data-binary|--data|-d) has_data=1; shift 2 ;;
+      --config) [[ "$2" == "-" ]] && cfg_stdin=1; shift 2 ;;
+      --data-binary|--data|-d) data_arg="$2"; shift 2 ;;
       http://*|https://*) url="$1"; shift ;;
       *) shift ;;
     esac
   done
   path="${url#http://localhost}"
   path="${path#https://localhost}"
-  (( has_data )) && body="$(cat)"
+
+  if (( cfg_stdin )); then
+    local cfg; cfg="$(cat)"
+    [[ "$cfg" =~ header[[:space:]]*=[[:space:]]*\"([^\"]*)\" ]] && auth="${BASH_REMATCH[1]}"
+  fi
+
+  if [[ -n "$data_arg" ]]; then
+    if [[ "$data_arg" == @* ]]; then
+      local f="${data_arg#@}"
+      if [[ "$f" == "-" ]]; then body="$(cat)"; else body="$(cat "$f")"; fi
+    else
+      body="$data_arg"
+    fi
+  fi
   # 4th arg = the Authorization header verbatim (empty if none). A split/mangled
   # header arrives here as just "authorization:" — tests assert on it to catch
   # transport-quoting regressions.

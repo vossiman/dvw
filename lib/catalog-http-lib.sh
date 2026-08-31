@@ -30,16 +30,33 @@ _catalog_req() {
 
   local -a curl_args=(-sS -X "$method" --unix-socket "$DVW_CATALOG_SOCK"
                       -w $'\n%{http_code}')
+  # The credential goes over stdin as a curl config, never into argv: over ssh
+  # the remote shell re-parses the command string, so an `-H "authorization:
+  # Bearer ..."` argument would be visible in `ps` on BOTH hosts (the local
+  # ssh/curl process and the remote curl process).
+  local cfg=""
   [[ -n "${DVW_CATALOG_TOKEN:-}" ]] &&
-    curl_args+=(-H "authorization: Bearer ${DVW_CATALOG_TOKEN}")
+    cfg=$'header = "authorization: Bearer '"${DVW_CATALOG_TOKEN}"$'"\n'
+  [[ -n "$cfg" ]] && curl_args+=(--config -)
+
+  local bodyfile=""
   if [[ -n "$body" ]]; then
-    curl_args+=(-H 'content-type: application/json' --data-binary @-)
+    if [[ -n "$cfg" ]]; then
+      # stdin is taken by --config, so the body needs its own 0600 file.
+      bodyfile=$(umask 077; mktemp "${TMPDIR:-/tmp}/dvw-cat-body.XXXXXX")
+      printf '%s' "$body" >"$bodyfile"
+      curl_args+=(-H 'content-type: application/json' --data-binary "@$bodyfile")
+    else
+      curl_args+=(-H 'content-type: application/json' --data-binary @-)
+    fi
   fi
   curl_args+=("$url")
 
   if [[ -S "$DVW_CATALOG_SOCK" ]]; then
     # Running on the box itself — skip SSH.
-    if [[ -n "$body" ]]; then
+    if [[ -n "$cfg" ]]; then
+      raw=$(printf '%s' "$cfg" | curl "${curl_args[@]}" 2>/dev/null); rc=$?
+    elif [[ -n "$body" ]]; then
       raw=$(printf '%s' "$body" | curl "${curl_args[@]}" 2>/dev/null); rc=$?
     else
       raw=$(curl "${curl_args[@]}" 2>/dev/null); rc=$?
@@ -47,14 +64,24 @@ _catalog_req() {
   else
     # Over ssh the remote login shell RE-PARSES the command, so ssh's naive
     # space-join of argv is unsafe: any arg containing whitespace — the -w
-    # status format's newline, or an `authorization: Bearer <token>` header —
-    # would be word-split into separate tokens and mangle the request (this is
-    # what made `dvw doctor` report the service unreachable). Build an
-    # explicitly quoted command string with printf %q so the remote shell
-    # reconstructs the exact argv we intended.
+    # status format's newline — would be word-split into separate tokens and
+    # mangle the request (this is what made `dvw doctor` report the service
+    # unreachable). Build an explicitly quoted command string with printf %q
+    # so the remote shell reconstructs the exact argv we intended. The
+    # credential itself never appears in this string: it travels over stdin.
     local rcmd='curl' _a
     for _a in "${curl_args[@]}"; do printf -v rcmd '%s %q' "$rcmd" "$_a"; done
-    if [[ -n "$body" ]]; then
+    if [[ -n "$bodyfile" ]]; then
+      rcmd="cat >$(printf %q "$bodyfile") <<'DVWBODY'
+${body}
+DVWBODY
+${rcmd}; rm -f $(printf %q "$bodyfile")"
+    fi
+    if [[ -n "$cfg" ]]; then
+      raw=$(printf '%s' "$cfg" \
+        | ssh -o BatchMode=yes -o ConnectTimeout=5 "$DVW_CATALOG_HOST" "$rcmd" 2>/dev/null)
+      rc=$?
+    elif [[ -n "$body" ]]; then
       raw=$(printf '%s' "$body" \
         | ssh -o BatchMode=yes -o ConnectTimeout=5 "$DVW_CATALOG_HOST" "$rcmd" 2>/dev/null)
       rc=$?
@@ -63,6 +90,7 @@ _catalog_req() {
       rc=$?
     fi
   fi
+  [[ -n "$bodyfile" ]] && rm -f "$bodyfile"
 
   if (( rc != 0 )) || [[ -z "$raw" ]]; then
     DVW_CAT_STATUS=""
