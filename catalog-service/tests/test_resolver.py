@@ -254,7 +254,7 @@ def test_siblings_reports_what_distinguishes_a_dud(monkeypatch):
     by_id = {s.container_id: s for s in insp.siblings("ws-a")}
     assert set(by_id) == {"c-real", "c-dud"}
     assert by_id["c-real"].tmux_work_activity == 555
-    assert by_id["c-real"].workspaces_owner != "root:root"
+    assert by_id["c-real"].workspaces_owner == "codespace:codespace"
     assert by_id["c-dud"].tmux_work_activity == -1
     assert by_id["c-dud"].workspaces_owner == "root:root"
     assert by_id["c-dud"].container_name == "elated_wu"

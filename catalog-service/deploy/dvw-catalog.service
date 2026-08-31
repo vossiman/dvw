@@ -11,11 +11,17 @@ Type=exec
 # account, so the unit isn't tied to a specific user.
 User=vossi
 Group=vossi
-# NO SupplementaryGroups=docker. That group is root-equivalent: it permits
-# starting a container that bind-mounts / and owns the host. The service
-# reaches Docker through the digest-pinned socket proxy instead
-# (deploy/docker-proxy.compose.yml), configured via CATALOG_DOCKER_HOST.
-# Do not re-add it; if Docker is unreachable, start the proxy.
+# NO SupplementaryGroups=docker. The service reaches Docker through the
+# digest-pinned socket proxy instead (deploy/docker-proxy.compose.yml),
+# configured via CATALOG_DOCKER_HOST. Do not re-add the group; if Docker is
+# unreachable, start the proxy.
+#
+# Be clear about what that swap buys: the proxy narrows the API surface
+# (no /images, /volumes, /networks, /build), so a compromised catalog can
+# reach less. It does NOT remove host-root equivalence — CONTAINERS plus POST
+# still permits creating a container with an arbitrary bind mount. And it
+# trades a group-gated socket for an unauthenticated loopback TCP port, which
+# any local account can reach. See deploy/docker-socket-proxy.md.
 
 WorkingDirectory=/opt/dvw-catalog
 Environment=PYTHONUNBUFFERED=1
