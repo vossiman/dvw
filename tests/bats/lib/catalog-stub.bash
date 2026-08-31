@@ -36,6 +36,7 @@ catalog_stub_install() {
   local dispatch="$STUB_BIN/.catalog-dispatch.bash"
   {
     declare -f _stub_emit
+    declare -f _stub_cfg_value
     declare -f _stub_parse_curl
     declare -f catalog_route
   } > "$dispatch"
@@ -63,17 +64,52 @@ EOF
   chmod +x "$STUB_BIN/ssh"
 }
 
+# Extract the value of `key = "..."` from a curl config-file text, undoing
+# the \\ \" \t \n \r escapes lib/catalog-http-lib.sh's _catalog_cfg_escape
+# applies. Prints the decoded value and returns 0, or returns 1 if the key
+# isn't present. Character-at-a-time on purpose: an escaped quote inside the
+# value (e.g. JSON containing `\"`) must not be mistaken for the closing
+# quote, which a plain "up to the next quote" regex would get wrong.
+_stub_cfg_value() {
+  local key="$1" cfg="$2" marker="${1} = \""
+  local rest="${cfg%%"$marker"*}"
+  [[ "$rest" == "$cfg" ]] && return 1
+  rest="${cfg#*"$marker"}"
+  local out="" i=0 c n
+  while (( i < ${#rest} )); do
+    c="${rest:i:1}"
+    if [[ "$c" == '"' ]]; then
+      break
+    elif [[ "$c" == '\' ]]; then
+      n="${rest:i+1:1}"
+      case "$n" in
+        '\\') out+='\' ;;
+        '"')  out+='"' ;;
+        t)    out+=$'\t' ;;
+        n)    out+=$'\n' ;;
+        r)    out+=$'\r' ;;
+        *)    out+="$n" ;;
+      esac
+      (( i += 2 ))
+    else
+      out+="$c"
+      (( i += 1 ))
+    fi
+  done
+  printf '%s' "$out"
+}
+
 # Parse a curl argv (without the leading `curl`): pull out -X METHOD and the
 # request path from the URL (http://localhost<path>), read any body/config
 # from stdin or a --data-binary file, then hand off to the test's
 # catalog_route. Defined here so it can be dumped into the dispatcher file
 # via `declare -f`.
 #
-# The credential travels via `--config -` (a curl config file on stdin, see
-# lib/catalog-http-lib.sh), never as a -H argument, so this shim reads that
-# config off stdin and extracts the `header = "..."` line. When a JSON body
-# is also present it arrives via `--data-binary @<file>` instead (stdin is
-# already spoken for by the config).
+# The credential (and, when both are present, the JSON body too) travels via
+# `--config -` (a curl config file on stdin, see lib/catalog-http-lib.sh),
+# never as a -H/-d argument, so this shim reads that config off stdin and
+# extracts the `header = "..."` and `data-binary = "..."` lines. A body sent
+# WITHOUT a credential still arrives the old way, via `--data-binary @-`.
 _stub_parse_curl() {
   local method="GET" url="" path="" body="" auth="" data_arg="" cfg_stdin=0
   while (( $# )); do
@@ -91,10 +127,10 @@ _stub_parse_curl() {
 
   if (( cfg_stdin )); then
     local cfg; cfg="$(cat)"
-    [[ "$cfg" =~ header[[:space:]]*=[[:space:]]*\"([^\"]*)\" ]] && auth="${BASH_REMATCH[1]}"
-  fi
-
-  if [[ -n "$data_arg" ]]; then
+    local v
+    v="$(_stub_cfg_value header "$cfg")" && auth="$v"
+    v="$(_stub_cfg_value data-binary "$cfg")" && body="$v"
+  elif [[ -n "$data_arg" ]]; then
     if [[ "$data_arg" == @* ]]; then
       local f="${data_arg#@}"
       if [[ "$f" == "-" ]]; then body="$(cat)"; else body="$(cat "$f")"; fi

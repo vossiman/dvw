@@ -18,6 +18,20 @@ DVW_CATALOG_SOCK="${DVW_CATALOG_SOCK:-/run/dvw-catalog/catalog.sock}"
 # Last HTTP status code from _catalog_req (string, e.g. "200").
 DVW_CAT_STATUS=""
 
+# Escape a value for embedding in a double-quoted curl config-file string.
+# curl's config parser recognizes \\, \", \t, \n, \r inside quotes (a
+# backslash before any other character is passed through literally), so
+# those are the only sequences that need protecting here.
+_catalog_cfg_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\t'/\\t}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\n'/\\n}"
+  printf '%s' "$s"
+}
+
 # _catalog_req METHOD PATH [JSON_BODY]
 # Prints the response body on stdout, sets DVW_CAT_STATUS, returns:
 #   0   transport ok AND status 2xx
@@ -36,20 +50,24 @@ _catalog_req() {
   # ssh/curl process and the remote curl process).
   local cfg=""
   [[ -n "${DVW_CATALOG_TOKEN:-}" ]] &&
-    cfg=$'header = "authorization: Bearer '"${DVW_CATALOG_TOKEN}"$'"\n'
-  [[ -n "$cfg" ]] && curl_args+=(--config -)
+    cfg=$'header = "authorization: Bearer '"$(_catalog_cfg_escape "${DVW_CATALOG_TOKEN}")"$'"\n'
 
-  local bodyfile=""
   if [[ -n "$body" ]]; then
+    curl_args+=(-H 'content-type: application/json')
     if [[ -n "$cfg" ]]; then
-      # stdin is taken by --config, so the body needs its own 0600 file.
-      bodyfile=$(umask 077; mktemp "${TMPDIR:-/tmp}/dvw-cat-body.XXXXXX")
-      printf '%s' "$body" >"$bodyfile"
-      curl_args+=(-H 'content-type: application/json' --data-binary "@$bodyfile")
+      # stdin is already spoken for by --config, and the request goes to a
+      # remote shell that re-parses its argv — so the body can't go on
+      # argv (ps would show it on both hosts) or into a bodyfile either
+      # (a file on disk, even 0600, is an extra thing to clean up on every
+      # exit path). Instead it rides the SAME config stream as a `data-binary`
+      # literal: curl's config-file quoting lets any string, including
+      # arbitrary JSON, travel over stdin next to the header.
+      cfg+=$'data-binary = "'"$(_catalog_cfg_escape "$body")"$'"\n'
     else
-      curl_args+=(-H 'content-type: application/json' --data-binary @-)
+      curl_args+=(--data-binary @-)
     fi
   fi
+  [[ -n "$cfg" ]] && curl_args+=(--config -)
   curl_args+=("$url")
 
   if [[ -S "$DVW_CATALOG_SOCK" ]]; then
@@ -67,16 +85,11 @@ _catalog_req() {
     # status format's newline — would be word-split into separate tokens and
     # mangle the request (this is what made `dvw doctor` report the service
     # unreachable). Build an explicitly quoted command string with printf %q
-    # so the remote shell reconstructs the exact argv we intended. The
-    # credential itself never appears in this string: it travels over stdin.
+    # so the remote shell reconstructs the exact argv we intended. Neither
+    # the credential nor the body ever appears in this string: both travel
+    # over stdin (in the same config stream when both are present).
     local rcmd='curl' _a
     for _a in "${curl_args[@]}"; do printf -v rcmd '%s %q' "$rcmd" "$_a"; done
-    if [[ -n "$bodyfile" ]]; then
-      rcmd="cat >$(printf %q "$bodyfile") <<'DVWBODY'
-${body}
-DVWBODY
-${rcmd}; rm -f $(printf %q "$bodyfile")"
-    fi
     if [[ -n "$cfg" ]]; then
       raw=$(printf '%s' "$cfg" \
         | ssh -o BatchMode=yes -o ConnectTimeout=5 "$DVW_CATALOG_HOST" "$rcmd" 2>/dev/null)
@@ -90,7 +103,6 @@ ${rcmd}; rm -f $(printf %q "$bodyfile")"
       rc=$?
     fi
   fi
-  [[ -n "$bodyfile" ]] && rm -f "$bodyfile"
 
   if (( rc != 0 )) || [[ -z "$raw" ]]; then
     DVW_CAT_STATUS=""
