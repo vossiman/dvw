@@ -11,10 +11,11 @@ Type=exec
 # account, so the unit isn't tied to a specific user.
 User=vossi
 Group=vossi
-# Needed only when talking to the LOCAL docker socket directly. When using the
-# docker-socket-proxy (recommended, see deploy/docker-socket-proxy.md) set
-# CATALOG_DOCKER_HOST=tcp://127.0.0.1:2375 in catalog.env and DELETE this line.
-SupplementaryGroups=docker
+# NO SupplementaryGroups=docker. That group is root-equivalent: it permits
+# starting a container that bind-mounts / and owns the host. The service
+# reaches Docker through the digest-pinned socket proxy instead
+# (deploy/docker-proxy.compose.yml), configured via CATALOG_DOCKER_HOST.
+# Do not re-add it; if Docker is unreachable, start the proxy.
 
 WorkingDirectory=/opt/dvw-catalog
 Environment=PYTHONUNBUFFERED=1

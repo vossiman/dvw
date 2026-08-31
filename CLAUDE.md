@@ -1,8 +1,9 @@
 # dvw
 
 Host-side DevPod workspace orchestrator (catalog + connect + wizard + TUI).
-`main` is protected — integrate via PR; ask before merging; delete merged
-branches.
+Integrating via PR is the convention here, and merged branches get deleted,
+but this is not enforced: `main` carries no branch protection or rulesets
+(verified with `gh` at admin visibility, 2026-08-31). Ask before merging.
 
 ## Architecture (as of 2026-07)
 
