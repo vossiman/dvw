@@ -221,16 +221,40 @@ def test_status_many_stopped_and_absent_report_zero_siblings(monkeypatch):
 
 def test_siblings_reports_what_distinguishes_a_dud(monkeypatch):
     # The 2026-07-26 shape: two running containers, one provisioned with a live
-    # `work` session, one abandoned before setup-user chowned /workspaces.
+    # `work` session, one abandoned before setup-user chowned /workspaces. The
+    # owner probe now stats the bind-mount Source host-side rather than
+    # exec'ing "stat" in the container, so stub os.stat/pwd/grp instead of
+    # FakeContainer's exec_run.
+    import grp
+    import os
+    import pwd
+
     real = FakeContainer("c-real", "elated_perlman", "uid-r", "/workspaces/ws-a",
-                         tmux_work=555, owner="codespace:codespace")
+                         tmux_work=555, source="/src/real")
     dud = FakeContainer("c-dud", "elated_wu", "uid-d", "/workspaces/ws-a",
-                        tmux_work=None, owner="root:root")
+                        tmux_work=None, source="/src/dud")
     insp = _inspector([real, dud], monkeypatch)
+
+    class FakeStat:
+        def __init__(self, uid, gid):
+            self.st_uid = uid
+            self.st_gid = gid
+
+    stats = {"/src/real": FakeStat(1000, 1000), "/src/dud": FakeStat(0, 0)}
+    monkeypatch.setattr(os, "stat", lambda p: stats[p])
+    monkeypatch.setattr(
+        pwd, "getpwuid",
+        lambda uid: type("P", (), {"pw_name": "codespace" if uid else "root"})(),
+    )
+    monkeypatch.setattr(
+        grp, "getgrgid",
+        lambda gid: type("G", (), {"gr_name": "codespace" if gid else "root"})(),
+    )
+
     by_id = {s.container_id: s for s in insp.siblings("ws-a")}
     assert set(by_id) == {"c-real", "c-dud"}
     assert by_id["c-real"].tmux_work_activity == 555
-    assert by_id["c-real"].workspaces_owner == "codespace:codespace"
+    assert by_id["c-real"].workspaces_owner != "root:root"
     assert by_id["c-dud"].tmux_work_activity == -1
     assert by_id["c-dud"].workspaces_owner == "root:root"
     assert by_id["c-dud"].container_name == "elated_wu"
@@ -251,11 +275,66 @@ def test_siblings_excludes_stopped_containers(monkeypatch):
 
 
 def test_siblings_tolerates_unreadable_owner(monkeypatch):
-    # A container that can't answer `stat` must not break the listing.
-    c = FakeContainer("c1", "n1", "uid-1", "/workspaces/ws-a", tmux_work=1, owner=None)
+    # A container whose bind-mount Source can't be stat'd must not break the
+    # listing.
+    import os
+
+    c = FakeContainer("c1", "n1", "uid-1", "/workspaces/ws-a", tmux_work=1,
+                       source="/src/unreadable")
+
+    def _raise(p):
+        raise OSError("no such path")
+
+    monkeypatch.setattr(os, "stat", _raise)
     insp = _inspector([c], monkeypatch)
     (s,) = insp.siblings("ws-a")
     assert s.workspaces_owner is None
+
+
+def test_workspaces_owner_reads_host_side_without_exec(tmp_path, monkeypatch):
+    """The owner probe must not call exec_run; it stats the bind-mount Source."""
+    from app.config import Settings
+    from app.docker_inspect import DockerInspector
+
+    src = tmp_path / "ws"
+    src.mkdir()
+
+    class NoExec:
+        status = "running"
+        attrs = {"Mounts": [{"Destination": "/workspaces/demo",
+                             "Source": str(src), "Type": "bind"}]}
+
+        def exec_run(self, *a, **k):
+            raise AssertionError("exec_run must not be called")
+
+    inspector = DockerInspector.__new__(DockerInspector)
+    inspector._settings = Settings(workspace_mount_prefix="/workspaces/")
+
+    owner = inspector._workspaces_owner(NoExec())
+    assert owner is not None
+    assert ":" in owner
+
+
+def test_workspaces_owner_reports_root_root_for_uid_zero(monkeypatch):
+    """uid/gid 0 must still read as 'root:root' — the dud-sibling signal."""
+    import os
+    from app.config import Settings
+    from app.docker_inspect import DockerInspector
+
+    class C:
+        status = "running"
+        attrs = {"Mounts": [{"Destination": "/workspaces/demo",
+                             "Source": "/nonexistent-but-stubbed", "Type": "bind"}]}
+
+    class FakeStat:
+        st_uid = 0
+        st_gid = 0
+
+    monkeypatch.setattr(os, "stat", lambda p: FakeStat())
+
+    inspector = DockerInspector.__new__(DockerInspector)
+    inspector._settings = Settings(workspace_mount_prefix="/workspaces/")
+    assert inspector._workspaces_owner(C()) == "root:root"
 
 
 def test_status_many_reports_attached_clients(monkeypatch):
