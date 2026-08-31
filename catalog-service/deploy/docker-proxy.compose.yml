@@ -1,0 +1,45 @@
+# Read-mostly Docker API for the dvw catalog service.
+#
+# Membership in the `docker` group is root-equivalent: anyone who can talk to
+# /var/run/docker.sock can start a container that bind-mounts / and owns the
+# host. The catalog needs to list and inspect containers, and (still) to exec
+# for the tmux window snapshot. This exposes exactly that and denies the rest,
+# after which the service does not need the docker group at all.
+#
+# Digest resolved from tag tecnativa/docker-socket-proxy:0.3.0 via:
+#   docker buildx imagetools inspect tecnativa/docker-socket-proxy:0.3.0 \
+#     --format '{{.Manifest.Digest}}'
+#
+# EXEC/POST are still required: app/docker_inspect.py reads the tmux window
+# snapshot, attached count and session activity by exec'ing into containers.
+# See docker-socket-proxy.md "Residual risk" for what closing that needs.
+services:
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      CONTAINERS: 1   # GET /containers/json + /containers/{id}/json
+      EXEC: 1         # POST /exec — tmux snapshot, activity, attached count
+      POST: 1         # exec creation is a POST; required only because of EXEC
+      INFO: 1         # GET /info + /_ping (health)
+      IMAGES: 0
+      VOLUMES: 0
+      NETWORKS: 0
+      BUILD: 0
+      COMMIT: 0
+      SERVICES: 0
+      SWARM: 0
+      SYSTEM: 0
+      CONFIGS: 0
+      SECRETS: 0
+      NODES: 0
+      TASKS: 0
+      PLUGINS: 0
+      DISTRIBUTION: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "127.0.0.1:2375:2375"   # loopback only
