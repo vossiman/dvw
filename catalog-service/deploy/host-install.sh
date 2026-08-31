@@ -86,6 +86,29 @@ echo "==> 5/7 env file (once)"
 [ -f "$SVC_DIR/catalog.env" ] || \
   install -m 0640 "$SVC_DIR/deploy/catalog.env.example" "$SVC_DIR/catalog.env"
 
+# The unit no longer has SupplementaryGroups=docker, so the proxy is the only
+# Docker path. Start it before the service, and fail loudly rather than
+# leaving a catalog that silently reports every workspace as absent.
+echo "==> starting docker-socket-proxy"
+docker compose -f "$SVC_DIR/deploy/docker-proxy.compose.yml" up -d
+
+echo "==> waiting for the proxy to answer"
+proxy_ok=""
+for _ in $(seq 1 30); do
+  if curl -fsS --max-time 2 http://127.0.0.1:2375/_ping >/dev/null 2>&1; then
+    proxy_ok=1
+    break
+  fi
+  sleep 1
+done
+if [[ -z "$proxy_ok" ]]; then
+  echo "ERROR: docker-socket-proxy did not answer on 127.0.0.1:2375 after 30s." >&2
+  echo "       The catalog cannot reach Docker without it. Check:" >&2
+  echo "       docker compose -f $SVC_DIR/deploy/docker-proxy.compose.yml logs" >&2
+  exit 1
+fi
+echo "==> proxy healthy"
+
 echo "==> 6/7 systemd units + passwordless-restart sudoers"
 # The committed units default to User=vossi/Group=vossi; render them for whoever
 # is installing so the service isn't tied to a specific account. Usernames/group
