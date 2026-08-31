@@ -1,16 +1,32 @@
-# Read-mostly Docker API for the dvw catalog service.
+# Narrowed Docker API for the dvw catalog service.
 #
-# Membership in the `docker` group is root-equivalent: anyone who can talk to
-# /var/run/docker.sock can start a container that bind-mounts / and owns the
-# host. The catalog needs to list and inspect containers, and (still) to exec
-# for the tmux window snapshot. This exposes exactly that and denies the rest,
-# after which the service does not need the docker group at all.
+# What this does and does NOT buy you — read this before deploying:
+#
+#   It DOES narrow the API surface. /images, /volumes, /networks, /build,
+#   /commit, swarm and the rest are denied, so a compromised catalog service
+#   cannot pull or build images, mount named volumes, or touch swarm state.
+#
+#   It does NOT remove host-root equivalence. CONTAINERS: 1 combined with
+#   POST: 1 allows *every* verb under /containers, including
+#   POST /containers/create with arbitrary "Binds" (e.g. /:/host) and
+#   POST /containers/{id}/start. That is host root, the same as docker-group
+#   membership. Verified against this image at exactly the env set below.
+#   ALLOW_START / ALLOW_STOP / ALLOW_RESTARTS are dead letters here: they only
+#   matter when POST is off, and the upstream ACL is path-prefix plus method,
+#   not per-endpoint.
+#
+#   It also CHANGES the access-control model, and not only for the better.
+#   The docker group at least gated the socket behind group membership. A
+#   loopback TCP port has no ACL at all: any local account or process on the
+#   host can reach 127.0.0.1:2375. See docker-socket-proxy.md for what
+#   restoring an ACL would take (a unix socket at mode 0600, tracked
+#   separately).
 #
 # Digest resolved from tag tecnativa/docker-socket-proxy:0.3.0 via:
 #   docker buildx imagetools inspect tecnativa/docker-socket-proxy:0.3.0 \
 #     --format '{{.Manifest.Digest}}'
 #
-# EXEC/POST are still required: app/docker_inspect.py reads the tmux window
+# EXEC/POST are required: app/docker_inspect.py reads the tmux window
 # snapshot, attached count and session activity by exec'ing into containers.
 # See docker-socket-proxy.md "Residual risk" for what closing that needs.
 services:
@@ -21,10 +37,19 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      CONTAINERS: 1   # GET /containers/json + /containers/{id}/json
+      CONTAINERS: 1   # /containers — with POST:1 this is EVERY verb, not just GET
       EXEC: 1         # POST /exec — tmux snapshot, activity, attached count
       POST: 1         # exec creation is a POST; required only because of EXEC
-      INFO: 1         # GET /info + /_ping (health)
+      INFO: 1         # GET /info only. /_ping is gated by PING, NOT by INFO.
+      # PING gates GET /_ping, which host-install.sh uses as its readiness
+      # check and which docker-py calls on connect. Setting PING: 0 breaks the
+      # installer. It is listed explicitly (rather than left to the image
+      # default) so nobody "tightens" it by accident.
+      PING: 1
+      # EVENTS defaults to 1 in the image. The catalog never streams /events,
+      # and leaving it implicit made this list read as exhaustive when it
+      # wasn't. Deny it explicitly.
+      EVENTS: 0
       IMAGES: 0
       VOLUMES: 0
       NETWORKS: 0
@@ -41,5 +66,19 @@ services:
       DISTRIBUTION: 0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # The v0.3.0 entrypoint renders its config with
+      #   sed … haproxy.cfg.template > /usr/local/etc/haproxy/haproxy.cfg
+      # under `set -e`, so with read_only:true and no writable layer there the
+      # container dies on the first line with "Read-only file system" and
+      # restart:unless-stopped crash-loops it forever.
+      # This must be an anonymous VOLUME, not a tmpfs: a tmpfs mount starts
+      # empty and hides haproxy.cfg.template, so the sed then fails with
+      # "No such file or directory". A volume is seeded from the image.
+      - /usr/local/etc/haproxy
+    # haproxy -W writes its pidfile to /run/haproxy.pid and dies with
+    # "[ALERT] Cannot create pidfile" under read_only:true. /run holds nothing
+    # from the image, so a tmpfs is the right mount here.
+    tmpfs:
+      - /run
     ports:
-      - "127.0.0.1:2375:2375"   # loopback only
+      - "127.0.0.1:2375:2375"   # loopback only, but loopback has no ACL

@@ -44,10 +44,10 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 # Prime sudo up front: fail fast now if you lack sudo rights, and avoid a
 # password prompt stalling the install halfway through.
-echo "==> 0/7 installer needs sudo for /opt, /var/lib, /etc/systemd and sudoers; priming…"
+echo "==> 0/8 installer needs sudo for /opt, /var/lib, /etc/systemd and sudoers; priming…"
 sudo -v
 
-echo "==> 1/7 checkout ($BRANCH -> $CHECKOUT)"
+echo "==> 1/8 checkout ($BRANCH -> $CHECKOUT)"
 if [ ! -d "$CHECKOUT/.git" ]; then
   sudo install -d -o "$USER" -g "$USER" "$(dirname "$CHECKOUT")"
   git clone --branch "$BRANCH" "$REPO_URL" "$CHECKOUT"
@@ -57,7 +57,7 @@ else
   git -C "$CHECKOUT" pull --ff-only
 fi
 
-echo "==> 2/7 stable symlink $APP_LINK -> $SVC_DIR"
+echo "==> 2/8 stable symlink $APP_LINK -> $SVC_DIR"
 # $APP_LINK must be a symlink. If a previous run or a manual `mkdir` left a real
 # directory here, `ln -sfn` would silently create the link *inside* it
 # ($APP_LINK/catalog-service) instead of replacing it, and the unit's ExecStart
@@ -69,7 +69,7 @@ if [ -e "$APP_LINK" ] && [ ! -L "$APP_LINK" ]; then
 fi
 sudo ln -sfn "$SVC_DIR" "$APP_LINK"
 
-echo "==> 3/7 data dir + git backup repo ($DATA_DIR)"
+echo "==> 3/8 data dir + git backup repo ($DATA_DIR)"
 sudo install -d -o "$USER" -g "$USER" -m 0750 "$DATA_DIR"
 if [ ! -d "$DATA_DIR/.git" ]; then
   git -C "$DATA_DIR" init -q
@@ -77,19 +77,24 @@ if [ ! -d "$DATA_DIR/.git" ]; then
   git -C "$DATA_DIR" config user.name  "dvw-catalog"
 fi
 
-echo "==> 4/7 venv (uv sync --frozen)"
+echo "==> 4/8 venv (uv sync --frozen)"
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 ( cd "$SVC_DIR" && uv sync --frozen --no-dev )
 
-echo "==> 5/7 env file (once)"
+echo "==> 5/8 env file (once)"
 [ -f "$SVC_DIR/catalog.env" ] || \
   install -m 0640 "$SVC_DIR/deploy/catalog.env.example" "$SVC_DIR/catalog.env"
 
 # The unit no longer has SupplementaryGroups=docker, so the proxy is the only
 # Docker path. Start it before the service, and fail loudly rather than
 # leaving a catalog that silently reports every workspace as absent.
-echo "==> starting docker-socket-proxy"
+#
+# NOTE: this step requires the *installing* account to have working docker CLI
+# access (docker-group membership or equivalent). The service does not, but
+# somebody has to launch the proxy. `docker compose up` fails here with a
+# permission error on /var/run/docker.sock if the installer cannot reach it.
+echo "==> 6/8 docker-socket-proxy (needs docker CLI access for this account)"
 docker compose -f "$SVC_DIR/deploy/docker-proxy.compose.yml" up -d
 
 echo "==> waiting for the proxy to answer"
@@ -109,7 +114,7 @@ if [[ -z "$proxy_ok" ]]; then
 fi
 echo "==> proxy healthy"
 
-echo "==> 6/7 systemd units + passwordless-restart sudoers"
+echo "==> 7/8 systemd units + passwordless-restart sudoers"
 # The committed units default to User=vossi/Group=vossi; render them for whoever
 # is installing so the service isn't tied to a specific account. Usernames/group
 # names are [A-Za-z0-9_-] so they're safe in the sed replacement.
@@ -139,7 +144,7 @@ sudo systemctl reenable dvw-catalog.service
 sudo systemctl restart dvw-catalog.service
 sudo systemctl enable --now dvw-catalog-backup.timer
 
-echo "==> 7/7 smoke test"
+echo "==> 8/8 smoke test"
 # Poll QUIETLY until the socket answers: the unit binds $SOCK ~1s after
 # `enable --now` returns, so the first attempt(s) fail by design. Suppress those
 # expected per-attempt curl errors (no misleading "connect to localhost port 80"
