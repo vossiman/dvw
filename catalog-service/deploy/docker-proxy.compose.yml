@@ -50,6 +50,15 @@ services:
       # and leaving it implicit made this list read as exhaustive when it
       # wasn't. Deny it explicitly.
       EVENTS: 0
+      # VERSION also defaults to 1 in the image (GET /version). docker-py
+      # calls this on connect to negotiate the API version, so it must stay
+      # allowed; it is read-only. Declared explicitly for the same reason as
+      # EVENTS/PING above: an undeclared default-ON var makes this list read
+      # as exhaustive when it isn't. Checked against the image's full env
+      # (docker inspect --format '{{json .Config.Env}}'): the only other
+      # default-ON vars are PING (already declared) and EVENTS (above);
+      # everything else defaults to 0.
+      VERSION: 1
       IMAGES: 0
       VOLUMES: 0
       NETWORKS: 0

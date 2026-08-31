@@ -60,8 +60,13 @@ The real file is `deploy/docker-proxy.compose.yml`, pinned by digest rather
 than by a moving tag. Start it with:
 
 ```bash
-docker compose -f /opt/dvw-catalog/deploy/docker-proxy.compose.yml up -d
+docker compose -f /opt/dvw-catalog/deploy/docker-proxy.compose.yml up -d --renew-anon-volumes
 ```
+
+`--renew-anon-volumes` is required, not optional: `haproxy.cfg.template`
+lives inside the anonymous `/usr/local/etc/haproxy` volume, so without it a
+digest bump keeps the old volume and renders the ACL from a stale template.
+`host-install.sh` already passes this flag.
 
 ## Wiring
 

@@ -95,7 +95,13 @@ echo "==> 5/8 env file (once)"
 # somebody has to launch the proxy. `docker compose up` fails here with a
 # permission error on /var/run/docker.sock if the installer cannot reach it.
 echo "==> 6/8 docker-socket-proxy (needs docker CLI access for this account)"
-docker compose -f "$SVC_DIR/deploy/docker-proxy.compose.yml" up -d
+# --renew-anon-volumes: haproxy.cfg.template lives INSIDE the anonymous
+# /usr/local/etc/haproxy volume (see docker-proxy.compose.yml), so without
+# this flag `docker compose up -d` keeps the old volume across a digest
+# bump and the container renders its ACL from the STALE template. Verified:
+# a marker file placed in the volume survived a recreate onto a new image
+# reference, and the new image rendered config from the old template.
+docker compose -f "$SVC_DIR/deploy/docker-proxy.compose.yml" up -d --renew-anon-volumes
 
 echo "==> waiting for the proxy to answer"
 proxy_ok=""
