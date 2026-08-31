@@ -108,8 +108,10 @@ _stub_cfg_value() {
 # The credential (and, when both are present, the JSON body too) travels via
 # `--config -` (a curl config file on stdin, see lib/catalog-http-lib.sh),
 # never as a -H/-d argument, so this shim reads that config off stdin and
-# extracts the `header = "..."` and `data-binary = "..."` lines. A body sent
-# WITHOUT a credential still arrives the old way, via `--data-binary @-`.
+# extracts the `header = "..."` and `data-raw = "..."` lines (`data-raw`,
+# not `data-binary`, so a body starting with `@` is sent literally instead
+# of curl reading it as a filename). A body sent WITHOUT a credential still
+# arrives the old way, via `--data-binary @-`.
 _stub_parse_curl() {
   local method="GET" url="" path="" body="" auth="" data_arg="" cfg_stdin=0
   while (( $# )); do
@@ -129,7 +131,7 @@ _stub_parse_curl() {
     local cfg; cfg="$(cat)"
     local v
     v="$(_stub_cfg_value header "$cfg")" && auth="$v"
-    v="$(_stub_cfg_value data-binary "$cfg")" && body="$v"
+    v="$(_stub_cfg_value data-raw "$cfg")" && body="$v"
   elif [[ -n "$data_arg" ]]; then
     if [[ "$data_arg" == @* ]]; then
       local f="${data_arg#@}"

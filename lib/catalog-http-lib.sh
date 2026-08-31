@@ -59,10 +59,15 @@ _catalog_req() {
       # remote shell that re-parses its argv — so the body can't go on
       # argv (ps would show it on both hosts) or into a bodyfile either
       # (a file on disk, even 0600, is an extra thing to clean up on every
-      # exit path). Instead it rides the SAME config stream as a `data-binary`
+      # exit path). Instead it rides the SAME config stream as a `data-raw`
       # literal: curl's config-file quoting lets any string, including
-      # arbitrary JSON, travel over stdin next to the header.
-      cfg+=$'data-binary = "'"$(_catalog_cfg_escape "$body")"$'"\n'
+      # arbitrary JSON, travel over stdin next to the header. Use `data-raw`,
+      # NOT `data-binary`: as a config value, `data-binary`'s content is
+      # still subject to curl's `@filename`/`$filename` special-casing, so a
+      # body that happened to start with `@` would make curl read a local
+      # file (on the REMOTE host, for the ssh branch) instead of sending the
+      # body. `data-raw` never interprets a leading `@` or `$`.
+      cfg+=$'data-raw = "'"$(_catalog_cfg_escape "$body")"$'"\n'
     else
       curl_args+=(--data-binary @-)
     fi
