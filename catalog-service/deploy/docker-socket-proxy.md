@@ -1,60 +1,63 @@
-# Hardening: front Docker with a read-mostly socket proxy
+# Docker access: the socket proxy is mandatory
 
-Membership in the `docker` group is **root-equivalent** — anyone who can talk to
-`/var/run/docker.sock` can start a container that bind-mounts `/` and reads/writes
-the host as root. The catalog service only needs to *list*, *inspect*, and *exec*
-(for the tmux probe). [`tecnativa/docker-socket-proxy`](https://github.com/Tecnativa/docker-socket-proxy)
-lets us expose exactly that and deny the rest, after which the service no longer
-needs the `docker` group at all.
+Membership in the `docker` group is **root-equivalent**: anyone who can talk to
+`/var/run/docker.sock` can start a container that bind-mounts `/` and reads and
+writes the host as root. The catalog service therefore has **no** docker-group
+membership, and reaches Docker only through
+[`tecnativa/docker-socket-proxy`](https://github.com/Tecnativa/docker-socket-proxy).
+
+This is not optional. Without the proxy running, the service cannot reach
+Docker at all and every workspace reports as absent. `host-install.sh` starts
+it and fails the install if it does not come up.
 
 ## Compose
 
-```yaml
-# /opt/dvw-catalog/deploy/docker-proxy.compose.yml
-services:
-  docker-proxy:
-    image: tecnativa/docker-socket-proxy:latest
-    restart: unless-stopped
-    environment:
-      CONTAINERS: 1   # GET /containers/json + /containers/{id}/json  (list + inspect)
-      EXEC: 1         # POST /exec                                    (tmux activity probe)
-      POST: 1         # exec creation is a POST; required only because of EXEC
-      INFO: 1         # GET /info + /_ping                            (health)
-      # everything else denied:
-      IMAGES: 0
-      VOLUMES: 0
-      NETWORKS: 0
-      BUILD: 0
-      COMMIT: 0
-      SERVICES: 0
-      SWARM: 0
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    ports:
-      - "127.0.0.1:2375:2375"   # loopback only
-```
+The real file is `deploy/docker-proxy.compose.yml`, pinned by digest rather
+than by a moving tag. Start it with:
 
 ```bash
 docker compose -f /opt/dvw-catalog/deploy/docker-proxy.compose.yml up -d
 ```
 
-## Wire the service to it
+## Wiring
 
-In `/opt/dvw-catalog/catalog.env`:
+`deploy/catalog.env.example` ships `CATALOG_DOCKER_HOST=tcp://127.0.0.1:2375`
+as the default. `dvw-catalog.service` carries no `SupplementaryGroups=docker`;
+do not re-add it.
 
-```ini
-CATALOG_DOCKER_HOST=tcp://127.0.0.1:2375
-```
+The unit keeps `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, which the
+loopback tcp proxy needs.
 
-Then in `dvw-catalog.service`, **remove** `SupplementaryGroups=docker` and
-`systemctl daemon-reload && systemctl restart dvw-catalog`. The service can no
-longer reach the raw socket; it only sees the whitelisted endpoints.
+## Residual risk: EXEC is still required
 
-## Residual risk
+The proxy runs at `CONTAINERS + EXEC + INFO`, not fully read-only, because
+`app/docker_inspect.py` still execs into containers for tmux state:
 
-`EXEC` is the one privileged hole that can't be closed while the tmux-activity
-tie-break uses `docker exec`. To reach a fully read-only (`CONTAINERS`-only)
-proxy, move the tmux-activity read to a host-side `stat` of the tmux socket /
-heartbeat file under the workspace bind-mount `Source` (it's host-visible because
-the service runs on the box). That's a future upgrade; `CONTAINERS + EXEC + INFO`
-is the pragmatic posture for the single-user box today.
+| Call site | Data | Host-side replaceable? |
+|---|---|---|
+| `_tmux_work_activity` | `work` session activity epoch | Only via a snapshot written from inside |
+| `_tmux_work_attached` | attached client count | No |
+| `_work_session_windows` | per-window id, name, active, activity, `@waiting`, command | No |
+
+`_workspaces_owner` used to be a fourth; it now stats the bind-mount `Source`
+host-side and needs no exec.
+
+An earlier revision of this document proposed closing `EXEC` with a host-side
+`stat` of the tmux socket. **That is not sufficient.** A `stat` yields an
+mtime, which can stand in for the activity epoch, but it cannot yield an
+attached count or a window list, and the tree view and the waiting-window
+indicator both consume the window list.
+
+Reaching a `CONTAINERS`-only proxy requires a **snapshot file written from
+inside the container** by a tmux hook, into a host-visible path, which the
+catalog then reads directly. aiCodingBaseSetup already carries the tmux hook
+infrastructure this would extend (`configs/tmux/tmux.conf` sets hooks on
+`client-attached`, `alert-activity`, `alert-silence`, `alert-bell` and
+`after-select-window`), and `~/.aicodingsetup` is already a host bind mount
+shared by every container, so it is a natural destination that does not
+pollute the workspace checkout.
+
+That work spans two repos and is **not** scheduled. Until it lands, `EXEC: 1`
+and `POST: 1` stay, and the honest posture is: the proxy removes host-root
+equivalence, but an attacker with the proxy endpoint can still exec into
+containers it can see.
