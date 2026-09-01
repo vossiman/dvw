@@ -89,6 +89,15 @@ def test_state_cell_stale_shows_suffix():
     assert "⇄ 1" in state_cell("stale", 1).plain
 
 
+def test_state_cell_outdated_badge():
+    assert "⬆" in state_cell("alive", 0, image_current=False).plain
+
+
+def test_state_cell_no_badge_when_current_or_unknown():
+    assert "⬆" not in state_cell("alive", 0, image_current=True).plain
+    assert "⬆" not in state_cell("alive", 0, image_current=None).plain
+
+
 def test_age_formats_minutes_and_hours():
     now = 10_000
     assert age(now - 90, now) == "1m"

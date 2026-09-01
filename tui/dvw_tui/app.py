@@ -185,6 +185,13 @@ class DvwApp(App):
 
         self.push_screen(WizardScreen(), on_result)
 
+    def do_pin_rebuild(self, workspace: Workspace | None) -> None:
+        if workspace is None:
+            return
+        # Suspend, not confirm: the bash side runs its own interactive merge
+        # gate and prints every step; a second confirm here would just nag.
+        self._run_suspended(actions.pin_rebuild(workspace.id))
+
     def do_remove_orphan(self, host: str, container_name: str) -> None:
         """Guarded orphan removal — suspended so the user sees exactly
         what runs on the provider."""
@@ -205,6 +212,8 @@ class DvwApp(App):
                 self.do_simple_action(action, workspace)
             elif action in ("rebuild", "remove"):
                 self.do_confirmed_action(action, workspace)
+            elif action == "pin-rebuild":
+                self.do_pin_rebuild(workspace)
             elif action == "new":
                 self.do_new()
             elif action in ("doctor", "orphans"):
