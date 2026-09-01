@@ -219,8 +219,9 @@ deadlines, so a hung tmux server cannot starve the rest.
 
 - `ProbeReport` pydantic model mirroring the schema above, `extra="ignore"`,
   every field optional, list lengths capped (`sessions` 64, `windows` 256,
-  `agents` 64), strings capped at 512 chars. Parsing failures raise
-  `ProbeError`.
+  `agents` 64), strings capped at 512 chars. Parsing or validation failures
+  return `None` after a warning that names the container but never echoes
+  probe output.
 - `run_probe(container) -> ProbeReport | None`: `exec_run(["dvw-probe"],
   demux=True)`. Output over 256 KiB is discarded. Exit codes 126 and 127 raise
   `ProbeMissing`; any other non-zero or parse failure returns `None` after a

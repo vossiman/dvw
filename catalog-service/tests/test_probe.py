@@ -94,3 +94,40 @@ def test_run_probe_exec_exception_returns_none():
         def exec_run(self, cmd, demux=False):
             raise RuntimeError("docker down")
     assert run_probe(Boom()) is None
+
+
+def test_validation_failure_log_never_echoes_probe_content(caplog):
+    marker = "TOTALLY-SECRET-MARKER-98765"
+    bad = {**GOOD, "agents": [{"cli": "claude", "pid": marker}]}
+    c = ProbeContainer(0, json.dumps(bad).encode())
+    with caplog.at_level("WARNING"):
+        assert run_probe(c) is None
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert marker not in text
+    assert c.id in text
+
+
+@pytest.mark.parametrize("field_path,bad_value", [
+    (("tmux", "sessions", 0, "attached"), -1),
+    (("tmux", "sessions", 0, "activity"), -1),
+    (("tmux", "windows", 0, "activity"), -1),
+    (("tmux", "windows", 0, "waiting_since"), -1),
+    (("agents", 0, "pid"), -1),
+    (("agents", 0, "started"), -1),
+    (("git", "ahead"), -1),
+    (("git", "behind"), -1),
+    (("cgroup", "mem_current"), -1),
+    (("cgroup", "mem_max"), -1),
+    (("cgroup", "cpu_usec"), -1),
+    (("cgroup", "nr_procs"), -1),
+    (("ts",), -1),
+])
+def test_negative_values_rejected(field_path, bad_value):
+    import copy
+    data = copy.deepcopy(GOOD)
+    node = data
+    for key in field_path[:-1]:
+        node = node[key]
+    node[field_path[-1]] = bad_value
+    with pytest.raises(Exception):
+        ProbeReport.model_validate(data)
