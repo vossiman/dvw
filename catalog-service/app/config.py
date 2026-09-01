@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     # Docker API call timeout, seconds.
     docker_timeout: int = 10
 
+    # devpod agent workspace dirs on this box; each workspace's build source
+    # is <dir>/<id>/content. "~" is the service account (vossi on vossisrv).
+    devpod_agent_workspaces_dir: Path = Path(
+        "~/.devpod/agent/contexts/default/workspaces")
+
     @property
     def catalog_path(self) -> Path:
         return self.data_dir / self.catalog_filename
@@ -74,6 +79,10 @@ class Settings(BaseSettings):
     @property
     def blueprint_legacy_backup_path(self) -> Path:
         return self.data_dir / self.blueprint_legacy_backup_filename
+
+    def source_path(self, ws_id: str) -> Path:
+        return (self.devpod_agent_workspaces_dir.expanduser()
+                / ws_id / "content")
 
 
 @lru_cache
