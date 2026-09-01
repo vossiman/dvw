@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 
 from . import __version__
 from .blueprint_store import BlueprintStore
+from .blueprint_image import BlueprintImageCache
 from .config import get_settings
 from .deps import require_auth
 from .docker_inspect import DockerInspector
@@ -59,6 +60,8 @@ async def lifespan(app: FastAPI):
         meta_path=settings.blueprint_meta_path,
         legacy_backup_path=settings.blueprint_legacy_backup_path,
     )
+    app.state.blueprint_image = BlueprintImageCache(
+        settings.blueprint_devcontainer_url, settings.blueprint_image_ttl)
     # Docker client is created here, not at import time, so the module imports
     # (and tests) don't require a running daemon.
     app.state.inspector = DockerInspector(settings)

@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     # Docker API call timeout, seconds.
     docker_timeout: int = 10
 
+    # The aicoding blueprint devcontainer.json (owns the current image pin).
+    blueprint_devcontainer_url: str = (
+        "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup"
+        "/main/devcontainer.json")
+    # Blueprint image cache TTL, seconds.
+    blueprint_image_ttl: float = 900.0
+
     # devpod agent workspace dirs on this box; each workspace's build source
     # is <dir>/<id>/content. "~" is the service account (vossi on vossisrv).
     devpod_agent_workspaces_dir: Path = Path(
