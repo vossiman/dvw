@@ -19,6 +19,7 @@ setup() {
   catalog_init_if_missing() { :; }
   ssh_sync_refresh() { :; }
   wsl_bridge_refresh() { :; }
+  _dvw_catalog_source_get() { return 2; }
 
   BP_IMAGE="ghcr.io/vossiman/devbox-base@sha256:$(printf 'a%.0s' {1..64})"
   OLD_IMAGE="ghcr.io/vossiman/devbox-base@sha256:$(printf 'b%.0s' {1..64})"
@@ -244,4 +245,31 @@ _stub_recreate_deps() {
   run main pin-sync demo
   [ "$status" -eq 0 ]
   [ "$(cat "$BATS_TEST_TMPDIR/argv")" = "demo" ]
+}
+
+@test "pin state: prefers the source clone's live branch over the catalog" {
+  _dvw_catalog_source_get() {
+    jq -n '{present: true, detached: false, branch: "feat/live"}'
+  }
+  _dvw_repo_pin() {
+    [ "$2" = "feat/live" ] || { echo "wrong branch: $2" >&2; return 1; }
+    printf '%s\n' "$BP_IMAGE"
+  }
+  run _dvw_pin_state demo
+  [ "$status" -eq 0 ]
+  [[ "$output" == ok$'\t'vossiman/demo$'\t'feat/live* ]]
+}
+
+@test "pin state: falls back to the catalog branch when the service is unreachable" {
+  _dvw_catalog_source_get() { return 2; }
+  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
+  run _dvw_pin_state demo
+  [[ "$output" == ok$'\t'vossiman/demo$'\t'main* ]]
+}
+
+@test "pin state: detached or absent clone falls back to the catalog branch" {
+  _dvw_catalog_source_get() { jq -n '{present: true, detached: true, branch: null}'; }
+  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
+  run _dvw_pin_state demo
+  [[ "$output" == ok$'\t'vossiman/demo$'\t'main* ]]
 }

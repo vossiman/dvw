@@ -81,6 +81,11 @@ _dvw_repo_pin() {
     | jq -r '.image // empty' 2>/dev/null || return 1
 }
 
+# Source-clone state / ff-pull via the catalog service. Print the JSON body;
+# rc per _catalog_req (2 = unreachable, 1 = HTTP error).
+_dvw_catalog_source_get()  { _catalog_req GET  "/v1/workspaces/$1/source"; }
+_dvw_catalog_source_pull() { _catalog_req POST "/v1/workspaces/$1/source/pull"; }
+
 # 12-char digest for display; falls back to the whole ref for non-digest pins.
 _dvw_pin_short() {
   local ref="$1"
@@ -189,6 +194,16 @@ _dvw_pin_state() {
   repo=$(jq -r '.repo // empty' <<<"$ws"); branch=$(jq -r '.branch // empty' <<<"$ws")
   slug=$(_dvw_repo_slug "$repo") || { printf 'unknown\t%s\t%s\t\n' "$repo" "$branch"; return 0; }
   [[ -n "$branch" ]] || { printf 'unknown\t%s\t\t\n' "$slug"; return 0; }
+
+  # The clone's live branch is what `devpod up --recreate` builds from; the
+  # catalog records only the creation-time branch. Fail-open to the catalog
+  # value: unreachable service, absent clone, or detached HEAD change nothing.
+  local src live
+  if src=$(_dvw_catalog_source_get "$id" 2>/dev/null); then
+    live=$(jq -r 'select(.present == true and .detached == false)
+                  | .branch // empty' <<<"$src" 2>/dev/null) || live=""
+    [[ -n "$live" ]] && branch="$live"
+  fi
   if [[ -z "$bp_arg" ]]; then
     bp=$(_dvw_blueprint_pin) || { printf 'unknown\t%s\t%s\t\n' "$slug" "$branch"; return 0; }
   else
