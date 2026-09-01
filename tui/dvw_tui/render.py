@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from rich.text import Text
 
 from .client import WindowInfo
@@ -60,7 +62,39 @@ def meter(pct: float | None, width: int = 10) -> str:
     return "▰" * filled + "▱" * (width - filled) + f"  {pct:.0f}%"
 
 
-def inspect_lines(data: dict) -> list[tuple[str, str]]:
+def agents_line(agents: list[dict], now: int) -> str:
+    """'claude (2h, /workspaces/foo), codex (5m)' or 'none'."""
+    if not agents:
+        return "none"
+    parts = []
+    for a in agents:
+        details = []
+        if a.get("started") is not None:
+            details.append(age(int(a["started"]), now))
+        if a.get("cwd"):
+            details.append(a["cwd"])
+        parts.append(f"{a.get('cli', '?')} ({', '.join(details)})" if details else a.get("cli", "?"))
+    return ", ".join(parts)
+
+
+def git_line(git: dict | None) -> str:
+    """'feat/x +2 -0 dirty' / 'main clean' / 'abc1234' / 'unknown'."""
+    if not git:
+        return "unknown"
+    name = git.get("branch") or git.get("head")
+    if not name:
+        return "unknown"
+    out = [name]
+    if git.get("ahead") is not None and git.get("behind") is not None:
+        out.append(f"+{git['ahead']} -{git['behind']}")
+    if git.get("dirty") is True:
+        out.append("dirty")
+    elif git.get("dirty") is False:
+        out.append("clean")
+    return " ".join(out)
+
+
+def inspect_lines(data: dict, now: int | None = None) -> list[tuple[str, str]]:
     """(label, value) pairs for the inspect pane, in display order."""
     mem = human_bytes(data.get("mem_bytes"))
     if data.get("mem_limit"):
@@ -75,6 +109,8 @@ def inspect_lines(data: dict) -> list[tuple[str, str]]:
         ("cpu", meter(data.get("cpu_pct"))),
         ("memory", f"{meter(data.get('mem_pct'))}   {mem}"),
         ("disk", human_bytes(data.get("disk_bytes"))),
+        ("agents", agents_line(data.get("agents") or [], now if now is not None else int(time.time()))),
+        ("git", git_line(data.get("git"))),
     ]
     for m in data.get("bind_mounts", []):
         rw = "rw" if m.get("rw", True) else "ro"
