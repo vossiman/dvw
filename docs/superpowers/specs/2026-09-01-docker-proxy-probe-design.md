@@ -64,7 +64,10 @@ systemd socket activation:
 
 - `dvw-docker-proxy.socket`: `ListenStream=/run/dvw-docker-proxy/docker.sock`,
   `SocketUser=vossi` (rendered to the installing user like the catalog unit),
-  `SocketMode=0600`, `DirectoryMode=0750`. systemd creates the socket at
+  `SocketMode=0600`, `DirectoryMode=0755` (systemd makes the runtime
+  directory root:root, so `0750` would block the catalog user from
+  traversing it; access control is the socket's own `0600`, not the
+  directory mode). systemd creates the socket at
   boot, so the catalog never observes a gap while the proxy restarts.
 - `dvw-docker-proxy.service`: `User=dvw-proxy`, `SupplementaryGroups=docker`,
   `Restart=on-failure`, and the catalog unit's hardening block

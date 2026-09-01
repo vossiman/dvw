@@ -1,0 +1,18 @@
+[Unit]
+Description=dvw docker proxy listener (unix socket for the catalog service only)
+Documentation=https://github.com/vossiman/dvw
+
+[Socket]
+# systemd owns the socket: it exists from boot, survives proxy restarts, and
+# carries the only access control there is. SocketUser/SocketGroup default to
+# vossi and are rendered to the installing account by host-install.sh, the
+# same way dvw-catalog.service's User= is.
+ListenStream=/run/dvw-docker-proxy/docker.sock
+SocketUser=vossi
+SocketGroup=vossi
+SocketMode=0600
+DirectoryMode=0755
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target
