@@ -96,25 +96,70 @@ class Inspector(Protocol):
 class Snapshot:
     """Everything one exec tells us about a running container.
 
-    Built by DockerInspector._snapshot from one `dvw-probe` exec, or from the
-    legacy tmux execs when the container has no probe installed yet.
+    On the probe path every field is already known: one `dvw-probe` exec
+    answered all of them, so the values are stored eagerly.
+
+    On the legacy path (a container that predates dvw-probe) the fields are
+    filled ON DEMAND, one tmux exec each, and memoized. A caller that only
+    wants `attached` must not pay for the window snapshot, because the bulk
+    status endpoint spends those execs inside a 0.25 s best-effort budget.
+    The windows exec carries session_attached, so fetching windows also
+    fills attached, but never the other way round.
     """
 
-    __slots__ = ("activity", "attached", "windows", "report", "probe")
+    __slots__ = ("report", "probe", "_legacy", "_activity", "_attached", "_windows")
 
     def __init__(
         self,
-        activity: int = -1,
-        attached: int = 0,
+        activity: int | None = -1,
+        attached: int | None = 0,
         windows: list[WindowInfo] | None = None,
         report: ProbeReport | None = None,
         probe: str = "failed",
+        legacy: tuple[DockerInspector, Container] | None = None,
     ):
-        self.activity = activity
-        self.attached = attached
-        self.windows = windows or []
+        # legacy is None => eager: every field below is already final.
+        # legacy is set  => None means "not fetched yet".
+        self._legacy = legacy
+        self._activity = activity
+        self._attached = attached
+        self._windows = windows if windows is not None else ([] if legacy is None else None)
         self.report = report
         self.probe = probe
+
+    @property
+    def activity(self) -> int:
+        if self._activity is None:
+            insp, c = self._legacy
+            self._activity = insp._legacy_tmux_activity(c)
+        return self._activity
+
+    @property
+    def attached(self) -> int:
+        if self._attached is None:
+            insp, c = self._legacy
+            # Only reached when the windows exec has not run: that exec
+            # already carries session_attached and fills this in.
+            self._attached = insp._legacy_tmux_attached(c)
+        return self._attached
+
+    @property
+    def windows(self) -> list[WindowInfo]:
+        if self._windows is None:
+            insp, c = self._legacy
+            attached, windows = insp._legacy_tmux_windows(c)
+            self._windows = windows
+            if self._attached is None:
+                self._attached = attached
+        return self._windows
+
+    def known_attached(self) -> int | None:
+        """The attached count if it is already known, else None.
+
+        Lets status_many reuse a snapshot without triggering an exec on the
+        request thread, outside the bounded fan-out.
+        """
+        return self._attached
 
 
 class DockerInspector:
@@ -249,16 +294,15 @@ class DockerInspector:
             try:
                 report = run_probe(c)
             except ProbeMissing:
-                # The windows exec already carries session_attached, so the
-                # third exec only runs when it returned nothing: two execs on
-                # the fallback path, not three.
-                attached, windows = self._legacy_tmux_windows(c)
+                # Lazy: each field costs its own tmux exec, charged only to
+                # the caller that actually reads it. See Snapshot.
                 snap = Snapshot(
-                    activity=self._legacy_tmux_activity(c),
-                    attached=attached or self._legacy_tmux_attached(c),
-                    windows=windows,
+                    activity=None,
+                    attached=None,
+                    windows=None,
                     report=None,
                     probe="missing",
+                    legacy=(self, c),
                 )
             else:
                 if report is None:
@@ -289,7 +333,10 @@ class DockerInspector:
         self, c: Container, memo: dict[str, Snapshot] | None = None
     ) -> tuple[int, list[WindowInfo]]:
         s = self._snapshot(c, memo)
-        return s.attached, s.windows
+        # windows first: it carries session_attached, so reading it first
+        # keeps the legacy path at one exec instead of two.
+        windows = s.windows
+        return s.attached, windows
 
     def _uid(self, c: Container) -> str | None:
         return c.labels.get(self._settings.devpod_id_label)
@@ -589,7 +636,10 @@ class DockerInspector:
 
     # ---- bulk status (replaces _dvw_load_probe) --------------------------
 
-    def _attached_many(self, containers: list[Container]) -> dict[str, int]:
+    def _attached_many(
+        self, containers: list[Container],
+        memo: dict[str, Snapshot] | None = None,
+    ) -> dict[str, int]:
         """Best-effort attached counts within one bounded response budget.
 
         A shared semaphore bounds probes across overlapping/repeated requests.
@@ -602,12 +652,12 @@ class DockerInspector:
         result_lock = threading.Lock()
         workers: list[threading.Thread] = []
 
-        def probe(c: Container) -> None:
+        def probe(c: Container, seed: dict[str, Snapshot]) -> None:
             try:
-                # A per-worker memo: the shared request memo is not
-                # thread-safe, and each container is handled by exactly one
-                # worker, so nothing is lost by not sharing it here.
-                count = self._tmux_work_attached(c, {})
+                # Each worker gets its OWN dict, seeded on this thread with
+                # the snapshot the request already built for that container.
+                # The request memo itself is never shared across threads.
+                count = self._tmux_work_attached(c, seed)
                 with result_lock:
                     attached[c.id] = count
             except Exception:
@@ -620,9 +670,10 @@ class DockerInspector:
         for c in containers:
             if not self._attached_slots.acquire(blocking=False):
                 continue
+            snap = memo.get(c.id) if memo else None
             worker = threading.Thread(
                 target=probe,
-                args=(c,),
+                args=(c, {c.id: snap} if snap is not None else {}),
                 name="dvw-attached",
                 daemon=True,
             )
@@ -688,15 +739,21 @@ class DockerInspector:
         selected_running = {
             c.id: c for c in selected.values() if c.status == "running"
         }
-        # The sibling tie-break above already snapshotted its candidates;
-        # reuse those counts so no container is exec'd twice per request.
-        attached = {
-            cid: snap.attached
-            for cid, snap in memo.items()
-            if cid in selected_running
-        }
-        remaining = [c for c in selected_running.values() if c.id not in attached]
-        attached.update(self._attached_many(remaining))
+        # The sibling tie-break above already snapshotted its candidates. A
+        # count it already knows (the probe path) is reused as is; one it
+        # would have to exec for (the legacy path) stays in the bounded
+        # fan-out below, which also carries the snapshot so the container is
+        # not probed twice.
+        attached: dict[str, int] = {}
+        pending: list[Container] = []
+        for cid, c in selected_running.items():
+            snap = memo.get(cid)
+            known = snap.known_attached() if snap is not None else None
+            if known is not None:
+                attached[cid] = known
+            else:
+                pending.append(c)
+        attached.update(self._attached_many(pending, memo))
 
         out = []
         for ws_id in ids:

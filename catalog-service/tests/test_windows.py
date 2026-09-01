@@ -131,7 +131,11 @@ def test_windows_many_fallback_never_snapshots_a_container_twice(monkeypatch):
 
     assert len(insp.windows_many()) == 3
     for c in containers:
-        assert [cmd[0] for cmd in c.exec_calls] == ["dvw-probe", "tmux", "tmux"]
+        # One probe attempt, then the ONE tmux exec the window snapshot
+        # needs. The activity and attached execs belong to callers that read
+        # those fields; windows_many reads neither.
+        assert [cmd[0] for cmd in c.exec_calls] == ["dvw-probe", "tmux"]
+        assert c.exec_calls[1][1] == "list-windows"
 
 
 def test_windows_many_omits_ambiguous_siblings_without_tmux(monkeypatch):

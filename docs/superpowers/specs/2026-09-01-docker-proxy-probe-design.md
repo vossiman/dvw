@@ -238,7 +238,8 @@ deadlines, so a hung tmux server cannot starve the rest.
   tmux calls and records `probe: "missing"`. The fallback is removed in a
   follow-up once every running workspace has synced.
 - Results are memoized per `container_id` for the duration of one request
-  (a dict created in the router and passed down), so `/containers/status` and
+  (a dict created per inspector entry point (inspect, siblings, status_many,
+  windows_many), never shared across threads), so `/containers/status` and
   `/containers/windows` never exec twice for the same container.
 - `ContainerInspect` gains `agents: list[AgentProc]`, `git: GitState | None`,
   `probe: str` (`ok`, `partial`, `missing`, `failed`). `_cpu_mem` keeps using
@@ -250,7 +251,9 @@ deadlines, so a hung tmux server cannot starve the rest.
 `unix:///run/dvw-docker-proxy/docker.sock`; `catalog.env.example` documents
 it. `docker.from_env()` is no longer a code path.
 
-`RestrictAddressFamilies` in `dvw-catalog.service` drops `AF_INET AF_INET6`.
+`RestrictAddressFamilies` in `dvw-catalog.service` keeps `AF_INET AF_INET6`
+for the blueprint-image fetch and the `/source/pull` git subprocess; only the
+proxy unit is AF_UNIX-only.
 
 ## Component 4: TUI
 

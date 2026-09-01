@@ -60,7 +60,7 @@ class FakeContainer:
             if self._owner is None:
                 return FakeExecResult(1, None)
             return FakeExecResult(0, f"{self._owner}\n".encode())
-        # windows_many's single-exec snapshot — discriminated by
+        # windows_many's single-exec snapshot: discriminated by
         # "pane_current_command" in the format string so it stays distinct
         # from the waiting-probe format below (rewired in Task 2).
         if cmd and "pane_current_command" in (cmd[-1] if cmd else ""):
@@ -504,14 +504,9 @@ def test_repeated_slow_status_requests_do_not_queue_more_probes(monkeypatch):
     for c in containers:
         original = c.exec_run
 
-        # Count CONTAINERS probed, not execs: the missing-probe fallback
-        # sends two argv lists carrying session_attached (the windows
-        # snapshot and the attached probe), and what is bounded here is how
-        # many containers a request starts work on.
         def delayed(cmd, demux=False, *, container=c, run=original):
             if cmd and "session_attached" in cmd[-1]:
-                if container.id not in calls:
-                    calls.append(container.id)
+                calls.append(container.id)
                 time.sleep(0.4)
             return run(cmd, demux=demux)
 
