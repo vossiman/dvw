@@ -96,7 +96,7 @@ cmd_pin_rebuild() {
 
   # 1. Build branch = the source clone's live HEAD; that is literally what
   #    `devpod up --recreate` reads. Catalog branch only as a warned fallback.
-  local src branch committed
+  local src branch tree_pin
   if src=$(_dvw_catalog_source_get "$id" 2>/dev/null); then
     [[ $(jq -r '.present' <<<"$src") == "true" ]] || {
       ui_error "$id: no source clone on the provider; has devpod ever built it?"
@@ -105,46 +105,64 @@ cmd_pin_rebuild() {
       ui_error "$id: source clone is on a detached HEAD; check out a branch first"
       return 1; }
     branch=$(jq -r '.branch // empty' <<<"$src")
-    committed=$(jq -r '.committed_pin // empty' <<<"$src")
+    tree_pin=$(jq -r '.committed_pin // empty' <<<"$src")
   else
     branch=$(jq -r '.branch // empty' <<<"$ws")
-    committed=""
+    tree_pin=""
     ui_status_warn "catalog service unreachable; falling back to catalog branch '$branch' (unverified; the pull step will fail without the service)"
   fi
   [[ -n "$branch" ]] || { ui_error "$id: couldn't resolve a build branch"; return 1; }
 
   ui_banner "dvw pin-rebuild" "$id, $slug@$branch → $(_dvw_pin_short "$bp")"
 
-  # 2+3. PR only when the working tree's pin differs. When it is already
-  # current there is nothing to merge or pull; go straight to the rebuild
-  # (the container may still be running the old image).
-  local pr_url="" need_sync=0
-  if [[ "$committed" == "$bp" ]]; then
-    ui_status_ok "committed pin already current on $branch; skipping PR and pull"
+  # 2+3. Decide the PR and the pull independently. aicoding's boot sync
+  # rewrites .devcontainer/devcontainer.json in the container, which is the
+  # SAME file as the source clone's working tree (bind mount), and
+  # deliberately never commits it. So the common stale workspace has
+  # tree_pin already equal to the blueprint while the remote branch still
+  # carries the old pin. Treating tree_pin == bp as "nothing to do" (as this
+  # used to) skips the PR in exactly that case, and the repo never gets
+  # fixed. Check the remote explicitly instead.
+  local remote_pin="" remote_ok=0 need_pr=0 need_pull=0
+  if remote_pin=$(_dvw_repo_pin "$slug" "$branch"); then
+    [[ "$remote_pin" != "$bp" ]] && need_pr=1
   else
-    need_sync=1
-    ui_action "stale" "$branch pins $(_dvw_pin_short "${committed:-<none>}")"
-    # The clone's working tree can lag the remote branch: the pin PR merged
-    # earlier and this clone just hasn't pulled yet. Opening another PR in
-    # that case fails (byte-identical rewrite, nothing to PUT); check the
-    # remote first and skip straight to the pull when it's already current.
-    local remote_cur
-    if remote_cur=$(_dvw_repo_pin "$slug" "$branch") && [[ "$remote_cur" == "$bp" ]]; then
-      ui_info "remote already current on $branch (clone hasn't pulled yet); skipping the PR"
-    else
-      pr_url=$(_dvw_pin_open_pr "$slug" "$branch" "$bp") || {
-        ui_error "couldn't open the pin PR for $slug@$branch"; return 1; }
-      [[ -n "$pr_url" ]] && ui_status_ok "PR: $pr_url"
-    fi
-    _dvw_pin_main_pr "$slug" "$branch" "$bp"
+    remote_ok=1
+    ui_status_warn "couldn't read $branch's remote pin; falling back to the working-tree pin to decide"
+    [[ "$tree_pin" != "$bp" ]] && need_pr=1
   fi
+  [[ "$tree_pin" != "$bp" ]] && need_pull=1
 
-  if (( need_sync )) && [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
-    ui_info "[dry-run] would wait for the merge, pull the source clone, rebuild $id, and verify the image"
+  local pr_url=""
+  if (( need_pr )); then
+    ui_action "stale" "$branch pins $(_dvw_pin_short "${remote_pin:-${tree_pin:-<none>}}")"
+    pr_url=$(_dvw_pin_open_pr "$slug" "$branch" "$bp") || {
+      ui_error "couldn't open the pin PR for $slug@$branch"; return 1; }
+    [[ -n "$pr_url" ]] && ui_status_ok "PR: $pr_url"
+  elif (( need_pull )); then
+    # The pin PR merged earlier (remote already carries it) and this clone
+    # just hasn't pulled yet. Opening another PR in that case fails
+    # (byte-identical rewrite, nothing to PUT).
+    ui_info "remote already current on $branch (clone hasn't pulled yet); skipping the PR"
+  else
+    if (( remote_ok == 0 )); then
+      ui_status_ok "working-tree pin already current on $branch; remote verified current too; skipping PR and pull"
+    else
+      ui_status_ok "working-tree pin already current on $branch; skipping PR and pull"
+    fi
+  fi
+  (( need_pr || need_pull )) && _dvw_pin_main_pr "$slug" "$branch" "$bp"
+
+  if (( need_pr || need_pull )) && [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
+    if (( need_pull )); then
+      ui_info "[dry-run] would wait for the merge, pull the source clone, rebuild $id, and verify the image"
+    else
+      ui_info "[dry-run] would wait for the merge, rebuild $id, and verify the image"
+    fi
     return 0
   fi
 
-  if (( need_sync )); then
+  if (( need_pr )); then
     # 4. Merge gate, verified via gh; the user's say-so is not an input.
     if [[ -n "$pr_url" ]]; then
       if (( no_wait )); then
@@ -154,7 +172,9 @@ cmd_pin_rebuild() {
       _dvw_pin_wait_merged "$pr_url" "$timeout" || return $?
       ui_status_ok "merged: $pr_url"
     fi
+  fi
 
+  if (( need_pull )); then
     # 5. Pull the clone; devpod builds from its working tree.
     local pull_body rc=0
     pull_body=$(_dvw_catalog_source_pull "$id") || rc=$?
@@ -169,13 +189,15 @@ cmd_pin_rebuild() {
     # 6. Assert the working tree now carries the blueprint pin. This is the
     #    assertion that catches a merge that landed somewhere the clone
     #    doesn't point.
-    committed=$(jq -r '.committed_pin // empty' <<<"$pull_body")
-    if [[ "$committed" != "$bp" ]]; then
-      ui_error "after the pull, $branch's working tree still pins $(_dvw_pin_short "${committed:-<none>}"), expected $(_dvw_pin_short "$bp")"
+    tree_pin=$(jq -r '.committed_pin // empty' <<<"$pull_body")
+    if [[ "$tree_pin" != "$bp" ]]; then
+      ui_error "after the pull, $branch's working tree still pins $(_dvw_pin_short "${tree_pin:-<none>}"), expected $(_dvw_pin_short "$bp")"
       ui_info "  did the PR target the branch the clone has checked out?"
       return 1
     fi
     ui_status_ok "working tree pin verified"
+  elif (( need_pr )); then
+    ui_info "working tree already carries the blueprint pin (boot sync rewrote it uncommitted); repo fixed via PR, the clone reconciles on a later pull"
   fi
 
   # Dry-run for the already-current path (the stale path returned above).

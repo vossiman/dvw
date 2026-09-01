@@ -48,6 +48,12 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/var/lib/dvw-catalog
+# The source-pull endpoint (POST /v1/workspaces/{id}/source/pull) fast-forwards
+# devpod source clones under ~/.devpod/agent, writing both .git and the
+# working tree; without this, ProtectHome=read-only fails it. The "-" prefix
+# tolerates the dir being absent. A customized
+# CATALOG_DEVPOD_AGENT_WORKSPACES_DIR needs a matching ReadWritePaths entry.
+ReadWritePaths=-%h/.devpod/agent
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectControlGroups=true

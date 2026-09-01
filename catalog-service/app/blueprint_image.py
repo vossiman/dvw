@@ -13,6 +13,11 @@ import urllib.request
 
 _IMAGE_RE = re.compile(r'"image"\s*:\s*"([^"]+)"')
 
+# Must stay well under the catalog clients' 10s request budget (see
+# tui/dvw_tui/client.py) so a dead blueprint host degrades to unknown
+# instead of failing the whole /containers/status call.
+_FETCH_TIMEOUT = 3.0
+
 
 def _fetch(url: str, timeout: float) -> str:
     with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
@@ -32,8 +37,8 @@ def _parse_image(text: str) -> str | None:
 
 class BlueprintImageCache:
     # Failures negative-cache for a shorter window than a good fetch, so a
-    # down blueprint URL doesn't get re-fetched (timeout=10, one lock held)
-    # on every single status/inspect call while it's down.
+    # down blueprint URL doesn't get re-fetched (timeout=_FETCH_TIMEOUT, one
+    # lock held) on every single status/inspect call while it's down.
     _FAILURE_TTL_CAP = 60.0
 
     def __init__(self, url: str, ttl: float) -> None:
@@ -54,7 +59,7 @@ class BlueprintImageCache:
                 if now - self._fetched_at < ttl:
                     return self._value
             try:
-                image = _parse_image(_fetch(self._url, timeout=10))
+                image = _parse_image(_fetch(self._url, timeout=_FETCH_TIMEOUT))
             except Exception:
                 self._fetched_at = now      # negative-cache the failure
                 self._last_fetch_ok = False

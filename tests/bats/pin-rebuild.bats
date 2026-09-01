@@ -39,12 +39,57 @@ setup() {
 
 @test "current pin: skips PR and pull, rebuilds anyway" {
   _dvw_catalog_source_pull() { echo "PULL SHOULD NOT RUN" >&2; return 1; }
+  _dvw_pin_open_pr() { echo "OPEN_PR SHOULD NOT RUN" >&2; return 1; }
+  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }   # remote also current
   run cmd_pin_rebuild demo
   [ "$status" -eq 0 ]
   [[ "$output" == *"already current"* ]]
   [[ "$output" != *"PULL SHOULD NOT RUN"* ]]
+  [[ "$output" != *"OPEN_PR SHOULD NOT RUN"* ]]
   [[ "$output" == *"RECREATED demo"* ]]
   [[ "$output" == *"running the blueprint image"* ]]
+}
+
+@test "working tree current but remote stale: PR opened, merge gate, no pull, rebuild" {
+  # aicoding's boot sync rewrites devcontainer.json in the container
+  # uncommitted, so the common stale case has tree_pin == bp while the
+  # remote branch still carries the old pin. This must still PR.
+  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
+  _dvw_pin_open_pr() { echo "https://github.com/vossiman/demo/pull/9"; }
+  _dvw_pin_main_pr() { :; }
+  gh() { echo "MERGED"; }
+  _dvw_catalog_source_pull() { echo "PULL SHOULD NOT RUN" >&2; return 1; }
+  run cmd_pin_rebuild demo
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pull/9"* ]]
+  [[ "$output" == *"merged: https://github.com/vossiman/demo/pull/9"* ]]
+  [[ "$output" != *"PULL SHOULD NOT RUN"* ]]
+  [[ "$output" == *"RECREATED demo"* ]]
+}
+
+@test "working tree current, remote also current: skip PR and pull, rebuild" {
+  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
+  _dvw_pin_open_pr() { echo "OPEN_PR SHOULD NOT RUN" >&2; return 1; }
+  _dvw_catalog_source_pull() { echo "PULL SHOULD NOT RUN" >&2; return 1; }
+  run cmd_pin_rebuild demo
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already current"* ]]
+  [[ "$output" != *"OPEN_PR SHOULD NOT RUN"* ]]
+  [[ "$output" != *"PULL SHOULD NOT RUN"* ]]
+  [[ "$output" == *"RECREATED demo"* ]]
+}
+
+@test "working tree current, remote lookup fails: warn and skip PR, rebuild" {
+  _dvw_repo_pin() { return 1; }
+  _dvw_pin_open_pr() { echo "OPEN_PR SHOULD NOT RUN" >&2; return 1; }
+  _dvw_catalog_source_pull() { echo "PULL SHOULD NOT RUN" >&2; return 1; }
+  run cmd_pin_rebuild demo
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"couldn't read main's remote pin"* ]]
+  [[ "$output" == *"already current"* ]]
+  [[ "$output" != *"OPEN_PR SHOULD NOT RUN"* ]]
+  [[ "$output" != *"PULL SHOULD NOT RUN"* ]]
+  [[ "$output" == *"RECREATED demo"* ]]
 }
 
 @test "stale pin: PR, merge gate, pull, rebuild, verify" {
@@ -189,6 +234,7 @@ setup() {
 
 @test "rebuild landing on the wrong image fails loudly" {
   _dvw_catalog_source_pull() { return 1; }   # unused: pin is current
+  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }   # remote also current
   _catalog_req() {
     jq -n --arg d "sha256:$(printf 'b%.0s' {1..64})" '{image_digest:$d}'
   }
