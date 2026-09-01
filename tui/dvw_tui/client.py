@@ -50,6 +50,7 @@ class Workspace:
     created_on: str | None = None
     liveness: str = "unknown"  # merged in from /containers/status
     attached: int = 0  # merged in from /containers/status
+    image_current: bool | None = None  # merged in from /containers/status
 
     @property
     def short_repo(self) -> str:
@@ -113,6 +114,8 @@ class CatalogClient:
                 w.attached = max(0, int(s.get("attached", 0) or 0))
             except (TypeError, ValueError):
                 w.attached = 0
+            v = s.get("image_current")
+            w.image_current = v if isinstance(v, bool) else None
         return ws
 
     async def inspect(self, workspace_id: str) -> dict:

@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from app.blueprint_store import BlueprintStore
 from app.config import Settings
 from app.deps import (
+    get_blueprint_image_cache,
     get_blueprint_store,
     get_inspector,
     get_settings,
@@ -43,16 +44,19 @@ class FakeInspector:
     def resolve(self, ws_id: str) -> CanonicalContainer:
         return self.resolutions.get(ws_id, CanonicalContainer(workspace_id=ws_id))
 
-    def inspect(self, ws_id: str) -> ContainerInspect:
+    def inspect(self, ws_id: str, blueprint_image=None) -> ContainerInspect:
         return self.inspections.get(ws_id, ContainerInspect(workspace_id=ws_id))
 
     def siblings(self, ws_id: str) -> list:
         return self.sibling_map.get(ws_id, [])
 
-    def status_many(self, ids):
-        return [
-            self.statuses.get(i, WorkspaceStatus(id=i, liveness="absent")) for i in ids
-        ]
+    def status_many(self, ids, blueprint_image=None):
+        out = []
+        for i in ids:
+            s = self.statuses.get(i, WorkspaceStatus(id=i, liveness="absent"))
+            s.blueprint_image = blueprint_image
+            out.append(s)
+        return out
 
     def orphans(self, catalog_ids):
         return self._orphans
@@ -64,9 +68,23 @@ class FakeInspector:
         return self.window_lists
 
 
+class FakeBlueprintImage:
+    """No-network stand-in for BlueprintImageCache."""
+
+    value: str | None = None
+
+    def get(self) -> str | None:
+        return self.value
+
+
 @pytest.fixture
 def settings(tmp_path):
-    return Settings(data_dir=tmp_path, docker_host="", token=None)
+    return Settings(
+        data_dir=tmp_path,
+        docker_host="",
+        token=None,
+        devpod_agent_workspaces_dir=tmp_path / "agent",
+    )
 
 
 @pytest.fixture
@@ -90,13 +108,19 @@ def inspector():
 
 
 @pytest.fixture
-def client(settings, store, blueprint_store, inspector):
+def blueprint_image():
+    return FakeBlueprintImage()
+
+
+@pytest.fixture
+def client(settings, store, blueprint_store, inspector, blueprint_image):
     invalidate_resolve_cache()
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_blueprint_store] = lambda: blueprint_store
     app.dependency_overrides[get_inspector] = lambda: inspector
+    app.dependency_overrides[get_blueprint_image_cache] = lambda: blueprint_image
     # No context manager => lifespan is skipped => no real DockerInspector is
     # constructed. Routers use the overridden deps above.
     return TestClient(app)

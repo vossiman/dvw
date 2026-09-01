@@ -55,6 +55,18 @@ class Settings(BaseSettings):
     # Docker API call timeout, seconds.
     docker_timeout: int = 10
 
+    # The aicoding blueprint devcontainer.json (owns the current image pin).
+    blueprint_devcontainer_url: str = (
+        "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup"
+        "/main/devcontainer.json")
+    # Blueprint image cache TTL, seconds.
+    blueprint_image_ttl: float = 900.0
+
+    # devpod agent workspace dirs on this box; each workspace's build source
+    # is <dir>/<id>/content. "~" is the service account (vossi on vossisrv).
+    devpod_agent_workspaces_dir: Path = Path(
+        "~/.devpod/agent/contexts/default/workspaces")
+
     @property
     def catalog_path(self) -> Path:
         return self.data_dir / self.catalog_filename
@@ -74,6 +86,17 @@ class Settings(BaseSettings):
     @property
     def blueprint_legacy_backup_path(self) -> Path:
         return self.data_dir / self.blueprint_legacy_backup_filename
+
+    def source_path(self, ws_id: str) -> Path:
+        # ws_id reaches here via a route pattern that allows "." and "-", so
+        # ".." or a path with a leading "/" is a legal ws_id string as far as
+        # FastAPI is concerned. Resolve and assert containment so a crafted
+        # ws_id can't walk the source path outside the agent workspaces dir.
+        base = self.devpod_agent_workspaces_dir.expanduser().resolve()
+        p = (base / ws_id / "content").resolve()
+        if not p.is_relative_to(base):
+            raise ValueError(f"ws_id resolves outside the workspaces dir: {ws_id!r}")
+        return p
 
 
 @lru_cache

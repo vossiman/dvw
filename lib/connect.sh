@@ -542,6 +542,12 @@ declare -gA DVW_PROBE_ORPHAN_INFO=()
 # the arbitrary winner as running. Empty for servers predating the
 # running_siblings field — treated as "unknown", never as a problem.
 declare -gA DVW_PROBE_SIBLINGS=()
+# Whether the running container's image matches the current aicoding
+# blueprint, keyed by workspace id. "true"/"false" from the catalog service's
+# image_current field; unset (not "" - the key is simply absent) for old
+# servers or when the comparison could not be made. Never treat absence as
+# "false" - only the literal string "false" marks a workspace outdated.
+declare -gA DVW_PROBE_IMAGE_CURRENT=()
 
 # Wrapper for `devpod up <id> [args...]` with a safety check.
 #

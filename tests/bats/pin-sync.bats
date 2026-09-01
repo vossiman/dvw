@@ -19,6 +19,7 @@ setup() {
   catalog_init_if_missing() { :; }
   ssh_sync_refresh() { :; }
   wsl_bridge_refresh() { :; }
+  _dvw_catalog_source_get() { return 2; }
 
   BP_IMAGE="ghcr.io/vossiman/devbox-base@sha256:$(printf 'a%.0s' {1..64})"
   OLD_IMAGE="ghcr.io/vossiman/devbox-base@sha256:$(printf 'b%.0s' {1..64})"
@@ -174,6 +175,20 @@ _install_pin_pr_gh_stub() {
   grep -qF '"image": "example.invalid/do-not-edit:latest"' "$BATS_TEST_TMPDIR/put.json"
 }
 
+# review (final pass): the dry-run info line was on stdout, so a caller
+# capturing the PR URL via `url=$(_dvw_pin_open_pr ...)` got the [dry-run]
+# banner text as the "URL" instead of nothing. It belongs on stderr.
+@test "pin PR: dry-run's info line does not corrupt the captured stdout" {
+  DVW_DRY_RUN=1
+  gh() {
+    if [[ "$*" == *"pr list -R vossiman/demo"* ]]; then printf '\n'; return 0; fi
+    echo "unexpected gh call: $*" >&2; return 99
+  }
+  local out
+  out=$(_dvw_pin_open_pr vossiman/demo main "$BP_IMAGE" 2>/dev/null)
+  [ -z "$out" ]
+}
+
 @test "rebuild pre-flight: a current pin passes straight through" {
   _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
   ui_confirm() { echo "SHOULD NOT ASK"; return 0; }
@@ -219,6 +234,7 @@ _stub_recreate_deps() {
   run _dvw_pin_preflight demo
   [ "$status" -eq 1 ]                 # non-zero = cmd_recreate skips the rebuild
   echo "$output" | grep -q "PIN SYNC RAN"
+  echo "$output" | grep -qF "dvw pin-rebuild demo"
 }
 
 @test "rebuild pre-flight: declining the offer proceeds with the rebuild" {
@@ -244,4 +260,42 @@ _stub_recreate_deps() {
   run main pin-sync demo
   [ "$status" -eq 0 ]
   [ "$(cat "$BATS_TEST_TMPDIR/argv")" = "demo" ]
+}
+
+@test "pin state: prefers the source clone's live branch over the catalog" {
+  _dvw_catalog_source_get() {
+    jq -n '{present: true, detached: false, branch: "feat/live"}'
+  }
+  _dvw_repo_pin() {
+    [ "$2" = "feat/live" ] || { echo "wrong branch: $2" >&2; return 1; }
+    printf '%s\n' "$BP_IMAGE"
+  }
+  run _dvw_pin_state demo
+  [ "$status" -eq 0 ]
+  [[ "$output" == ok$'\t'vossiman/demo$'\t'feat/live* ]]
+}
+
+@test "pin state: falls back to the catalog branch when the service is unreachable" {
+  _dvw_catalog_source_get() { return 2; }
+  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
+  run _dvw_pin_state demo
+  [[ "$output" == ok$'\t'vossiman/demo$'\t'main* ]]
+}
+
+@test "pin state: detached or absent clone falls back to the catalog branch" {
+  _dvw_catalog_source_get() { jq -n '{present: true, detached: true, branch: null}'; }
+  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
+  run _dvw_pin_state demo
+  [[ "$output" == ok$'\t'vossiman/demo$'\t'main* ]]
+}
+
+@test "pin head branch: differs for main vs a feature base, same image" {
+  local main_branch feat_branch
+  main_branch=$(_dvw_pin_head_branch main "$BP_IMAGE")
+  feat_branch=$(_dvw_pin_head_branch feat/x "$BP_IMAGE")
+  [[ "$main_branch" != "$feat_branch" ]]
+  # main keeps the historical (unsuffixed) name so existing open PRs match.
+  [[ "$main_branch" == "$DVW_PIN_BRANCH_PREFIX-"* ]]
+  [[ "$main_branch" != *"-main" ]]
+  [[ "$feat_branch" == "$main_branch-feat-x" ]]
 }

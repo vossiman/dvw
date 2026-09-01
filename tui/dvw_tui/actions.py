@@ -30,6 +30,10 @@ def rebuild(workspace_id: str) -> list[str]:
     return [dvw_bin(), "rebuild", workspace_id]
 
 
+def pin_rebuild(workspace_id: str) -> list[str]:
+    return [dvw_bin(), "pin-rebuild", workspace_id]
+
+
 def remove(workspace_id: str) -> list[str]:
     # --yes: the TUI's ConfirmScreen already asked; without it the bash
     # side would prompt a second time inside the suspended terminal.

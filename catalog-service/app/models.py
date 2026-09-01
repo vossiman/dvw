@@ -254,6 +254,32 @@ class ContainerInspect(BaseModel):
     disk_bytes: int | None = None
     # alive / stale / stopped / absent — see resolver semantics.
     liveness: str = "absent"
+    # sha256 digest of the image the container runs; None when unknowable
+    # (no container, tag-only image, /images blocked by the socket proxy).
+    image_digest: str | None = None
+    # Blueprint ref at comparison time; None when the blueprint is unreachable.
+    blueprint_image: str | None = None
+    # Tri-state on purpose: None (unknown) must never render as outdated.
+    image_current: bool | None = None
+
+
+class WorkspaceSource(BaseModel):
+    """The devpod source clone a workspace's rebuild actually builds from.
+
+    `committed_pin` is read from the WORKING TREE, not GitHub: the working
+    tree is what `devpod up --recreate` reads, so it is the only copy whose
+    value predicts the rebuild's outcome.
+    """
+
+    workspace_id: str
+    path: str
+    present: bool = False
+    branch: str | None = None
+    head: str | None = None
+    dirty: bool = False
+    detached: bool = False
+    remote: str | None = None
+    committed_pin: str | None = None
 
 
 class WorkspaceStatus(BaseModel):
@@ -282,6 +308,13 @@ class WorkspaceStatus(BaseModel):
     # fail-open value for no session / exec failure / stopped container — a
     # false "attached" misleads; a missed one is harmless.
     attached: int = 0
+    # sha256 digest of the image the container runs; None when unknowable
+    # (no container, tag-only image, /images blocked by the socket proxy).
+    image_digest: str | None = None
+    # Blueprint ref at comparison time; None when the blueprint is unreachable.
+    blueprint_image: str | None = None
+    # Tri-state on purpose: None (unknown) must never render as outdated.
+    image_current: bool | None = None
 
 
 class Orphan(BaseModel):

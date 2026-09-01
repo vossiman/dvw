@@ -106,3 +106,8 @@ def test_run_captured_split_passes_rc_through():
 def test_run_captured_split_missing_binary():
     res = actions.run_captured_split(["/nonexistent/definitely-not-here"])
     assert not res.ok and res.returncode == 127
+
+
+def test_pin_rebuild_argv(monkeypatch):
+    monkeypatch.setenv("DVW_BIN", "dvw")
+    assert actions.pin_rebuild("ws1") == ["dvw", "pin-rebuild", "ws1"]

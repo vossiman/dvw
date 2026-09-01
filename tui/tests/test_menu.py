@@ -32,6 +32,10 @@ async def test_menu_escape_closes(fake_client):
         assert not isinstance(app.screen, MenuScreen)
 
 
+def test_menu_has_pin_rebuild():
+    assert "pin-rebuild" in [a for a, _ in MENU_ITEMS]
+
+
 async def test_menu_select_dispatches(fake_client, monkeypatch):
     calls = {}
     monkeypatch.setattr(

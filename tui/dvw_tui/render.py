@@ -34,13 +34,16 @@ def liveness_cell(liveness: str) -> Text:
     return Text(glyph(mark, label), style=f"bold {color}" if bold else color)
 
 
-def state_cell(liveness: str, attached: int = 0) -> Text:
-    """liveness_cell plus an accent `⇄ N` suffix when N tmux clients are
-    attached and the container is actually up (alive or stale — an attached
-    client on a stale mount is exactly worth noticing)."""
+def state_cell(liveness: str, attached: int = 0,
+               image_current: bool | None = None) -> Text:
+    """liveness_cell plus `⇄ N` for attached clients and `⬆` when the
+    container runs an image older than the blueprint. Tri-state on purpose:
+    None (unknown) renders nothing, only an actual False earns the badge."""
     text = liveness_cell(liveness)
     if attached >= 1 and liveness in ("alive", "stale"):
         text.append(f" {glyph('⇄', str(attached))}", style=f"bold {ACCENT}")
+    if image_current is False:
+        text.append(f" {glyph('⬆', 'outdated')}", style=f"bold {YELLOW}")
     return text
 
 

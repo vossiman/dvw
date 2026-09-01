@@ -81,6 +81,11 @@ _dvw_repo_pin() {
     | jq -r '.image // empty' 2>/dev/null || return 1
 }
 
+# Source-clone state / ff-pull via the catalog service. Print the JSON body;
+# rc per _catalog_req (2 = unreachable, 1 = HTTP error).
+_dvw_catalog_source_get()  { _catalog_req GET  "/v1/workspaces/$1/source"; }
+_dvw_catalog_source_pull() { _catalog_req POST "/v1/workspaces/$1/source/pull"; }
+
 # 12-char digest for display; falls back to the whole ref for non-digest pins.
 _dvw_pin_short() {
   local ref="$1"
@@ -90,12 +95,26 @@ _dvw_pin_short() {
   esac
 }
 
+# Head branch name for a pin PR against <base> moving the pin to <image>.
+# One head branch per base: a shared head cannot carry different bases' file
+# rewrites (the second PUT 409s on the first PUT's blob, since it reuses the
+# other base's content sha). main keeps the historical name (no suffix) so
+# existing open PRs are still recognized.
+_dvw_pin_head_branch() {
+  local base="$1" image="$2"
+  local branch="$DVW_PIN_BRANCH_PREFIX-$(_dvw_pin_short "$image")"
+  local base_slug="${base//\//-}"
+  [[ "$base" != "main" ]] && branch="$branch-$base_slug"
+  printf '%s\n' "$branch"
+}
+
 # Open (or report) the pin PR for <slug>@<base>, moving the pin to <image>.
 # Idempotent: an existing open PR from our branch is reported, not duplicated.
 # Prints the PR URL on success.
 _dvw_pin_open_pr() {
   local slug="$1" base="$2" image="$3"
-  local branch="$DVW_PIN_BRANCH_PREFIX-$(_dvw_pin_short "$image")"
+  local branch
+  branch=$(_dvw_pin_head_branch "$base" "$image")
   local existing meta sha head tmp url orig target_line
 
   existing=$(gh pr list -R "$slug" --head "$branch" --state open \
@@ -105,7 +124,7 @@ _dvw_pin_open_pr() {
   fi
 
   if [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
-    ui_info "[dry-run] would open $slug PR $branch -> $base pinning $(_dvw_pin_short "$image")"
+    ui_info "[dry-run] would open $slug PR $branch -> $base pinning $(_dvw_pin_short "$image")" >&2
     return 0
   fi
 
@@ -189,6 +208,16 @@ _dvw_pin_state() {
   repo=$(jq -r '.repo // empty' <<<"$ws"); branch=$(jq -r '.branch // empty' <<<"$ws")
   slug=$(_dvw_repo_slug "$repo") || { printf 'unknown\t%s\t%s\t\n' "$repo" "$branch"; return 0; }
   [[ -n "$branch" ]] || { printf 'unknown\t%s\t\t\n' "$slug"; return 0; }
+
+  # The clone's live branch is what `devpod up --recreate` builds from; the
+  # catalog records only the creation-time branch. Fail-open to the catalog
+  # value: unreachable service, absent clone, or detached HEAD change nothing.
+  local src live
+  if src=$(_dvw_catalog_source_get "$id" 2>/dev/null); then
+    live=$(jq -r 'select(.present == true and .detached == false)
+                  | .branch // empty' <<<"$src" 2>/dev/null) || live=""
+    [[ -n "$live" ]] && branch="$live"
+  fi
   if [[ -z "$bp_arg" ]]; then
     bp=$(_dvw_blueprint_pin) || { printf 'unknown\t%s\t%s\t\n' "$slug" "$branch"; return 0; }
   else
@@ -283,7 +312,7 @@ _dvw_pin_preflight() {
   ui_status_warn "$slug@$branch is pinned to $(_dvw_pin_short "$cur") — rebuilding now reinstalls that image"
   if ui_confirm "open a pin-sync PR first?"; then
     cmd_pin_sync "$id"
-    ui_info "merge the PR, then re-run: dvw rebuild $id"
+    ui_info "merge the PR, then: dvw pin-rebuild $id (pulls the source clone and verifies the image)"
     return 1
   fi
   return 0

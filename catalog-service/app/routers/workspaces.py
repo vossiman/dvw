@@ -3,8 +3,11 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Path, Response
+from starlette.concurrency import run_in_threadpool
 
+from .. import source as source_mod
 from ..deps import (
+    BlueprintImageDep,
     InspectorDep,
     SettingsDep,
     StoreDep,
@@ -19,8 +22,10 @@ from ..models import (
     Workspace,
     WorkspaceCreate,
     WorkspacePatch,
+    WorkspaceSource,
     utcnow_iso,
 )
+from ..source import SourcePullError
 from ..store import ConflictError, NotFoundError
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
@@ -95,6 +100,34 @@ async def delete_workspace(ws_id: WsId, store: StoreDep) -> Response:
     return Response(status_code=204)
 
 
+@router.get("/{ws_id}/source", response_model=WorkspaceSource)
+async def workspace_source(
+    ws_id: WsId, store: StoreDep, settings: SettingsDep
+) -> WorkspaceSource:
+    await _get_or_404(store, ws_id)
+    try:
+        source_path = settings.source_path(ws_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid workspace id: {ws_id}")
+    return await run_in_threadpool(source_mod.read_source, ws_id, source_path)
+
+
+@router.post("/{ws_id}/source/pull", response_model=WorkspaceSource)
+async def workspace_source_pull(
+    ws_id: WsId, store: StoreDep, settings: SettingsDep
+) -> WorkspaceSource:
+    await _get_or_404(store, ws_id)
+    try:
+        source_path = settings.source_path(ws_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid workspace id: {ws_id}")
+    try:
+        return await run_in_threadpool(
+            source_mod.pull_source, ws_id, source_path)
+    except SourcePullError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+
 # ---- the new, authoritative resolver + deep inspect -----------------------
 
 
@@ -129,9 +162,12 @@ async def workspace_siblings(
 
 
 @router.get("/{ws_id}/inspect", response_model=ContainerInspect)
-async def inspect_container(ws_id: WsId, inspector: InspectorDep) -> ContainerInspect:
+async def inspect_container(
+    ws_id: WsId, inspector: InspectorDep, blueprint: BlueprintImageDep
+) -> ContainerInspect:
     """Deep inspection: state, health, mounts, cpu/mem, disk, liveness."""
-    return await run_inspect(inspector.inspect, ws_id)
+    bp = await run_in_threadpool(blueprint.get)
+    return await run_inspect(inspector.inspect, ws_id, bp)
 
 
 async def _get_or_404(store: StoreDep, ws_id: str) -> Workspace:

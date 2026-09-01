@@ -20,13 +20,20 @@ but this is not enforced: `main` carries no branch protection or rulesets
 - **aicoding** owns in-container life (`devcontainer.json`, install/sync).
   dvw only seeds that file (`DVW_BLUEPRINT_DEVCONTAINER_URL`, tip-of-main by
   default) and orchestrates DevPod.
-- **Image pin reconciliation** (`lib/pin.sh`) is the one exception: aicoding's
-  boot sync rewrites a workspace's `.devcontainer/devcontainer.json` pin but
-  deliberately never commits it, while `devpod up --recreate` builds from the
-  committed copy. `dvw pin-sync` closes that gap with a PR per repo, and
-  `cmd_recreate` offers it before rebuilding onto a stale image. Consumer
-  discovery is free here — the catalog already lists every workspace's
-  `repo@branch`.
+- **Image pin reconciliation** (`lib/pin.sh` / `lib/pin-rebuild.sh`) is the
+  one exception: aicoding's boot sync rewrites a workspace's
+  `.devcontainer/devcontainer.json` pin but deliberately never commits it,
+  while `devpod up --recreate` builds from the committed copy. `dvw recreate
+  <id>` detects stale pins and offers to open a pin-sync PR; after merge,
+  `dvw pin-rebuild <id>` is the closing loop (source-clone pull via catalog
+  service, rebuild, image assertion). `dvw pin-sync` is retained for
+  fleet-wide sweeps across many repos. The catalog service requires
+  redeployment (`catalog-service/deploy/host-update.sh`) before the new
+  `/source` and `/source/pull` endpoints exist: `dvw status` and `dvw
+  pin-sync` degrade gracefully against an old server, but `dvw pin-rebuild`
+  does not, it opens the PR, waits for the merge, then fails at the pull
+  step with a clear error once the endpoint 404s. Consumer discovery is free
+  here: the catalog already lists every workspace's `repo@branch`.
 
 ### Naming: “blueprint” means two things
 

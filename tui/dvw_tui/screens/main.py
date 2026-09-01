@@ -43,6 +43,13 @@ _CATALOG_HOST = os.environ.get("DVW_CATALOG_HOST", "vossisrv")
 NodeData = tuple  # ("ws", ws_id) | ("win", ws_id, window_id)
 
 
+def _tri(v: object) -> bool | None:
+    """Tri-state coercion for image_current pulled out of a status dict:
+    only an actual bool counts, anything else (missing, null, old server) is
+    unknown."""
+    return v if isinstance(v, bool) else None
+
+
 class WorkspaceTree(Tree[NodeData]):
     """Left panel — workspaces as folders, tmux windows as child rows.
 
@@ -80,6 +87,7 @@ class MainScreen(Screen):
         Binding("s", "stop", "stop"),
         Binding("S", "start", "start"),
         Binding("r", "rebuild", "rebuild"),
+        Binding("u", "pin_rebuild", "update pin"),
         Binding("X", "remove", "remove"),
         Binding("n", "new", "new"),
         Binding("d", "doctor", "doctor"),
@@ -182,7 +190,7 @@ class MainScreen(Screen):
         text.append("  ")
         text.append_text(ide_cell(w.ide))
         text.append("  ")
-        text.append_text(state_cell(w.liveness, w.attached))
+        text.append_text(state_cell(w.liveness, w.attached, w.image_current))
         return text
 
     def _render_tree(self) -> None:
@@ -320,14 +328,16 @@ class MainScreen(Screen):
     def _render_inspect_placeholder(self, ws_id: str) -> None:
         """Instant stand-in while no cached inspect data exists yet."""
         liveness = "unknown"
+        image_current = None
         for w in self._workspaces:
             if w.id == ws_id:
                 liveness = w.liveness
+                image_current = w.image_current
                 break
         text = Text()
         text.append(f" {ws_id}\n", style=f"bold {ACCENT}")
         text.append(" ")
-        text.append_text(state_cell(liveness, self._row_attached(ws_id)))
+        text.append_text(state_cell(liveness, self._row_attached(ws_id), image_current))
         text.append("\n")
         attached = self._row_attached(ws_id)
         if attached >= 1:
@@ -341,7 +351,9 @@ class MainScreen(Screen):
         text = Text()
         text.append(f" {ws_id}\n", style=f"bold {ACCENT}")
         text.append(" ")
-        text.append_text(state_cell(data.get("liveness", "unknown"), self._row_attached(ws_id)))
+        text.append_text(state_cell(data.get("liveness", "unknown"),
+                                    self._row_attached(ws_id),
+                                    _tri(data.get("image_current"))))
         text.append("\n")
         attached = self._row_attached(ws_id)
         if attached >= 1:
@@ -465,6 +477,9 @@ class MainScreen(Screen):
 
     def action_rebuild(self) -> None:
         self.app.do_confirmed_action("rebuild", self.focused_workspace())
+
+    def action_pin_rebuild(self) -> None:
+        self.app.do_pin_rebuild(self.focused_workspace())
 
     def action_remove(self) -> None:
         self.app.do_confirmed_action("remove", self.focused_workspace())

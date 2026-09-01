@@ -14,6 +14,7 @@ from __future__ import annotations
 import grp
 import os
 import pwd
+import re
 import subprocess
 import threading
 import time
@@ -57,11 +58,32 @@ def _workspace_mount(mounts: list[dict], prefix: str) -> dict | None:
     return None
 
 
+_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+def _sha256_of(ref: str | None) -> str | None:
+    if not ref:
+        return None
+    m = _DIGEST_RE.search(ref)
+    return m.group(0) if m else None
+
+
+def image_current(digest: str | None, blueprint_ref: str | None) -> bool | None:
+    bp = _sha256_of(blueprint_ref)
+    if digest is None or bp is None:
+        return None
+    return digest == bp
+
+
 class Inspector(Protocol):
     def ping(self) -> bool: ...
     def resolve(self, ws_id: str) -> CanonicalContainer: ...
-    def inspect(self, ws_id: str) -> ContainerInspect: ...
-    def status_many(self, ids: list[str]) -> list[WorkspaceStatus]: ...
+    def inspect(
+        self, ws_id: str, blueprint_image: str | None = None
+    ) -> ContainerInspect: ...
+    def status_many(
+        self, ids: list[str], blueprint_image: str | None = None
+    ) -> list[WorkspaceStatus]: ...
     def siblings(self, ws_id: str) -> list[SiblingContainer]: ...
     def orphans(self, catalog_ids: set[str]) -> list[Orphan]: ...
     def waiting_windows(self) -> list[WaitingWindow]: ...
@@ -216,6 +238,27 @@ class DockerInspector:
             group = str(st.st_gid)
         return f"{user}:{group}"
 
+    def _image_digest(self, c: Container) -> str | None:
+        # Config.Image is the ref the container was created from; for the
+        # devbox (image-only devcontainer) that is the digest-pinned ref, e.g.
+        # "repo@sha256:...". But a container created straight from an image
+        # ID (no ref) also stores a bare "sha256:<hex>" there, which is the
+        # image's own id, not a manifest digest, and would never match the
+        # blueprint's digest again: a permanent false "outdated". Only trust
+        # Config.Image when it carries a real pinned ref ("@sha256:...");
+        # otherwise fall through to the guarded RepoDigests lookup below.
+        image_ref = c.attrs.get("Config", {}).get("Image") or ""
+        d = _sha256_of(image_ref) if "@sha256:" in image_ref else None
+        if d:
+            return d
+        # Fallback needs /images, which the deployed socket proxy BLOCKS;
+        # degrade to unknown rather than erroring the whole status call.
+        try:
+            repo_digests = (c.image.attrs.get("RepoDigests") or []) if c.image else []
+        except Exception:
+            return None
+        return _sha256_of(repo_digests[0]) if repo_digests else None
+
     def siblings(self, ws_id: str) -> list[SiblingContainer]:
         """Per-container detail for every RUNNING candidate of a workspace.
 
@@ -336,10 +379,17 @@ class DockerInspector:
 
     # ---- deep inspect -----------------------------------------------------
 
-    def inspect(self, ws_id: str) -> ContainerInspect:
+    def inspect(
+        self, ws_id: str, blueprint_image: str | None = None
+    ) -> ContainerInspect:
         resolved = self.resolve(ws_id)
         if resolved.container_id is None:
-            return ContainerInspect(workspace_id=ws_id, liveness="absent")
+            return ContainerInspect(
+                workspace_id=ws_id,
+                liveness="absent",
+                blueprint_image=blueprint_image,
+                image_current=image_current(None, blueprint_image),
+            )
         c = self._client.containers.get(resolved.container_id)
         c.reload()
         a = c.attrs
@@ -374,6 +424,10 @@ class DockerInspector:
             ],
             liveness=self._liveness(c),
         )
+        digest = self._image_digest(c)
+        info.image_digest = digest
+        info.blueprint_image = blueprint_image
+        info.image_current = image_current(digest, blueprint_image)
         if info.running:
             cpu, mem, mem_limit, mem_pct = self._cpu_mem(c)
             info.cpu_pct, info.mem_bytes = cpu, mem
@@ -471,7 +525,9 @@ class DockerInspector:
         with result_lock:
             return dict(attached)
 
-    def status_many(self, ids: list[str]) -> list[WorkspaceStatus]:
+    def status_many(
+        self, ids: list[str], blueprint_image: str | None = None
+    ) -> list[WorkspaceStatus]:
         # Group containers per destination in one pass over devpod
         # containers, then answer each id locally. Running containers keep
         # the full group so duplicates can be resolved canonically below;
@@ -520,6 +576,7 @@ class DockerInspector:
         out = []
         for ws_id in ids:
             c = selected.get(ws_id)
+            digest = self._image_digest(c) if c else None
             out.append(
                 WorkspaceStatus(
                     id=ws_id,
@@ -528,6 +585,9 @@ class DockerInspector:
                     devpod_uid=self._uid(c) if c else None,
                     running_siblings=len(running_by_dest.get(ws_id, [])),
                     attached=attached.get(c.id, 0) if c else 0,
+                    image_digest=digest,
+                    blueprint_image=blueprint_image,
+                    image_current=image_current(digest, blueprint_image),
                 )
             )
         return out
