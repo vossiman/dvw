@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import selectors
 import socket
 import sys
 import threading
@@ -26,6 +27,10 @@ log = logging.getLogger("dvw-docker-proxy")
 MAX_HEAD = 16 * 1024
 MAX_BODY = 64 * 1024
 MAX_RELAY = 1024 * 1024
+# Seconds the upgraded exec stream may go quiet before the relay gives up. A
+# probe answers in milliseconds, so this only ever fires on a wedged upstream,
+# and it is what stops such a thread from living forever.
+RELAY_IDLE_TIMEOUT = 30.0
 EXEC_TTL = 60.0
 EXEC_CAP = 256
 DENY_BODY = b'{"message":"dvw-docker-proxy: route not allowed"}'
@@ -324,6 +329,25 @@ def _rebuild_head(req: Request, body: bytes) -> bytes:
     return ("\r\n".join(out) + "\r\n\r\n").encode("latin-1")
 
 
+def _rebuild_upgrade_head(req: Request, body: bytes) -> bytes:
+    """Request head for exec start, which has to ask dockerd for the upgrade.
+
+    Same allowlist as every other route, plus the two headers the upgrade
+    needs, written by this proxy rather than copied from the client: the
+    client's own spelling never reaches dockerd, and _FORWARD_HEADERS stays
+    as narrow as it is for the plain routes.
+    """
+    out = [f"{req.method} {req.target} HTTP/1.1"]
+    for name, value in req.headers:
+        if name.lower() not in _FORWARD_HEADERS:
+            continue
+        out.append(f"{name}: {value}")
+    out.append(f"Content-Length: {len(body)}")
+    out.append("Connection: Upgrade")
+    out.append("Upgrade: tcp")
+    return ("\r\n".join(out) + "\r\n\r\n").encode("latin-1")
+
+
 def _read_response_head(up) -> tuple[bytes, bytes]:
     return _recv_until(up, b"\r\n\r\n", MAX_HEAD)
 
@@ -346,19 +370,24 @@ def _drain(sock, initial: bytes = b"") -> bytes:
     return out[:MAX_RELAY]
 
 
-def _relay_plain(client, up, req: Request, body: bytes) -> None:
-    up.sendall(_rebuild_head(req, body) + body)
-    head, rest = _read_response_head(up)
-    client.sendall(_with_connection_close(head) + rest[:MAX_RELAY])
-    sent = len(rest)
+def _copy_capped(client, up, req: Request, sent: int) -> None:
+    """Copy upstream to client until EOF or MAX_RELAY bytes have been sent."""
     while sent < MAX_RELAY:
         chunk = up.recv(65536)
         if not chunk:
             return
-        client.sendall(chunk[:MAX_RELAY - sent])
+        chunk = chunk[:MAX_RELAY - sent]
+        client.sendall(chunk)
         sent += len(chunk)
     log.info("verdict=cut path=%s reason=response over %d bytes",
              req.path, MAX_RELAY)
+
+
+def _relay_plain(client, up, req: Request, body: bytes) -> None:
+    up.sendall(_rebuild_head(req, body) + body)
+    head, rest = _read_response_head(up)
+    client.sendall(_with_connection_close(head) + rest[:MAX_RELAY])
+    _copy_capped(client, up, req, len(rest[:MAX_RELAY]))
 
 
 def _relay_exec_create(client, up, req: Request, body: bytes,
@@ -378,7 +407,58 @@ def _relay_exec_create(client, up, req: Request, body: bytes,
 
 
 def _relay_exec_start(client, up, req: Request, body: bytes) -> None:
-    raise Forbidden("exec start not implemented yet")  # replaced in Task 5
+    """Forward the start request, then relay whatever the upgrade produces.
+
+    Docker answers either with a plain HTTP response (an error, relayed like
+    any other) or with 101 and the raw multiplexed stream, which is copied to
+    the client until the upstream closes, goes quiet, or MAX_RELAY is reached.
+    """
+    up.sendall(_rebuild_upgrade_head(req, body) + body)
+    head, rest = _read_response_head(up)
+    fields = head.split(b" ", 2)
+    if len(fields) < 2 or fields[1] != b"101":
+        client.sendall(_with_connection_close(head) + rest[:MAX_RELAY])
+        _copy_capped(client, up, req, len(rest[:MAX_RELAY]))
+        return
+    # The 101 head goes over verbatim: it is the handshake docker-py matches
+    # on, and rewriting Connection there would break the upgrade.
+    client.sendall(head)
+    sent = 0
+    if rest:
+        client.sendall(rest[:MAX_RELAY])
+        sent = len(rest[:MAX_RELAY])
+    # Nothing goes upstream from the client: AttachStdin is refused at exec
+    # create, so after the request body there is nothing to read but EOF.
+    # Half-closing says so, and leaves this a one-way copy.
+    try:
+        client.shutdown(socket.SHUT_RD)
+    except OSError:
+        pass
+    up.settimeout(None)  # the selector, not the socket, bounds the wait
+    sel = selectors.DefaultSelector()
+    sel.register(up, selectors.EVENT_READ)
+    try:
+        while sent < MAX_RELAY:
+            if not sel.select(timeout=RELAY_IDLE_TIMEOUT):
+                log.info("verdict=cut path=%s reason=exec stream idle for %ss",
+                         req.path, RELAY_IDLE_TIMEOUT)
+                return
+            chunk = up.recv(65536)
+            if not chunk:
+                return
+            chunk = chunk[:MAX_RELAY - sent]
+            client.sendall(chunk)
+            sent += len(chunk)
+        log.info("verdict=cut path=%s reason=exec stream over %d bytes",
+                 req.path, MAX_RELAY)
+    finally:
+        sel.close()
+        # Whichever way the copy ended, both peers are done: the caller closes
+        # the upstream, and this half-close tells the client so straight away.
+        try:
+            client.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
 
 
 def _check_exec_start_body(body: bytes) -> None:

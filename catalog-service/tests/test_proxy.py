@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 
 import pytest
 
@@ -51,9 +52,13 @@ class FakeUpstream:
             return
         headers = {k.lower(): v for k, v in req.headers}
         self.requests.append((req.method, req.target, headers, req.body))
-        resp = self.handler(req.method, req.target, headers, req.body, conn)
-        if resp is not None:
-            conn.sendall(resp)
+        try:
+            resp = self.handler(req.method, req.target, headers, req.body, conn)
+            if resp is not None:
+                conn.sendall(resp)
+        except OSError:
+            pass  # the proxy hung up first, which several tests arrange
+        finally:
             conn.close()
 
     def close(self):
@@ -110,6 +115,7 @@ def stack(tmp_path):
     s = Stack()
     s.send = send
     s.upstream = upstream
+    s.path = px_path
     s.registry = registry
     s.set_handler = lambda h: state.__setitem__("handler", h)
     yield s
@@ -458,7 +464,6 @@ def test_exec_registry_ttl_and_cap():
     reg.add("b")
     reg.add("c")
     assert not reg.check("a") and reg.check("b") and reg.check("c")
-    import time
     time.sleep(0.08)
     assert not reg.check("c")
 
@@ -468,5 +473,154 @@ def test_exec_non_finite_number_is_denied(stack):
     before = len(stack.upstream.requests)
     resp = stack.send(req("POST", "/containers/abc123/exec",
                           b'{"Cmd":["dvw-probe"],"AttachStdout":Infinity}'))
+    assert status_of(resp) == 403
+    assert len(stack.upstream.requests) == before
+
+
+# ---- exec start / inspect ----------------------------------------------------
+
+UPGRADE_HEAD = (b"HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\n"
+                b"Content-Type: application/vnd.docker.raw-stream\r\n"
+                b"Upgrade: tcp\r\n\r\n")
+
+
+def _register(stack, exec_id):
+    stack.set_handler(lambda m, p, h, b, c: http("201 Created",
+                                                 json.dumps({"Id": exec_id}).encode()))
+    exec_create(stack, DOCKER_PY_EXEC)
+
+
+def upgrade_handler(frames: list[bytes], stall: float = 0.0):
+    """Answer with 101 and then raw stream bytes, optionally stalling before
+    the close so the relay's idle timeout is the thing that ends the copy."""
+    def h(m, p, hd, b, conn):
+        conn.sendall(UPGRADE_HEAD)
+        for f in frames:
+            conn.sendall(f)
+        if stall:
+            time.sleep(stall)
+        conn.close()
+        return None
+    return h
+
+
+def recv_until_eof(path, raw, timeout=3.0):
+    """Send `raw` and read until the proxy closes. Returns (bytes, eof, secs).
+    eof is False when our own socket timeout fired, which is how a test tells
+    "the proxy hung up" from "the proxy is still holding the connection"."""
+    c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    c.settimeout(timeout)
+    c.connect(path)
+    started = time.monotonic()
+    c.sendall(raw)
+    chunks, eof = [], True
+    while True:
+        try:
+            d = c.recv(65536)
+        except socket.timeout:
+            eof = False
+            break
+        if not d:
+            break
+        chunks.append(d)
+    c.close()
+    return b"".join(chunks), eof, time.monotonic() - started
+
+
+def test_exec_start_relays_upgraded_stream(stack):
+    _register(stack, "e9")
+    # docker multiplexed frame: stream 1 (stdout), 4-byte big-endian length
+    frame = b"\x01\x00\x00\x00" + (12).to_bytes(4, "big") + b'{"schema":1}'
+    stack.set_handler(upgrade_handler([frame]))
+    resp = stack.send(req("POST", "/exec/e9/start", b'{"Detach":false,"Tty":false}',
+                          "Connection: Upgrade\r\nUpgrade: tcp\r\n"))
+    head, rest = resp.split(b"\r\n\r\n", 1)
+    assert head.startswith(b"HTTP/1.1 101")
+    assert rest == frame
+    assert stack.upstream.requests[-1][1] == "/exec/e9/start"
+    assert stack.upstream.requests[-1][2].get("upgrade") == "tcp"
+    assert stack.upstream.requests[-1][2].get("connection") == "Upgrade"
+
+
+def test_exec_start_asks_for_the_upgrade_even_if_the_client_did_not(stack):
+    _register(stack, "e9b")
+    frame = b"\x01\x00\x00\x00" + (2).to_bytes(4, "big") + b"hi"
+    stack.set_handler(upgrade_handler([frame]))
+    resp = stack.send(req("POST", "/exec/e9b/start", b"{}"))
+    assert resp.split(b"\r\n\r\n", 1)[1] == frame
+    assert stack.upstream.requests[-1][2].get("upgrade") == "tcp"
+
+
+def test_exec_start_does_not_forward_other_client_headers(stack):
+    _register(stack, "e9c")
+    stack.set_handler(upgrade_handler([b"x"]))
+    stack.send(req("POST", "/exec/e9c/start", b"{}",
+                   "X-Registry-Auth: secret\r\nUser-Agent: dvw/1\r\n"))
+    forwarded = stack.upstream.requests[-1][2]
+    assert "x-registry-auth" not in forwarded
+    assert forwarded["user-agent"] == "dvw/1"
+
+
+def test_exec_start_caps_relayed_bytes(stack):
+    _register(stack, "e10")
+    big = b"\x01\x00\x00\x00" + (2 * px.MAX_RELAY).to_bytes(4, "big") + b"x" * (2 * px.MAX_RELAY)
+    stack.set_handler(upgrade_handler([big]))
+    resp = stack.send(req("POST", "/exec/e10/start", b"{}"))
+    head, rest = resp.split(b"\r\n\r\n", 1)
+    assert head.startswith(b"HTTP/1.1 101")
+    assert len(rest) == px.MAX_RELAY
+
+
+def test_exec_start_stalled_upstream_hits_the_idle_timeout(stack, monkeypatch):
+    _register(stack, "e10b")
+    frame = b"\x02\x00\x00\x00" + (3).to_bytes(4, "big") + b"err"
+    stack.set_handler(upgrade_handler([frame], stall=5.0))
+    monkeypatch.setattr(px, "RELAY_IDLE_TIMEOUT", 0.1)
+    resp, eof, elapsed = recv_until_eof(stack.path,
+                                        req("POST", "/exec/e10b/start", b"{}"))
+    assert eof, "the proxy must close a stalled relay, not hold the client"
+    assert elapsed < 2.0
+    assert resp.split(b"\r\n\r\n", 1)[1] == frame
+
+
+def test_exec_start_detach_true_denied(stack):
+    _register(stack, "e11")
+    before = len(stack.upstream.requests)
+    resp = stack.send(req("POST", "/exec/e11/start", b'{"Detach":true}'))
+    assert status_of(resp) == 403
+    assert len(stack.upstream.requests) == before
+
+
+def test_exec_start_plain_error_response_is_forwarded(stack):
+    _register(stack, "e12")
+    stack.set_handler(lambda m, p, h, b, c: http("409 Conflict", b'{"message":"not running"}'))
+    resp = stack.send(req("POST", "/exec/e12/start", b"{}"))
+    assert status_of(resp) == 409
+    assert b"not running" in body_of(resp)
+    assert b"\r\nConnection: close\r\n" in resp.split(b"\r\n\r\n", 1)[0] + b"\r\n"
+
+
+def test_exec_start_plain_response_is_capped(stack):
+    _register(stack, "e12b")
+    stack.set_handler(lambda m, p, h, b, c: http("200 OK", b"y" * (px.MAX_RELAY + 5000)))
+    resp = stack.send(req("POST", "/exec/e12b/start", b"{}"))
+    assert status_of(resp) == 200
+    assert len(body_of(resp)) == px.MAX_RELAY
+
+
+def test_exec_inspect_for_registered_id(stack):
+    _register(stack, "e13")
+    stack.set_handler(lambda m, p, h, b, c: ok_json({"ExitCode": 0, "Running": False}))
+    resp = stack.send(req("GET", "/exec/e13/json"))
+    assert status_of(resp) == 200
+    assert json.loads(body_of(resp))["ExitCode"] == 0
+
+
+def test_exec_id_from_one_container_cannot_be_started_after_ttl(stack):
+    stack.registry._ttl = 0.01
+    _register(stack, "e14")
+    time.sleep(0.03)
+    before = len(stack.upstream.requests)
+    resp = stack.send(req("POST", "/exec/e14/start", b"{}"))
     assert status_of(resp) == 403
     assert len(stack.upstream.requests) == before
