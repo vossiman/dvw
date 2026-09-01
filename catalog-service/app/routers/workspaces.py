@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Path, Response
+from starlette.concurrency import run_in_threadpool
 
+from .. import source as source_mod
 from ..deps import (
     InspectorDep,
     SettingsDep,
@@ -19,8 +21,10 @@ from ..models import (
     Workspace,
     WorkspaceCreate,
     WorkspacePatch,
+    WorkspaceSource,
     utcnow_iso,
 )
+from ..source import SourcePullError
 from ..store import ConflictError, NotFoundError
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
@@ -93,6 +97,27 @@ async def delete_workspace(ws_id: WsId, store: StoreDep) -> Response:
     await store.remove_workspace(ws_id)
     invalidate_resolve_cache(ws_id)
     return Response(status_code=204)
+
+
+@router.get("/{ws_id}/source", response_model=WorkspaceSource)
+async def workspace_source(
+    ws_id: WsId, store: StoreDep, settings: SettingsDep
+) -> WorkspaceSource:
+    await _get_or_404(store, ws_id)
+    return await run_in_threadpool(
+        source_mod.read_source, ws_id, settings.source_path(ws_id))
+
+
+@router.post("/{ws_id}/source/pull", response_model=WorkspaceSource)
+async def workspace_source_pull(
+    ws_id: WsId, store: StoreDep, settings: SettingsDep
+) -> WorkspaceSource:
+    await _get_or_404(store, ws_id)
+    try:
+        return await run_in_threadpool(
+            source_mod.pull_source, ws_id, settings.source_path(ws_id))
+    except SourcePullError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
 
 
 # ---- the new, authoritative resolver + deep inspect -----------------------

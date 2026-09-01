@@ -66,7 +66,12 @@ class FakeInspector:
 
 @pytest.fixture
 def settings(tmp_path):
-    return Settings(data_dir=tmp_path, docker_host="", token=None)
+    return Settings(
+        data_dir=tmp_path,
+        docker_host="",
+        token=None,
+        devpod_agent_workspaces_dir=tmp_path / "agent",
+    )
 
 
 @pytest.fixture
