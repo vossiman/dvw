@@ -30,9 +30,15 @@ class Settings(BaseSettings):
     # When set, every /v1 request must send `Authorization: Bearer <token>`.
     token: str | None = None
 
-    # Docker connection. Empty => docker.from_env() (local /var/run/docker.sock
-    # via the `docker` group). Set to e.g. tcp://127.0.0.1:2375 to use the
-    # tecnativa/docker-socket-proxy hardening (see deploy/docker-socket-proxy.md).
+    # Docker connection. The deployed posture is the socket proxy, not the
+    # docker group: deploy/catalog.env.example ships
+    # CATALOG_DOCKER_HOST=tcp://127.0.0.1:2375 and dvw-catalog.service carries
+    # no SupplementaryGroups=docker, so a deployed service always sets this.
+    # Empty => docker.from_env() (local /var/run/docker.sock, which needs
+    # docker-group membership); that path is for local development only.
+    # deploy/docker-socket-proxy.md spells out what the proxy does and does not
+    # buy — notably, it narrows the API surface but does not remove host-root
+    # equivalence.
     docker_host: str = ""
 
     # The bind-mount destination prefix devpod uses inside every container.

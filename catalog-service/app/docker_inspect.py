@@ -11,7 +11,9 @@ docker-py is synchronous/blocking; callers run these methods in a threadpool
 
 from __future__ import annotations
 
+import grp
 import os
+import pwd
 import subprocess
 import threading
 import time
@@ -182,24 +184,37 @@ class DockerInspector:
         return c.labels.get(self._settings.devpod_id_label)
 
     def _workspaces_owner(self, c: Container) -> str | None:
-        """`user:group` owning /workspaces, or None if unreadable.
+        """`user:group` owning the workspace, or None if unreadable.
 
+        Read host-side from the bind mount's Source rather than by exec'ing
+        into the container, so the socket proxy never needs EXEC for this.
         root:root means the devcontainer's setup-user step never ran — the
         container was created and abandoned before provisioning. That is what
-        distinguishes a dud sibling from the real one.
+        distinguishes a dud sibling from the real one, and uid 0 is root in
+        both namespaces, so the discriminator survives the move. Non-root
+        names now resolve against the HOST passwd database.
         """
         if c.status != "running":
             return None
+        mount = _workspace_mount(
+            c.attrs.get("Mounts", []), self._settings.workspace_mount_prefix
+        )
+        source = mount.get("Source") if mount else None
+        if not source:
+            return None
         try:
-            res = c.exec_run(["stat", "-c", "%U:%G", "/workspaces"], demux=True)
-        except Exception:
+            st = os.stat(source)
+        except OSError:
             return None
-        if res.exit_code != 0:
-            return None
-        stdout = res.output[0] if isinstance(res.output, tuple) else res.output
-        if not stdout:
-            return None
-        return stdout.decode("utf-8", "replace").strip() or None
+        try:
+            user = pwd.getpwuid(st.st_uid).pw_name
+        except KeyError:
+            user = str(st.st_uid)
+        try:
+            group = grp.getgrgid(st.st_gid).gr_name
+        except KeyError:
+            group = str(st.st_gid)
+        return f"{user}:{group}"
 
     def siblings(self, ws_id: str) -> list[SiblingContainer]:
         """Per-container detail for every RUNNING candidate of a workspace.
