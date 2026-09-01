@@ -3,18 +3,14 @@ from dvw_tui.glyphs import glyph
 from dvw_tui.palette import TOKYO
 from dvw_tui.render import (
     ACCENT,
-    BLUE,
     GREEN,
     GREY,
-    PEACH,
     RED,
     SUBTLE,
-    TEAL,
     YELLOW,
     age,
     human_bytes,
     liveness_cell,
-    ide_color,
     meter,
     state_cell,
     window_label,
@@ -31,10 +27,7 @@ def test_color_constants_come_from_the_palette():
     assert GREEN == TOKYO["green"]
     assert RED == TOKYO["red"]
     assert GREY == TOKYO["grey"]
-    assert BLUE == TOKYO["blue"]
-    assert TEAL == TOKYO["teal"]
     assert YELLOW == TOKYO["yellow"]
-    assert PEACH == TOKYO["peach"]
 
 
 def test_human_bytes():
@@ -58,13 +51,6 @@ def test_liveness_cell_wide_marks_get_two_spaces():
     # the label. Narrow marks like ● keep a single space.
     assert liveness_cell("stale").plain == "⚠  stale"
     assert liveness_cell("alive").plain == "● running"
-
-def test_ide_color():
-    assert ide_color("cursor") == "#73daca"
-    assert ide_color("ssh") == "#e0af68"
-    assert ide_color("vscode") == "#7aa2f7"
-    assert ide_color("jetbrains") == "#ff9e64"
-    assert ide_color("none") == "#414868"
 
 def test_meter():
     assert meter(None) == "—"

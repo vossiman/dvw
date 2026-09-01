@@ -41,7 +41,7 @@ async def test_tree_lists_workspaces_as_nodes(fake_client):
         assert nodes[1].data == ("ws", "beta")
 
 
-async def test_workspace_node_label_has_repo_ide_and_state(fake_client):
+async def test_workspace_node_label_has_repo_and_state_but_no_ide(fake_client):
     app = DvwApp(client=fake_client)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -49,7 +49,7 @@ async def test_workspace_node_label_has_repo_ide_and_state(fake_client):
         text = _label(alpha)
         assert "alpha" in text
         assert "vossiman/alpha@main" in text
-        assert "cursor" in text
+        assert "cursor" not in text
         assert "● running" in text
         assert "⇄ 2" in text          # attached indicator survives the rewrite
         assert "○ stopped" in _label(beta)

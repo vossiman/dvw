@@ -30,7 +30,6 @@ from ..render import (
     GREEN,
     RED,
     SUBTLE,
-    ide_cell,
     inspect_lines,
     state_cell,
     window_label,
@@ -187,8 +186,6 @@ class MainScreen(Screen):
         text = Text("" if expandable else "  ")
         text.append(w.id, style=f"bold {ACCENT}")
         text.append(f"  {w.short_repo}@{w.branch}", style=SUBTLE)
-        text.append("  ")
-        text.append_text(ide_cell(w.ide))
         text.append("  ")
         text.append_text(state_cell(w.liveness, w.attached, w.image_current))
         return text
