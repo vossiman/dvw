@@ -101,7 +101,8 @@ failure.
 ### 2. Blueprint digest in the status payload
 
 The service fetches the blueprint `devcontainer.json` and caches the parsed
-image ref in memory with a short TTL (default 900s, `CATALOG_BLUEPRINT_TTL`).
+image ref in memory with a short TTL (default 900s,
+`CATALOG_BLUEPRINT_IMAGE_TTL`).
 One fetch serves every client and every row. On fetch failure the cached
 value is served if present, otherwise `null`, never an error, never a
 blocked response.
