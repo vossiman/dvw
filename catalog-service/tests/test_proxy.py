@@ -243,3 +243,81 @@ def test_large_body_is_not_counted_against_the_head_limit():
         sender.join(2)
         left.close()
         right.close()
+
+
+# ---- header smuggling ------------------------------------------------------
+
+@pytest.mark.parametrize("evil", [
+    b"X-Foo: a\n\nPOST /containers/create HTTP/1.1\r\nHost: d\r\n"
+    b"Content-Length: 2\r\n",
+    b"X-Foo: a\rPOST /containers/create HTTP/1.1\r\n",
+    b"X-Foo\x00: a\r\n",
+    b"X Foo: a\r\n",
+])
+def test_header_smuggling_is_400_and_never_reaches_upstream(stack, evil):
+    before = len(stack.upstream.requests)
+    resp = stack.send(b"GET /_ping HTTP/1.1\r\nHost: docker\r\n" + evil
+                      + b"Content-Length: 0\r\n\r\n")
+    assert status_of(resp) == 400
+    assert len(stack.upstream.requests) == before
+
+
+def test_only_allowlisted_headers_are_forwarded(stack):
+    stack.send(req("GET", "/_ping",
+                   headers="X-Registry-Auth: secret\r\nUser-Agent: dvw/1\r\n"))
+    forwarded = stack.upstream.requests[-1][2]
+    assert "x-registry-auth" not in forwarded
+    assert forwarded["user-agent"] == "dvw/1"
+    assert forwarded["host"] == "docker"
+
+
+def test_non_numeric_content_length_is_400(stack):
+    resp = stack.send(b"POST /containers/abc/exec HTTP/1.1\r\nContent-Length: 1_0\r\n\r\n")
+    assert status_of(resp) == 400
+
+
+def test_duplicate_content_length_is_400(stack):
+    resp = stack.send(b"POST /containers/abc/exec HTTP/1.1\r\n"
+                      b"Content-Length: 0\r\nContent-Length: 2\r\n\r\n{}")
+    assert status_of(resp) == 400
+
+
+# ---- query smuggling -------------------------------------------------------
+
+@pytest.mark.parametrize("query", [
+    "stream=true&stream=false",
+    "stream=false&stream=true",
+    "stream=false&stream=false",
+])
+def test_duplicate_stream_param_is_denied(stack, query):
+    before = len(stack.upstream.requests)
+    resp = stack.send(req("GET", f"/containers/abc123/stats?{query}"))
+    assert status_of(resp) == 403
+    assert len(stack.upstream.requests) == before
+
+
+def test_single_stream_false_still_passes(stack):
+    resp = stack.send(req("GET", "/containers/abc123/stats?stream=false&one-shot=1"))
+    assert status_of(resp) == 200
+
+
+# ---- route anchoring and relay cap -----------------------------------------
+
+def test_trailing_newline_target_is_not_an_allowed_route():
+    with pytest.raises(px.Forbidden):
+        px.route(px.Request("GET", "/_ping\n", [], b"", b""))
+
+
+def test_trailing_newline_target_on_the_wire_never_reaches_upstream(stack):
+    before = len(stack.upstream.requests)
+    resp = stack.send(b"GET /_ping\n HTTP/1.1\r\nHost: docker\r\n\r\n")
+    assert status_of(resp) == 400
+    assert len(stack.upstream.requests) == before
+
+
+def test_oversized_response_is_cut_at_max_relay(stack):
+    big = b"z" * (px.MAX_RELAY + 50_000)
+    stack.set_handler(lambda m, p, h, b, c: http("200 OK", big))
+    resp = stack.send(req("GET", "/_ping"))
+    assert status_of(resp) == 200
+    assert len(body_of(resp)) == px.MAX_RELAY

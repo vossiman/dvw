@@ -36,17 +36,23 @@ BAD_BODY = b'{"message":"dvw-docker-proxy: malformed request"}'
 _ID = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}"
 _VERSION_PREFIX = re.compile(r"^/v\d+\.\d+(?=/)")
 _ROUTES = [
-    ("GET", re.compile(r"^/_ping$"), "plain"),
-    ("GET", re.compile(r"^/version$"), "plain"),
-    ("GET", re.compile(r"^/info$"), "plain"),
-    ("GET", re.compile(r"^/containers/json$"), "plain"),
-    ("GET", re.compile(rf"^/containers/(?P<cid>{_ID})/json$"), "plain"),
-    ("GET", re.compile(rf"^/containers/(?P<cid>{_ID})/stats$"), "stats"),
-    ("POST", re.compile(rf"^/containers/(?P<cid>{_ID})/exec$"), "exec_create"),
-    ("POST", re.compile(rf"^/exec/(?P<eid>{_ID})/start$"), "exec_start"),
-    ("GET", re.compile(rf"^/exec/(?P<eid>{_ID})/json$"), "exec_inspect"),
+    ("GET", re.compile(r"/_ping\Z"), "plain"),
+    ("GET", re.compile(r"/version\Z"), "plain"),
+    ("GET", re.compile(r"/info\Z"), "plain"),
+    ("GET", re.compile(r"/containers/json\Z"), "plain"),
+    ("GET", re.compile(rf"/containers/(?P<cid>{_ID})/json\Z"), "plain"),
+    ("GET", re.compile(rf"/containers/(?P<cid>{_ID})/stats\Z"), "stats"),
+    ("POST", re.compile(rf"/containers/(?P<cid>{_ID})/exec\Z"), "exec_create"),
+    ("POST", re.compile(rf"/exec/(?P<eid>{_ID})/start\Z"), "exec_start"),
+    ("GET", re.compile(rf"/exec/(?P<eid>{_ID})/json\Z"), "exec_inspect"),
 ]
 _STREAM_OFF = {"false", "0", "False"}
+# RFC 7230 field-name token, and the only headers forwarded upstream. The
+# catalog needs no others, and an allowlist means a header this proxy has
+# never reasoned about cannot reach dockerd.
+_TOKEN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
+_DIGITS = re.compile(r"[0-9]+")
+_FORWARD_HEADERS = ("host", "content-type", "accept", "user-agent")
 
 
 class BadRequest(Exception):
@@ -111,32 +117,57 @@ def _recv_exact(sock, n, initial):
     return buf[:n], buf[n:]
 
 
+def _check_no_control_bytes(line: str, what: str) -> None:
+    """Reject anything a downstream parser could read as a line break.
+
+    The head is split on CRLF, so a CR, LF or NUL left inside a line was
+    smuggled: Go's net/textproto, which is what dockerd parses with, ends a
+    header line on a bare LF and would see a second request there. Every
+    other control byte is refused too, since none belongs in the four
+    headers this proxy forwards.
+    """
+    for ch in line:
+        if (ch < " " and ch != "\t") or ch == "\x7f":
+            raise BadRequest(f"control byte in {what}")
+
+
 def read_request(sock) -> Request:
     head, rest = _recv_until(sock, b"\r\n\r\n", MAX_HEAD)
     lines = head.decode("latin-1").split("\r\n")
+    _check_no_control_bytes(lines[0], "request line")
     parts = lines[0].split(" ")
     if len(parts) != 3 or not parts[2].startswith("HTTP/1.") or not parts[1].startswith("/"):
         raise BadRequest("bad request line")
     method, target = parts[0], parts[1]
+    if not _TOKEN.fullmatch(method):
+        raise BadRequest("bad method")
+    if any(ch <= " " or ch == "\x7f" for ch in target):
+        raise BadRequest("control byte in target")
     headers = []
     length = 0
+    have_length = False
     for line in lines[1:]:
         if not line:
             continue
+        _check_no_control_bytes(line, "header")
         name, sep, value = line.partition(":")
         if not sep:
             raise BadRequest("bad header")
-        name, value = name.strip(), value.strip()
+        if not _TOKEN.fullmatch(name):
+            raise BadRequest("bad header name")
+        value = value.strip()
         headers.append((name, value))
         lname = name.lower()
         if lname == "transfer-encoding":
             raise BadRequest("chunked request bodies are not accepted")
         if lname == "content-length":
-            try:
-                length = int(value)
-            except ValueError:
-                raise BadRequest("bad content-length") from None
-            if length < 0 or length > MAX_BODY:
+            if have_length:
+                raise BadRequest("duplicate content-length")
+            if not _DIGITS.fullmatch(value):
+                raise BadRequest("bad content-length")
+            length = int(value)
+            have_length = True
+            if length > MAX_BODY:
                 raise BadRequest("body too large")
     body, _ = _recv_exact(sock, length, rest)
     return Request(method, target, headers, body, head)
@@ -152,9 +183,13 @@ def route(req: Request) -> Route:
         cid = m.groupdict().get("cid")
         eid = m.groupdict().get("eid")
         if kind == "stats":
-            params = dict(p.partition("=")[::2] for p in req.query.split("&") if p)
-            if params.get("stream") not in _STREAM_OFF:
-                raise Forbidden("stats without stream=false")
+            stream = [p.partition("=")[2] for p in req.query.split("&")
+                      if p.partition("=")[0] == "stream"]
+            # Go's url.Values.Get takes the first value, so a duplicate key
+            # would let "stream=true&stream=false" pass a last-wins check and
+            # then stream forever. Refuse rather than guess.
+            if len(stream) != 1 or stream[0] not in _STREAM_OFF:
+                raise Forbidden("stats without exactly one stream=false")
             return Route("plain", container_id=cid)
         return Route(kind, container_id=cid, exec_id=eid)
     raise Forbidden(f"{req.method} {req.path}")
@@ -213,11 +248,11 @@ def _send_response(sock, status: str, body: bytes) -> None:
 
 
 def _rebuild_head(req: Request, body: bytes) -> bytes:
-    """Request head for the upstream: same target, hop-by-hop headers dropped,
-    Content-Length rewritten for the (possibly normalized) body."""
+    """Request head for the upstream: same target, only allowlisted headers
+    kept, Content-Length rewritten for the (possibly normalized) body."""
     out = [f"{req.method} {req.target} HTTP/1.1"]
     for name, value in req.headers:
-        if name.lower() in ("content-length", "connection", "transfer-encoding"):
+        if name.lower() not in _FORWARD_HEADERS:
             continue
         out.append(f"{name}: {value}")
     out.append(f"Content-Length: {len(body)}")
@@ -237,23 +272,29 @@ def _with_connection_close(head: bytes) -> bytes:
 
 
 def _drain(sock, initial: bytes = b"") -> bytes:
+    """Read to EOF, but never buffer more than MAX_RELAY."""
     out = initial
-    while True:
+    while len(out) < MAX_RELAY:
         chunk = sock.recv(65536)
         if not chunk:
-            return out
+            break
         out += chunk
+    return out[:MAX_RELAY]
 
 
 def _relay_plain(client, up, req: Request, body: bytes) -> None:
     up.sendall(_rebuild_head(req, body) + body)
     head, rest = _read_response_head(up)
-    client.sendall(_with_connection_close(head) + rest)
-    while True:
+    client.sendall(_with_connection_close(head) + rest[:MAX_RELAY])
+    sent = len(rest)
+    while sent < MAX_RELAY:
         chunk = up.recv(65536)
         if not chunk:
-            break
-        client.sendall(chunk)
+            return
+        client.sendall(chunk[:MAX_RELAY - sent])
+        sent += len(chunk)
+    log.info("verdict=cut path=%s reason=response over %d bytes",
+             req.path, MAX_RELAY)
 
 
 def _relay_exec_create(client, up, req: Request, body: bytes,
