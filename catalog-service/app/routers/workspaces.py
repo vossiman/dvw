@@ -105,8 +105,11 @@ async def workspace_source(
     ws_id: WsId, store: StoreDep, settings: SettingsDep
 ) -> WorkspaceSource:
     await _get_or_404(store, ws_id)
-    return await run_in_threadpool(
-        source_mod.read_source, ws_id, settings.source_path(ws_id))
+    try:
+        source_path = settings.source_path(ws_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid workspace id: {ws_id}")
+    return await run_in_threadpool(source_mod.read_source, ws_id, source_path)
 
 
 @router.post("/{ws_id}/source/pull", response_model=WorkspaceSource)
@@ -115,8 +118,12 @@ async def workspace_source_pull(
 ) -> WorkspaceSource:
     await _get_or_404(store, ws_id)
     try:
+        source_path = settings.source_path(ws_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid workspace id: {ws_id}")
+    try:
         return await run_in_threadpool(
-            source_mod.pull_source, ws_id, settings.source_path(ws_id))
+            source_mod.pull_source, ws_id, source_path)
     except SourcePullError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail)
 

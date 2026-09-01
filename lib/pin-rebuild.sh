@@ -26,7 +26,15 @@ _dvw_pin_wait_merged() {
       CLOSED) ui_error "PR closed without merging: $url"; return 2 ;;
     esac
     (( waited >= timeout )) && { ui_error "timed out after ${timeout}s: $url"; return 1; }
-    read -r -t "$DVW_PIN_REBUILD_POLL_SECS" _ 2>/dev/null || true
+    # `read -t` on non-tty stdin (cron, pipes, bats) returns instantly at
+    # EOF instead of waiting out the timeout, turning this into a gh
+    # request busy-spin. Only use the interactive Enter-to-recheck read on
+    # an actual terminal; otherwise just sleep the poll interval.
+    if [[ -t 0 ]]; then
+      read -r -t "$DVW_PIN_REBUILD_POLL_SECS" _ 2>/dev/null || true
+    else
+      sleep "$DVW_PIN_REBUILD_POLL_SECS"
+    fi
     waited=$(( waited + DVW_PIN_REBUILD_POLL_SECS ))
   done
 }
@@ -53,7 +61,13 @@ cmd_pin_rebuild() {
   while (($#)); do
     case "$1" in
       --no-wait) no_wait=1 ;;
-      --timeout) shift; timeout="${1:-1800}" ;;
+      --timeout)
+        shift
+        [[ "${1:-}" =~ ^[0-9]+$ ]] || {
+          ui_error "usage: dvw pin-rebuild <workspace-id> [--no-wait] [--timeout <s>]"
+          return 1
+        }
+        timeout="$1" ;;
       -*) ui_error "unknown flag: $1"; return 1 ;;
       *)
         if [[ -n "$id" ]]; then
@@ -110,9 +124,18 @@ cmd_pin_rebuild() {
   else
     need_sync=1
     ui_action "stale" "$branch pins $(_dvw_pin_short "${committed:-<none>}")"
-    pr_url=$(_dvw_pin_open_pr "$slug" "$branch" "$bp") || {
-      ui_error "couldn't open the pin PR for $slug@$branch"; return 1; }
-    [[ -n "$pr_url" ]] && ui_status_ok "PR: $pr_url"
+    # The clone's working tree can lag the remote branch: the pin PR merged
+    # earlier and this clone just hasn't pulled yet. Opening another PR in
+    # that case fails (byte-identical rewrite, nothing to PUT); check the
+    # remote first and skip straight to the pull when it's already current.
+    local remote_cur
+    if remote_cur=$(_dvw_repo_pin "$slug" "$branch") && [[ "$remote_cur" == "$bp" ]]; then
+      ui_info "remote already current on $branch (clone hasn't pulled yet); skipping the PR"
+    else
+      pr_url=$(_dvw_pin_open_pr "$slug" "$branch" "$bp") || {
+        ui_error "couldn't open the pin PR for $slug@$branch"; return 1; }
+      [[ -n "$pr_url" ]] && ui_status_ok "PR: $pr_url"
+    fi
     _dvw_pin_main_pr "$slug" "$branch" "$bp"
   fi
 
@@ -137,7 +160,7 @@ cmd_pin_rebuild() {
     pull_body=$(_dvw_catalog_source_pull "$id") || rc=$?
     if (( rc != 0 )); then
       local detail
-      detail=$(jq -r '.detail // .error // empty' <<<"$pull_body" 2>/dev/null)
+      detail=$(jq -r '.error.message // .detail // .error // empty' <<<"$pull_body" 2>/dev/null)
       ui_error "couldn't pull the source clone${detail:+: $detail}"
       return 1
     fi

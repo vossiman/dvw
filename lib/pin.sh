@@ -124,7 +124,7 @@ _dvw_pin_open_pr() {
   fi
 
   if [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
-    ui_info "[dry-run] would open $slug PR $branch -> $base pinning $(_dvw_pin_short "$image")"
+    ui_info "[dry-run] would open $slug PR $branch -> $base pinning $(_dvw_pin_short "$image")" >&2
     return 0
   fi
 

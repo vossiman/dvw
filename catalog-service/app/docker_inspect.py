@@ -240,8 +240,15 @@ class DockerInspector:
 
     def _image_digest(self, c: Container) -> str | None:
         # Config.Image is the ref the container was created from; for the
-        # devbox (image-only devcontainer) that is the digest-pinned ref.
-        d = _sha256_of(c.attrs.get("Config", {}).get("Image"))
+        # devbox (image-only devcontainer) that is the digest-pinned ref, e.g.
+        # "repo@sha256:...". But a container created straight from an image
+        # ID (no ref) also stores a bare "sha256:<hex>" there, which is the
+        # image's own id, not a manifest digest, and would never match the
+        # blueprint's digest again: a permanent false "outdated". Only trust
+        # Config.Image when it carries a real pinned ref ("@sha256:...");
+        # otherwise fall through to the guarded RepoDigests lookup below.
+        image_ref = c.attrs.get("Config", {}).get("Image") or ""
+        d = _sha256_of(image_ref) if "@sha256:" in image_ref else None
         if d:
             return d
         # Fallback needs /images, which the deployed socket proxy BLOCKS;

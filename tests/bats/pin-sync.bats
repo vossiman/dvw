@@ -175,6 +175,20 @@ _install_pin_pr_gh_stub() {
   grep -qF '"image": "example.invalid/do-not-edit:latest"' "$BATS_TEST_TMPDIR/put.json"
 }
 
+# review (final pass): the dry-run info line was on stdout, so a caller
+# capturing the PR URL via `url=$(_dvw_pin_open_pr ...)` got the [dry-run]
+# banner text as the "URL" instead of nothing. It belongs on stderr.
+@test "pin PR: dry-run's info line does not corrupt the captured stdout" {
+  DVW_DRY_RUN=1
+  gh() {
+    if [[ "$*" == *"pr list -R vossiman/demo"* ]]; then printf '\n'; return 0; fi
+    echo "unexpected gh call: $*" >&2; return 99
+  }
+  local out
+  out=$(_dvw_pin_open_pr vossiman/demo main "$BP_IMAGE" 2>/dev/null)
+  [ -z "$out" ]
+}
+
 @test "rebuild pre-flight: a current pin passes straight through" {
   _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
   ui_confirm() { echo "SHOULD NOT ASK"; return 0; }

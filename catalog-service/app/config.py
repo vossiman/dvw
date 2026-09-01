@@ -88,8 +88,15 @@ class Settings(BaseSettings):
         return self.data_dir / self.blueprint_legacy_backup_filename
 
     def source_path(self, ws_id: str) -> Path:
-        return (self.devpod_agent_workspaces_dir.expanduser()
-                / ws_id / "content")
+        # ws_id reaches here via a route pattern that allows "." and "-", so
+        # ".." or a path with a leading "/" is a legal ws_id string as far as
+        # FastAPI is concerned. Resolve and assert containment so a crafted
+        # ws_id can't walk the source path outside the agent workspaces dir.
+        base = self.devpod_agent_workspaces_dir.expanduser().resolve()
+        p = (base / ws_id / "content").resolve()
+        if not p.is_relative_to(base):
+            raise ValueError(f"ws_id resolves outside the workspaces dir: {ws_id!r}")
+        return p
 
 
 @lru_cache

@@ -109,7 +109,7 @@ setup() {
   _dvw_pin_main_pr() { :; }
   gh() { echo "MERGED"; }
   _dvw_catalog_source_pull() {
-    jq -n '{error:"source clone has uncommitted changes; refusing to pull over them"}'
+    jq -n '{error:{code:"conflict", message:"source clone has uncommitted changes; refusing to pull over them"}}'
     return 1
   }
   run cmd_pin_rebuild demo
@@ -124,6 +124,43 @@ setup() {
   run cmd_pin_rebuild demo
   [ "$status" -eq 1 ]
   [[ "$output" == *"detached"* ]]
+}
+
+@test "stale working-tree pin but remote branch already current: skips the PR, pulls, rebuilds" {
+  _dvw_catalog_source_get() {
+    jq -n --arg p "$OLD_IMAGE" \
+      '{present:true, detached:false, dirty:false, branch:"feat/x",
+        committed_pin:$p, head:"deadbeef"}'
+  }
+  # A PR merged earlier landed the pin on the remote; the clone just hasn't
+  # pulled it yet. _dvw_repo_pin reads the remote and already sees $BP_IMAGE.
+  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
+  _dvw_pin_open_pr() { echo "OPEN_PR SHOULD NOT RUN" >&2; return 1; }
+  _dvw_pin_main_pr() { :; }
+  _dvw_catalog_source_pull() {
+    jq -n --arg p "$BP_IMAGE" \
+      '{present:true, detached:false, dirty:false, branch:"feat/x",
+        committed_pin:$p, head:"c0ffee"}'
+  }
+  gh() { echo "GH SHOULD NOT RUN" >&2; return 1; }
+  run cmd_pin_rebuild demo
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"skipping the PR"* ]]
+  [[ "$output" != *"OPEN_PR SHOULD NOT RUN"* ]]
+  [[ "$output" != *"GH SHOULD NOT RUN"* ]]
+  [[ "$output" == *"RECREATED demo"* ]]
+}
+
+@test "--timeout rejects non-numeric junk" {
+  run cmd_pin_rebuild demo --timeout nope
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"usage:"* ]]
+}
+
+@test "--timeout rejects a negative number" {
+  run cmd_pin_rebuild demo --timeout -5
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"usage:"* ]]
 }
 
 @test "closed-unmerged PR aborts with exit 2" {

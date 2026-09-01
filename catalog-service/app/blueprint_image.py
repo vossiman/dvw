@@ -31,26 +31,36 @@ def _parse_image(text: str) -> str | None:
 
 
 class BlueprintImageCache:
+    # Failures negative-cache for a shorter window than a good fetch, so a
+    # down blueprint URL doesn't get re-fetched (timeout=10, one lock held)
+    # on every single status/inspect call while it's down.
+    _FAILURE_TTL_CAP = 60.0
+
     def __init__(self, url: str, ttl: float) -> None:
         self._url = url
         self._ttl = ttl
         self._lock = threading.Lock()
         self._value: str | None = None
         self._fetched_at: float | None = None
+        self._last_fetch_ok = False
 
     def get(self) -> str | None:
         """Blocking; call via run_in_threadpool from async code."""
         with self._lock:
             now = time.monotonic()
-            fresh = (self._fetched_at is not None
-                     and now - self._fetched_at < self._ttl)
-            if fresh:
-                return self._value
+            if self._fetched_at is not None:
+                ttl = self._ttl if self._last_fetch_ok else min(
+                    self._ttl, self._FAILURE_TTL_CAP)
+                if now - self._fetched_at < ttl:
+                    return self._value
             try:
                 image = _parse_image(_fetch(self._url, timeout=10))
             except Exception:
-                return self._value          # stale beats nothing
+                self._fetched_at = now      # negative-cache the failure
+                self._last_fetch_ok = False
+                return self._value          # stale (or None) beats nothing
+            self._fetched_at = now
+            self._last_fetch_ok = True
             if image is not None:
                 self._value = image
-                self._fetched_at = now
             return self._value

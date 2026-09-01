@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 
 def _create(client, ws_id="proj"):
     return client.post("/v1/workspaces", json={
@@ -61,3 +63,22 @@ def test_pull_ok(client, settings):
     _seed_clone(settings)
     r = client.post("/v1/workspaces/proj/source/pull")
     assert r.status_code == 200 and r.json()["present"] is True
+
+
+def test_source_path_rejects_traversal(settings):
+    # The route pattern allows "." and "-" in ws_id, so ".." is a legal
+    # string as far as FastAPI's path validation goes; source_path() must
+    # itself refuse anything that resolves outside the agent workspaces dir.
+    with pytest.raises(ValueError):
+        settings.source_path("..")
+
+
+def test_source_path_rejects_nested_traversal(settings):
+    with pytest.raises(ValueError):
+        settings.source_path("../../etc")
+
+
+def test_source_path_accepts_normal_id(settings):
+    p = settings.source_path("proj")
+    assert p == (settings.devpod_agent_workspaces_dir.expanduser().resolve()
+                 / "proj" / "content")

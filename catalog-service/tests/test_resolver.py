@@ -109,6 +109,45 @@ def test_scopes_by_destination_not_prefix(monkeypatch):
     assert insp.resolve("devmachine-new-dvw").container_id == "cb"
 
 
+class FakeImage:
+    def __init__(self, repo_digests):
+        self.attrs = {"RepoDigests": repo_digests}
+
+
+def _digest_container(config_image, repo_digests=None):
+    c = FakeContainer("c1", "name1", "uid-1", "/workspaces/ws-a")
+    c.attrs["Config"] = {"Image": config_image}
+    c.image = FakeImage(repo_digests or []) if repo_digests is not None else None
+    return c
+
+
+def test_image_digest_accepts_pinned_ref(monkeypatch):
+    # Config.Image is a real pinned ref ("repo@sha256:..."); trust it.
+    digest = "a" * 64
+    c = _digest_container(f"ghcr.io/x/y@sha256:{digest}")
+    insp = _inspector([c], monkeypatch)
+    assert insp._image_digest(c) == f"sha256:{digest}"
+
+
+def test_image_digest_rejects_bare_image_id(monkeypatch):
+    # A container created straight from an image ID (no ref) stores a bare
+    # "sha256:<hex>" in Config.Image: that's the image's own id, not a
+    # manifest digest, and must never be trusted as one (permanent false
+    # "outdated" otherwise). Falls through to RepoDigests instead.
+    image_id = "b" * 64
+    repo_digest = "c" * 64
+    c = _digest_container(f"sha256:{image_id}", [f"ghcr.io/x/y@sha256:{repo_digest}"])
+    insp = _inspector([c], monkeypatch)
+    assert insp._image_digest(c) == f"sha256:{repo_digest}"
+
+
+def test_image_digest_bare_image_id_no_repo_digests_is_unknown(monkeypatch):
+    image_id = "d" * 64
+    c = _digest_container(f"sha256:{image_id}", [])
+    insp = _inspector([c], monkeypatch)
+    assert insp._image_digest(c) is None
+
+
 def test_sibling_tmux_tiebreak_highest_activity_wins(monkeypatch):
     # Two containers share /workspaces/ws-a (the sibling case the resolver
     # exists for). Highest tmux `work` activity wins; the other is a sibling.
