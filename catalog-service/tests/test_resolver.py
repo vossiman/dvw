@@ -21,7 +21,7 @@ class FakeContainer:
     def __init__(self, cid, name, uid, dest, status="running",
                  created="2026-01-01T00:00:00Z", tmux_work=None, source="/exists",
                  owner="codespace:codespace", tmux_attached=None,
-                 tmux_windows=None):
+                 tmux_windows=None, probe=None, probe_exit=None):
         self.id = cid
         self.name = name
         self.status = status
@@ -35,8 +35,25 @@ class FakeContainer:
         self._owner = owner
         self._tmux_attached = tmux_attached
         self._tmux_windows = tmux_windows
+        self._probe = probe
+        self._probe_exit = probe_exit
+        self.exec_calls = []
+
+    def reload(self):
+        return None
 
     def exec_run(self, cmd, demux=False):
+        self.exec_calls.append(list(cmd))
+        # `dvw-probe` — the single-exec snapshot. Default (probe=None,
+        # probe_exit=None) is "not installed": exit 127, so every legacy test
+        # keeps exercising the tmux fallback unchanged.
+        if cmd == ["dvw-probe"]:
+            if self._probe_exit is not None:
+                return FakeExecResult(self._probe_exit, b"")
+            if self._probe is None:
+                return FakeExecResult(127, b"exec: dvw-probe: not found")
+            import json as _json
+            return FakeExecResult(0, _json.dumps(self._probe).encode())
         # `stat -c %U:%G /workspaces` — owner probe used to tell a provisioned
         # container from one abandoned before setup-user ran.
         if cmd and cmd[0] == "stat":
@@ -487,9 +504,14 @@ def test_repeated_slow_status_requests_do_not_queue_more_probes(monkeypatch):
     for c in containers:
         original = c.exec_run
 
+        # Count CONTAINERS probed, not execs: the missing-probe fallback
+        # sends two argv lists carrying session_attached (the windows
+        # snapshot and the attached probe), and what is bounded here is how
+        # many containers a request starts work on.
         def delayed(cmd, demux=False, *, container=c, run=original):
             if cmd and "session_attached" in cmd[-1]:
-                calls.append(container.id)
+                if container.id not in calls:
+                    calls.append(container.id)
                 time.sleep(0.4)
             return run(cmd, demux=demux)
 

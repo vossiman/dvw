@@ -92,20 +92,21 @@ def test_windows_many_uses_resolvers_canonical_sibling(monkeypatch):
 
 def test_windows_many_single_candidate_costs_one_exec_per_container(monkeypatch):
     # The snapshot itself is the only exec allowed on the common path: the
-    # canonical-container decision must not add a tmux activity probe when
-    # a workspace has exactly one running candidate (2N serial execs was a
-    # real latency regression against the TUI's request timeout).
-    calls: list[str] = []
+    # canonical-container decision must not add a probe when a workspace has
+    # exactly one running candidate (2N serial execs was a real latency
+    # regression against the TUI's request timeout).
+    from tests.test_probe import GOOD
+
+    calls: list[list[str]] = []
     containers = []
     for i in range(3):
         c = FakeContainer(
-            f"c{i}", f"n{i}", f"u{i}", f"/workspaces/ws-{i}",
-            tmux_windows=f"@{i}\tw\t1\t100\t\tbash\t1\n",
+            f"c{i}", f"n{i}", f"u{i}", f"/workspaces/ws-{i}", probe=GOOD,
         )
         original = c.exec_run
 
         def counted(cmd, demux=False, *, run=original):
-            calls.append(cmd[1])
+            calls.append(list(cmd))
             return run(cmd, demux=demux)
 
         c.exec_run = counted
@@ -115,7 +116,22 @@ def test_windows_many_single_candidate_costs_one_exec_per_container(monkeypatch)
     snapshots = insp.windows_many()
 
     assert len(snapshots) == 3
-    assert calls == ["list-windows"] * 3
+    assert calls == [["dvw-probe"]] * 3
+
+
+def test_windows_many_fallback_never_snapshots_a_container_twice(monkeypatch):
+    # Same invariant on the legacy path: a container without dvw-probe pays
+    # the fallback execs once, not once per caller within the request.
+    containers = [
+        FakeContainer(f"c{i}", f"n{i}", f"u{i}", f"/workspaces/ws-{i}",
+                      tmux_windows=f"@{i}\tw\t1\t100\t\tbash\t1\n")
+        for i in range(3)
+    ]
+    insp = _inspector(containers, monkeypatch)
+
+    assert len(insp.windows_many()) == 3
+    for c in containers:
+        assert [cmd[0] for cmd in c.exec_calls] == ["dvw-probe", "tmux", "tmux"]
 
 
 def test_windows_many_omits_ambiguous_siblings_without_tmux(monkeypatch):
