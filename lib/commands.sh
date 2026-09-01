@@ -193,7 +193,7 @@ cmd_recreate() {
   catalog_workspace_set_devpod_state "$id" 2>/dev/null || true
 }
 
-# Banner + column-aligned colored rows. Columns: id, repo@branch, ide,
+# Banner + column-aligned colored rows. Columns: id, repo@branch,
 # <state-glyph>, last:<ts>, on:<host>. Same 5-state colorization as the
 # picker: ● running / ⚠ stale / ○ stopped / ✗ absent / ? unreachable.
 #
@@ -227,7 +227,6 @@ cmd_status() {
     | [
         .id,
         ((.repo | shortrepo) + "@" + .branch),
-        .ide,
         (.id as $id
          | (if   ($s | index($id)) then "⚠ stale"
             elif ($a | index($id)) then "● running"

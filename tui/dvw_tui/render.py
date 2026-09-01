@@ -14,10 +14,7 @@ SUBTLE = TOKYO["subtle"]
 GREEN = TOKYO["green"]
 RED = TOKYO["red"]
 GREY = TOKYO["grey"]
-BLUE = TOKYO["blue"]
-TEAL = TOKYO["teal"]
 YELLOW = TOKYO["yellow"]
-PEACH = TOKYO["peach"]
 
 _LIVENESS = {
     "alive":   ("●", "running", GREEN, False),
@@ -25,9 +22,6 @@ _LIVENESS = {
     "stopped": ("○", "stopped", GREY,  False),
     "absent":  ("✗", "absent",  RED,   True),
 }
-
-_IDE_COLORS = {"cursor": TEAL, "ssh": YELLOW, "vscode": BLUE, "jetbrains": PEACH}
-
 
 def liveness_cell(liveness: str) -> Text:
     mark, label, color, bold = _LIVENESS.get(liveness, ("?", "unknown", GREY, False))
@@ -45,14 +39,6 @@ def state_cell(liveness: str, attached: int = 0,
     if image_current is False:
         text.append(f" {glyph('⬆', 'outdated')}", style=f"bold {YELLOW}")
     return text
-
-
-def ide_color(ide: str) -> str:
-    return _IDE_COLORS.get(ide, GREY)
-
-
-def ide_cell(ide: str) -> Text:
-    return Text(ide, style=ide_color(ide))
 
 
 def human_bytes(n: int | None) -> str:

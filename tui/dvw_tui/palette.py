@@ -37,7 +37,7 @@ TOKYO: dict[str, str] = {
 #
 # Known limitation: only the registered Textual theme (this module) and the
 # boot splash (screens/splash.py) actually follow the configured palette
-# today. render.py's ACCENT/SUBTLE/GREEN/RED/GREY/BLUE/TEAL/YELLOW/PEACH
+# today. render.py's ACCENT/SUBTLE/GREEN/RED/GREY/YELLOW
 # constants are bound to TOKYO at import time, so registering a second
 # palette here and pointing `palette` at it will recolour the CSS and splash
 # but leave the tree/inspect pane's text still drawn in tokyo colours — a

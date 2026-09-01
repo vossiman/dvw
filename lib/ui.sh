@@ -7,10 +7,10 @@ DVW_SUBTLE="#616e88"        # polar slate (subdued text)
 DVW_GREEN="#a3be8c"         # aurora green (running)
 DVW_RED="#bf616a"           # aurora red (stopped, when we want emphasis)
 DVW_GREY="#4c566a"          # polar1 (stopped indicator, dim labels)
-DVW_BLUE="#81a1c1"          # frost blue (vscode-ish)
-DVW_TEAL="#8fbcbb"          # frost teal (cursor-ish)
+DVW_BLUE="#81a1c1"          # frost blue
+DVW_TEAL="#8fbcbb"          # frost teal
 DVW_YELLOW="#ebcb8b"        # aurora yellow / sand (ssh)
-DVW_PEACH="#d08770"         # aurora copper (jetbrains)
+DVW_PEACH="#d08770"         # aurora copper
 
 # ─── UI helpers ─────────────────────────────────────────────────────────────
 # All printers below assume an ANSI-capable terminal (true-color). Used by
@@ -120,12 +120,9 @@ ui_progress() {
 _ui_colorize_workspace_row() {
   local r b d
   r=$(printf '\033[0m'); b=$(printf '\033[1m'); d=$(printf '\033[2m')
-  local A T Y B2 P GR G R2
+  local A Y GR G R2
   A=$(_ansi  "$DVW_ACCENT")
-  T=$(_ansi  "$DVW_TEAL")
   Y=$(_ansi  "$DVW_YELLOW")
-  B2=$(_ansi "$DVW_BLUE")
-  P=$(_ansi  "$DVW_PEACH")
   GR=$(_ansi "$DVW_GREY")
   G=$(_ansi  "$DVW_GREEN")
   R2=$(_ansi "$DVW_RED" bold)
@@ -137,11 +134,6 @@ _ui_colorize_workspace_row() {
     s|✗ absent|${R2}✗ absent${r}|g
     s|\\? unreachable|${Y}? unreachable${r}|g
     s|\\? unknown|${GR}? unknown${r}|g
-    s|(  )(·)(  )(cursor)([ ]+)|\\1${d}\\2${r}\\3${T}\\4${r}\\5|g
-    s|(  )(·)(  )(ssh)([ ]+)|\\1${d}\\2${r}\\3${Y}\\4${r}\\5|g
-    s|(  )(·)(  )(vscode)([ ]+)|\\1${d}\\2${r}\\3${B2}\\4${r}\\5|g
-    s|(  )(·)(  )(jetbrains)([ ]+)|\\1${d}\\2${r}\\3${P}\\4${r}\\5|g
-    s|(  )(·)(  )(none)([ ]+)|\\1${d}\\2${r}\\3${GR}\\4${r}\\5|g
     s|(last:[^ ]+)|${d}\\1${r}|g
     s|(on:[^ ]+)|${d}\\1${r}|g
     s|  ·  |  ${d}·${r}  |g
