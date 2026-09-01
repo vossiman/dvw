@@ -273,3 +273,14 @@ _stub_recreate_deps() {
   run _dvw_pin_state demo
   [[ "$output" == ok$'\t'vossiman/demo$'\t'main* ]]
 }
+
+@test "pin head branch: differs for main vs a feature base, same image" {
+  local main_branch feat_branch
+  main_branch=$(_dvw_pin_head_branch main "$BP_IMAGE")
+  feat_branch=$(_dvw_pin_head_branch feat/x "$BP_IMAGE")
+  [[ "$main_branch" != "$feat_branch" ]]
+  # main keeps the historical (unsuffixed) name so existing open PRs match.
+  [[ "$main_branch" == "$DVW_PIN_BRANCH_PREFIX-"* ]]
+  [[ "$main_branch" != *"-main" ]]
+  [[ "$feat_branch" == "$main_branch-feat-x" ]]
+}

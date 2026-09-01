@@ -95,12 +95,26 @@ _dvw_pin_short() {
   esac
 }
 
+# Head branch name for a pin PR against <base> moving the pin to <image>.
+# One head branch per base: a shared head cannot carry different bases' file
+# rewrites (the second PUT 409s on the first PUT's blob, since it reuses the
+# other base's content sha). main keeps the historical name (no suffix) so
+# existing open PRs are still recognized.
+_dvw_pin_head_branch() {
+  local base="$1" image="$2"
+  local branch="$DVW_PIN_BRANCH_PREFIX-$(_dvw_pin_short "$image")"
+  local base_slug="${base//\//-}"
+  [[ "$base" != "main" ]] && branch="$branch-$base_slug"
+  printf '%s\n' "$branch"
+}
+
 # Open (or report) the pin PR for <slug>@<base>, moving the pin to <image>.
 # Idempotent: an existing open PR from our branch is reported, not duplicated.
 # Prints the PR URL on success.
 _dvw_pin_open_pr() {
   local slug="$1" base="$2" image="$3"
-  local branch="$DVW_PIN_BRANCH_PREFIX-$(_dvw_pin_short "$image")"
+  local branch
+  branch=$(_dvw_pin_head_branch "$base" "$image")
   local existing meta sha head tmp url orig target_line
 
   existing=$(gh pr list -R "$slug" --head "$branch" --state open \

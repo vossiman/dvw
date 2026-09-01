@@ -181,7 +181,8 @@ cmd_recreate() {
   # The committed pin is what devpod builds from, so a stale one silently
   # rebuilds you onto the old image. Offer to fix it first; declining just
   # proceeds. Fail-open — see _dvw_pin_preflight.
-  if declare -F _dvw_pin_preflight >/dev/null 2>&1; then
+  if [[ "${DVW_SKIP_PIN_PREFLIGHT:-}" != "1" ]] \
+     && declare -F _dvw_pin_preflight >/dev/null 2>&1; then
     _dvw_pin_preflight "$id" || return 0
   fi
   ui_action "recreating" "$id (ide=$ide)"
