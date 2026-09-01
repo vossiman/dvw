@@ -52,12 +52,12 @@ class FakeUpstream:
             return
         headers = {k.lower(): v for k, v in req.headers}
         self.requests.append((req.method, req.target, headers, req.body))
+        resp = self.handler(req.method, req.target, headers, req.body, conn)
         try:
-            resp = self.handler(req.method, req.target, headers, req.body, conn)
             if resp is not None:
                 conn.sendall(resp)
         except OSError:
-            pass  # the proxy hung up first, which several tests arrange
+            pass  # the proxy hung up first, which the relay cap tests arrange
         finally:
             conn.close()
 
@@ -494,11 +494,14 @@ def upgrade_handler(frames: list[bytes], stall: float = 0.0):
     """Answer with 101 and then raw stream bytes, optionally stalling before
     the close so the relay's idle timeout is the thing that ends the copy."""
     def h(m, p, hd, b, conn):
-        conn.sendall(UPGRADE_HEAD)
-        for f in frames:
-            conn.sendall(f)
-        if stall:
-            time.sleep(stall)
+        try:
+            conn.sendall(UPGRADE_HEAD)
+            for f in frames:
+                conn.sendall(f)
+            if stall:
+                time.sleep(stall)
+        except OSError:
+            pass  # the proxy cut us off, which is what several tests assert
         conn.close()
         return None
     return h
@@ -624,3 +627,103 @@ def test_exec_id_from_one_container_cannot_be_started_after_ttl(stack):
     resp = stack.send(req("POST", "/exec/e14/start", b"{}"))
     assert status_of(resp) == 403
     assert len(stack.upstream.requests) == before
+
+
+# ---- upstream failures -------------------------------------------------------
+
+@pytest.fixture
+def thread_errors(monkeypatch):
+    """Collects exceptions that escape a worker thread, so a test can assert
+    the proxy answered rather than died."""
+    errs = []
+    monkeypatch.setattr(threading, "excepthook", errs.append)
+    return errs
+
+
+def hangup_handler(partial: bytes = b""):
+    """Answer with nothing, or half a head, and close: dockerd going away."""
+    def h(m, p, hd, b, conn):
+        if partial:
+            conn.sendall(partial)
+        conn.close()
+        return None
+    return h
+
+
+@pytest.mark.parametrize("partial", [b"", b"HTTP/1.1 200 OK\r\nContent-Len"])
+def test_upstream_hangup_on_a_plain_route_is_502(stack, thread_errors, partial):
+    stack.set_handler(hangup_handler(partial))
+    resp = stack.send(req("GET", "/_ping"))
+    assert status_of(resp) == 502
+    assert body_of(resp) == px.GATEWAY_BODY
+    assert thread_errors == []
+
+
+def test_upstream_hangup_on_exec_create_is_502(stack, thread_errors):
+    stack.set_handler(hangup_handler())
+    resp = exec_create(stack, DOCKER_PY_EXEC)
+    assert status_of(resp) == 502
+    assert thread_errors == []
+
+
+def test_upstream_hangup_on_exec_start_is_502(stack, thread_errors):
+    _register(stack, "e15")
+    stack.set_handler(hangup_handler())
+    resp = stack.send(req("POST", "/exec/e15/start", b"{}"))
+    assert status_of(resp) == 502
+    assert thread_errors == []
+
+
+@pytest.mark.parametrize("garbage", [
+    b"GARBAGE\r\nContent-Length: 0\r\n\r\n",
+    b"HTTP/1.1 twohundred\r\n\r\n",
+    b"\r\n\r\n",
+])
+def test_upstream_garbage_status_line_is_502(stack, thread_errors, garbage):
+    _register(stack, "e16")
+    stack.set_handler(lambda m, p, h, b, c: garbage)
+    for target in ("/containers/abc123/exec", "/exec/e16/start"):
+        resp = stack.send(req("POST", target,
+                              json.dumps(DOCKER_PY_EXEC).encode()
+                              if "exec" == target.rsplit("/", 1)[-1] else b"{}"))
+        assert status_of(resp) == 502, (target, garbage)
+    assert thread_errors == []
+
+
+def test_upstream_oversized_head_is_502(stack, thread_errors):
+    stack.set_handler(lambda m, p, h, b, c:
+                      b"HTTP/1.1 200 OK\r\nX: " + b"a" * (px.MAX_HEAD + 10) + b"\r\n\r\n")
+    resp = stack.send(req("GET", "/_ping"))
+    assert status_of(resp) == 502
+    assert thread_errors == []
+
+
+def test_exec_start_stream_stops_at_the_wall_clock_deadline(stack, monkeypatch):
+    """A trickle that never goes quiet long enough for the idle timeout still
+    has to end: the relay is bounded in wall clock too."""
+    _register(stack, "e17")
+    frame = b"\x01\x00\x00\x00" + (1).to_bytes(4, "big") + b"."
+    stack.set_handler(dribble_handler(frame, gap=0.02, count=500))
+    monkeypatch.setattr(px, "RELAY_IDLE_TIMEOUT", 5.0)
+    monkeypatch.setattr(px, "RELAY_MAX_SECONDS", 0.3)
+    resp, eof, elapsed = recv_until_eof(stack.path,
+                                        req("POST", "/exec/e17/start", b"{}"))
+    assert eof, "the proxy must close once the deadline passes"
+    assert elapsed < 3.0
+    stream = resp.split(b"\r\n\r\n", 1)[1]
+    assert 0 < len(stream) < px.MAX_RELAY  # ended on the clock, not the cap
+
+
+def dribble_handler(frame: bytes, gap: float, count: int):
+    """101, then one small frame every `gap` seconds: never idle, never done."""
+    def h(m, p, hd, b, conn):
+        try:
+            conn.sendall(UPGRADE_HEAD)
+            for _ in range(count):
+                conn.sendall(frame)
+                time.sleep(gap)
+        except OSError:
+            pass  # expected: the proxy closes on us at the deadline
+        conn.close()
+        return None
+    return h

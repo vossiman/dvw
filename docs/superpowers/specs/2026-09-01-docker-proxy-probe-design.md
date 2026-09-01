@@ -135,10 +135,11 @@ the proxy records the returned `Id` with a timestamp in an in-memory map
 `POST /exec/{id}/start` is forwarded after the id check. The upstream reply is
 either a plain HTTP response (error) or `101 UPGRADED` followed by the
 multiplexed stream. The proxy relays the status line and headers, then copies
-bytes in both directions with `selectors` until either peer closes or the
+upstream bytes to the client with `selectors` until the upstream closes or the
 client has received 1 MiB, after which the proxy closes both sides. The client
-side write-half is closed as soon as the request body has been sent, since the
-exec is never attached to stdin.
+side read-half is closed (`SHUT_RD`) as soon as the request body has been
+sent, since the exec is never attached to stdin. The copy is bounded three
+ways: 1 MiB, an idle timeout, and a wall clock deadline.
 
 ### Logging
 

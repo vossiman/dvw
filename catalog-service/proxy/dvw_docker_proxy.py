@@ -31,10 +31,15 @@ MAX_RELAY = 1024 * 1024
 # probe answers in milliseconds, so this only ever fires on a wedged upstream,
 # and it is what stops such a thread from living forever.
 RELAY_IDLE_TIMEOUT = 30.0
+# Wall clock ceiling for one upgraded relay. The idle timeout alone bounds
+# silence, not total life: an upstream dribbling a byte every 29 seconds would
+# hold a thread until the byte cap. This bounds the thread instead.
+RELAY_MAX_SECONDS = 120.0
 EXEC_TTL = 60.0
 EXEC_CAP = 256
 DENY_BODY = b'{"message":"dvw-docker-proxy: route not allowed"}'
 BAD_BODY = b'{"message":"dvw-docker-proxy: malformed request"}'
+GATEWAY_BODY = b'{"message":"dvw-docker-proxy: upstream error"}'
 
 # Container and exec ids: hex digests in practice, but names are accepted too.
 # The leading class excludes a leading dot, so "." and ".." never match.
@@ -57,6 +62,7 @@ _STREAM_OFF = {"false", "0", "False"}
 # never reasoned about cannot reach dockerd.
 _TOKEN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
 _DIGITS = re.compile(r"[0-9]+")
+_STATUS_LINE = re.compile(rb"HTTP/1\.[01] (\d{3})(?: |\r|\Z)")
 _FORWARD_HEADERS = ("host", "content-type", "accept", "user-agent")
 
 # Exec create bodies. docker-py sends User: "", Env: null and Privileged:
@@ -307,6 +313,28 @@ def connect_upstream(upstream: str) -> socket.socket:
     raise ValueError(f"unsupported upstream {upstream!r}")
 
 
+class _ClientOut:
+    """The client socket, remembering whether a response has been started.
+
+    Once a byte is on the wire an upstream failure can no longer become a 502;
+    the only honest thing left is to close, so the relays write through this.
+    """
+
+    __slots__ = ("_sock", "wrote")
+
+    def __init__(self, sock):
+        self._sock = sock
+        self.wrote = False
+
+    def sendall(self, data: bytes) -> None:
+        if data:
+            self.wrote = True
+        self._sock.sendall(data)
+
+    def shutdown(self, how: int) -> None:
+        self._sock.shutdown(how)
+
+
 def _send_response(sock, status: str, body: bytes) -> None:
     head = (f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n"
             f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode()
@@ -350,6 +378,18 @@ def _rebuild_upgrade_head(req: Request, body: bytes) -> bytes:
 
 def _read_response_head(up) -> tuple[bytes, bytes]:
     return _recv_until(up, b"\r\n\r\n", MAX_HEAD)
+
+
+def _upstream_status(head: bytes) -> bytes:
+    """The three status digits, or BadRequest if dockerd answered gibberish.
+
+    Read as BadRequest so the caller turns it into 502 rather than letting an
+    IndexError off a bare split kill the worker thread.
+    """
+    m = _STATUS_LINE.match(head)
+    if not m:
+        raise BadRequest("bad upstream status line")
+    return m.group(1)
 
 
 def _with_connection_close(head: bytes) -> bytes:
@@ -396,7 +436,7 @@ def _relay_exec_create(client, up, req: Request, body: bytes,
     up.sendall(_rebuild_head(req, body) + body)
     head, rest = _read_response_head(up)
     payload = _drain(up, rest)
-    if head.split(b" ", 2)[1] == b"201":
+    if _upstream_status(head) == b"201":
         try:
             exec_id = json.loads(_strip_chunked(head, payload)).get("Id")
         except ValueError:
@@ -415,8 +455,7 @@ def _relay_exec_start(client, up, req: Request, body: bytes) -> None:
     """
     up.sendall(_rebuild_upgrade_head(req, body) + body)
     head, rest = _read_response_head(up)
-    fields = head.split(b" ", 2)
-    if len(fields) < 2 or fields[1] != b"101":
+    if _upstream_status(head) != b"101":
         client.sendall(_with_connection_close(head) + rest[:MAX_RELAY])
         _copy_capped(client, up, req, len(rest[:MAX_RELAY]))
         return
@@ -435,11 +474,17 @@ def _relay_exec_start(client, up, req: Request, body: bytes) -> None:
     except OSError:
         pass
     up.settimeout(None)  # the selector, not the socket, bounds the wait
+    deadline = time.monotonic() + RELAY_MAX_SECONDS
     sel = selectors.DefaultSelector()
     sel.register(up, selectors.EVENT_READ)
     try:
         while sent < MAX_RELAY:
-            if not sel.select(timeout=RELAY_IDLE_TIMEOUT):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log.info("verdict=cut path=%s reason=exec stream over %ss",
+                         req.path, RELAY_MAX_SECONDS)
+                return
+            if not sel.select(timeout=min(RELAY_IDLE_TIMEOUT, remaining)):
                 log.info("verdict=cut path=%s reason=exec stream idle for %ss",
                          req.path, RELAY_IDLE_TIMEOUT)
                 return
@@ -504,14 +549,23 @@ def handle_connection(client, upstream: str, registry: ExecRegistry) -> None:
         log.info("verdict=allow method=%s path=%s%s", req.method, req.path,
                  f" cmd={label}" if label else "")
         up = connect_upstream(upstream)
+        out = _ClientOut(client)
         try:
             up.settimeout(30)
             if r.kind == "exec_start":
-                _relay_exec_start(client, up, req, body)
+                _relay_exec_start(out, up, req, body)
             elif r.kind == "exec_create":
-                _relay_exec_create(client, up, req, body, registry)
+                _relay_exec_create(out, up, req, body, registry)
             else:
-                _relay_plain(client, up, req, body)
+                _relay_plain(out, up, req, body)
+        except (BadRequest, ValueError, IndexError) as e:
+            # A head dockerd never finished, or one this proxy cannot parse.
+            # Reading it raises from the upstream side, where a bare escape
+            # would take the worker thread down with a traceback.
+            log.info("verdict=upstream-error method=%s path=%s reason=%s",
+                     req.method, req.path, e)
+            if not out.wrote:
+                _send_response(client, "502 Bad Gateway", GATEWAY_BODY)
         finally:
             up.close()
     except OSError as e:
