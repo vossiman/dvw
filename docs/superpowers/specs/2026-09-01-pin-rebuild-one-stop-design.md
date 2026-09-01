@@ -1,4 +1,4 @@
-# dvw pin-rebuild — one-stop pin update and rebuild
+# dvw pin-rebuild, one-stop pin update and rebuild
 
 **Date:** 2026-09-01
 **Status:** approved (brainstorm, architectural path)
@@ -11,15 +11,15 @@ rebuild that *reports success while reinstalling the old image*.
 
 The chain from source of truth to running container is:
 
-1. **Blueprint** — `devcontainer.json` at tip-of-main of aiCodingBaseSetup
+1. **Blueprint**, `devcontainer.json` at tip-of-main of aiCodingBaseSetup
    (`DVW_BLUEPRINT_DEVCONTAINER_URL`, `lib/wizard.sh:93`). Owns the current
    image digest.
-2. **Committed pin** — each workspace repo's
+2. **Committed pin**, each workspace repo's
    `.devcontainer/devcontainer.json`, per branch.
-3. **Source clone** — `~/.devpod/agent/contexts/default/workspaces/<id>/content`
+3. **Source clone**, `~/.devpod/agent/contexts/default/workspaces/<id>/content`
    on vossisrv. A normal git checkout on some branch.
-4. **Build** — `devpod up --recreate` reads the *working tree* of (3).
-5. **Container** — the image that actually runs.
+4. **Build**, `devpod up --recreate` reads the *working tree* of (3).
+5. **Container**, the image that actually runs.
 
 `dvw pin-sync` (`lib/pin.sh`) fixes (2) by PR. Three gaps remain:
 
@@ -53,7 +53,7 @@ Three pieces: two catalog-service endpoints that expose and refresh the
 source clone, one bash command that drives the whole loop with an assertion
 after every step, and a badge plus menu entry in the UI.
 
-### 1. Catalog service — own the source clone
+### 1. Catalog service, own the source clone
 
 The service already runs natively on vossisrv as the account that owns the
 devpod agent directory (`deploy/dvw-catalog.service`), and
@@ -103,14 +103,14 @@ failure.
 The service fetches the blueprint `devcontainer.json` and caches the parsed
 image ref in memory with a short TTL (default 900s, `CATALOG_BLUEPRINT_TTL`).
 One fetch serves every client and every row. On fetch failure the cached
-value is served if present, otherwise `null` — never an error, never a
+value is served if present, otherwise `null`, never an error, never a
 blocked response.
 
 Added to the container status payload and to `ContainerInspect`:
 
-- `blueprint_image` — the blueprint ref, or `null` when unknown.
-- `image_digest` — the container's own `RepoDigests[0]` digest.
-- `image_current` — `true` / `false`, or `null` when either side is unknown.
+- `blueprint_image`, the blueprint ref, or `null` when unknown.
+- `image_digest`, the container's own `RepoDigests[0]` digest.
+- `image_current`, `true` / `false`, or `null` when either side is unknown.
 
 `image_current` compares the `sha256:` components only: `RepoDigests[0]`
 has the form `repo@sha256:...` while the blueprint ref carries a registry
@@ -135,9 +135,9 @@ same branch resolution as `pin-rebuild`: query
 falling back to the catalog `.branch` (with the existing behaviour) when the
 service is unreachable or the clone is absent. Without this, the standalone
 `dvw pin-sync` and the rebuild preflight would keep opening PRs against the
-creation-time branch — the exact wrong-branch failure this design removes.
+creation-time branch, the exact wrong-branch failure this design removes.
 
-### 4. `dvw pin-rebuild <id>` — the one-stop command
+### 4. `dvw pin-rebuild <id>`, the one-stop command
 
 New file `lib/pin-rebuild.sh`, sourced alongside `lib/pin.sh`.
 
@@ -158,14 +158,14 @@ chain has already cost a rebuild:
    against `main` when it differs, so the baseline is fixed once and future
    workspaces cut from `main` start current. The `main` PR is preceded by a
    `_dvw_repo_pin` check and skipped when `main` is already current or has
-   no pin file — `_dvw_pin_open_pr` treats a byte-identical rewrite as an
+   no pin file, `_dvw_pin_open_pr` treats a byte-identical rewrite as an
    error, so opening it blindly would report a spurious failure. Existing
    open PRs are reported, not duplicated (today's behaviour). Print both
    URLs.
 4. **Wait for the merge, verified.** Poll
    `gh pr view <url> --json state,mergedAt` every 10s. Enter forces an
    immediate re-check; Ctrl-C aborts cleanly leaving the PRs open. Only the
-   build-branch PR gates the rebuild — a `main` PR left unmerged is reported
+   build-branch PR gates the rebuild, a `main` PR left unmerged is reported
    and does not block. `--no-wait` stops after step 3 and prints the URLs.
    `--timeout` (default 1800s) bounds the poll.
    Merge state comes from `gh`, never from the user's say-so: "I merged it"
@@ -204,7 +204,7 @@ Exit codes: `0` current (whether or not work was done), `1` a step failed,
 
 - **Write the blueprint pin straight into the source clone's working tree and
   rebuild, treating the PR as bookkeeping.** Fastest possible loop, but the
-  container then runs an image the repo does not record — the failure mode
+  container then runs an image the repo does not record, the failure mode
   `lib/pin.sh`'s header comment exists to prevent. The repo stays the source
   of truth for what a workspace runs.
 - **Bash sshs to vossisrv and runs git in the clone directly.** Ships without
@@ -217,7 +217,7 @@ Exit codes: `0` current (whether or not work was done), `1` a step failed,
 
 ## Testing
 
-- **Service:** `WorkspaceSource` over a temp git repo — clean, dirty,
+- **Service:** `WorkspaceSource` over a temp git repo, clean, dirty,
   detached, absent clone, missing `devcontainer.json`. Pull: fast-forward,
   refuses dirty, refuses detached, surfaces git stderr. Blueprint cache: hit,
   miss, TTL expiry, fetch failure serving a stale value, fetch failure with
