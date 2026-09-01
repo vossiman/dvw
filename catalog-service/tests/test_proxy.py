@@ -353,11 +353,21 @@ def test_exec_probe_is_forwarded_normalized_and_id_registered(stack):
 
 
 def test_exec_transitional_tmux_forms_allowed(stack):
+    """Only the three argv lists the catalog sends today, byte for byte."""
     stack.set_handler(lambda m, p, h, b, c: http("201 Created", b'{"Id":"e2"}'))
-    for cmd in (["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
-                ["tmux", "list-windows", "-t", "work", "-F", "x"]):
-        resp = exec_create(stack, {**DOCKER_PY_EXEC, "Cmd": cmd})
+    for cmd in px._TMUX_ALLOWED:
+        resp = exec_create(stack, {**DOCKER_PY_EXEC, "Cmd": list(cmd)})
         assert status_of(resp) == 201, cmd
+
+
+def test_tmux_allowlist_matches_what_the_catalog_sends():
+    assert px._TMUX_ALLOWED == (
+        ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
+        ["tmux", "list-sessions", "-F", "#{session_name} #{session_attached}"],
+        ["tmux", "list-windows", "-t", "work", "-F",
+         "#{window_id}\t#{window_name}\t#{window_active}\t#{window_activity}"
+         "\t#{@waiting}\t#{pane_current_command}\t#{session_attached}"],
+    )
 
 
 @pytest.mark.parametrize("patch", [
@@ -369,9 +379,28 @@ def test_exec_transitional_tmux_forms_allowed(stack):
     {"Cmd": []},
     {"Cmd": ["tmux", "kill-server"]},
     {"Cmd": ["tmux"]},
+    # tmux argv is a command language: ";" separates commands and "#(...)" in a
+    # format string runs a shell job, so a prefix check would be a shell.
+    {"Cmd": ["tmux", "list-sessions", ";", "kill-server"]},
+    {"Cmd": ["tmux", "list-sessions", "-F", "#(id)"]},
+    {"Cmd": ["tmux", "list-sessions", "-F", "#(id > /tmp/pwned)"]},
+    {"Cmd": ["tmux", "list-sessions"]},
+    {"Cmd": ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}",
+             ";", "new-session", "-d"]},
+    {"Cmd": ["tmux", "list-sessions", "-F", "#{session_name} #{session_activityy}"]},
+    {"Cmd": ["tmux", "list-windows", "-t", "work", "-F", "x"]},
     {"Privileged": True},
     {"Tty": True},
     {"AttachStdin": True},
+    # 0 == False in Python, so these must be refused by type, not by equality.
+    {"Privileged": 0},
+    {"Tty": 0.0},
+    {"AttachStdin": 1},
+    {"User": {}},
+    {"WorkingDir": []},
+    {"AttachStdout": 1},
+    {"AttachStderr": "yes"},
+    {"Container": 1},
     {"User": "root"},
     {"User": "0"},
     {"Env": ["LD_PRELOAD=/tmp/x.so"]},
@@ -432,3 +461,12 @@ def test_exec_registry_ttl_and_cap():
     import time
     time.sleep(0.08)
     assert not reg.check("c")
+
+
+def test_exec_non_finite_number_is_denied(stack):
+    """Python's json accepts Infinity; the proxy must never re-emit it."""
+    before = len(stack.upstream.requests)
+    resp = stack.send(req("POST", "/containers/abc123/exec",
+                          b'{"Cmd":["dvw-probe"],"AttachStdout":Infinity}'))
+    assert status_of(resp) == 403
+    assert len(stack.upstream.requests) == before

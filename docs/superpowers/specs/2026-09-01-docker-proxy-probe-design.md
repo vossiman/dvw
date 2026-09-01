@@ -111,12 +111,19 @@ satisfy all of:
 
 - `Cmd` is a list. Allowed forms:
   - `["dvw-probe"]` (the target state), or
-  - `["tmux", "list-sessions", ...]` or `["tmux", "list-windows", ...]`, the
-    transitional form that matches the three calls the catalog makes today.
+  - one of exactly three argv lists, matched whole and byte for byte: the
+    two `tmux list-sessions -F ...` forms and the one `tmux list-windows -t
+    work -F ...` form the catalog sends today. Nothing looser is accepted:
+    tmux argv is a command language, where a `;` element separates commands
+    and a `#(...)` sequence inside a `-F` format string runs a shell job, so
+    a prefix match on `["tmux", "list-sessions", ...]` would be a shell.
     Removed together with the catalog fallback in a follow-up PR.
 - Absent or false: `Privileged`, `Tty`, `AttachStdin`.
-- Absent or empty: `User`, `Env`, `WorkingDir`, `DetachKeys`.
-- Any other key is passed through unchanged (`AttachStdout`, `AttachStderr`).
+- Absent or empty: `User`, `Env`, `WorkingDir`, `DetachKeys`. Empty is
+  checked against the field's own type, so `{"User": {}}` is refused.
+- Only the known keys above (`Cmd`, `AttachStdout`, `AttachStderr`,
+  `Container`) are re-serialized; every other key is dropped, and
+  `AttachStdout`/`AttachStderr` must be booleans.
 
 The validated body is re-serialized by the proxy, not forwarded verbatim, so
 key smuggling through duplicate or oddly cased keys is impossible. On success

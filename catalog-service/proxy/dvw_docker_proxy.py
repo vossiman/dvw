@@ -56,10 +56,24 @@ _FORWARD_HEADERS = ("host", "content-type", "accept", "user-agent")
 
 # Exec create bodies. docker-py sends User: "", Env: null and Privileged:
 # false explicitly, so "absent or false" and "absent or empty" have to accept
-# those spellings rather than requiring the key to be missing.
-_FALSEY = (None, False)
-_EMPTY = (None, "", [], {})
-_TMUX_SUBCOMMANDS = ("list-sessions", "list-windows")
+# those spellings rather than requiring the key to be missing. The checks are
+# by type, not by equality: 0 == False in Python, so an equality test would
+# let {"Privileged": 0} through.
+# The tmux forms are the exact argv lists catalog-service/app/docker_inspect.py
+# sends today, matched whole. Nothing looser will do: tmux argv is a command
+# language, where a ";" element separates commands and a "#(...)" sequence in
+# a -F format string runs a shell job, so any prefix match is a shell.
+# Absent or empty, checked against each field's real Docker API type, so an
+# empty value of the wrong type ({"User": {}}) is refused rather than waved
+# through as "empty".
+_EMPTY_TYPES = {"User": str, "Env": list, "WorkingDir": str, "DetachKeys": str}
+_TMUX_ALLOWED = (
+    ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
+    ["tmux", "list-sessions", "-F", "#{session_name} #{session_attached}"],
+    ["tmux", "list-windows", "-t", "work", "-F",
+     "#{window_id}\t#{window_name}\t#{window_active}\t#{window_activity}"
+     "\t#{@waiting}\t#{pane_current_command}\t#{session_attached}"],
+)
 _PASSTHROUGH = ("Container", "AttachStdout", "AttachStderr", "Tty", "Privileged",
                 "AttachStdin", "User", "Env", "WorkingDir", "DetachKeys", "Cmd")
 
@@ -247,18 +261,31 @@ def validate_exec_body(body: bytes) -> tuple[bytes, str]:
         raise Forbidden("Cmd must be a non-empty list of strings")
     if cmd == ["dvw-probe"]:
         label = "dvw-probe"
-    elif cmd[0] == "tmux" and len(cmd) >= 2 and cmd[1] in _TMUX_SUBCOMMANDS:
+    elif cmd in _TMUX_ALLOWED:
         label = f"tmux {cmd[1]}"  # transitional, removed with the catalog fallback
     else:
         raise Forbidden(f"Cmd not allowed: {cmd[0]!r}")
     for key in ("Privileged", "Tty", "AttachStdin"):
-        if data.get(key) not in _FALSEY:
+        value = data.get(key)
+        if not (value is None or value is False):
             raise Forbidden(f"{key} must be absent or false")
-    for key in ("User", "Env", "WorkingDir", "DetachKeys"):
-        if data.get(key) not in _EMPTY:
+    for key, empty_type in _EMPTY_TYPES.items():
+        value = data.get(key)
+        if not (value is None or (isinstance(value, empty_type) and not value)):
             raise Forbidden(f"{key} must be absent or empty")
+    for key in ("AttachStdout", "AttachStderr"):
+        if key in data and not isinstance(data[key], bool):
+            raise Forbidden(f"{key} must be a boolean")
+    if "Container" in data and not isinstance(data["Container"], str):
+        raise Forbidden("Container must be a string")
     clean = {k: data[k] for k in _PASSTHROUGH if k in data}
-    return json.dumps(clean, separators=(",", ":")).encode("utf-8"), label
+    try:
+        # allow_nan=False: Python's json reads and writes Infinity and NaN,
+        # which are not JSON and which Go would reject. Never emit them.
+        out = json.dumps(clean, separators=(",", ":"), allow_nan=False)
+    except ValueError:
+        raise Forbidden("exec body is not serializable as JSON") from None
+    return out.encode("utf-8"), label
 
 
 def connect_upstream(upstream: str) -> socket.socket:
