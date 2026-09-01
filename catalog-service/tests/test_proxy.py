@@ -321,3 +321,114 @@ def test_oversized_response_is_cut_at_max_relay(stack):
     resp = stack.send(req("GET", "/_ping"))
     assert status_of(resp) == 200
     assert len(body_of(resp)) == px.MAX_RELAY
+
+
+# ---- exec create -----------------------------------------------------------
+
+DOCKER_PY_EXEC = {
+    "Container": "abc123", "User": "", "Privileged": False, "Tty": False,
+    "AttachStdin": False, "AttachStdout": True, "AttachStderr": True,
+    "Cmd": ["dvw-probe"], "Env": None,
+}
+
+
+def exec_create(stack, body: dict, cid="abc123"):
+    return stack.send(req("POST", f"/containers/{cid}/exec",
+                          json.dumps(body).encode(),
+                          "Content-Type: application/json\r\n"))
+
+
+def test_exec_probe_is_forwarded_normalized_and_id_registered(stack):
+    stack.set_handler(lambda m, p, h, b, c: http("201 Created", b'{"Id":"e1"}'))
+    resp = exec_create(stack, DOCKER_PY_EXEC)
+    assert status_of(resp) == 201
+    assert json.loads(body_of(resp)) == {"Id": "e1"}
+    m, p, h, b = stack.upstream.requests[-1]
+    assert p == "/containers/abc123/exec"
+    sent = json.loads(b)
+    assert sent["Cmd"] == ["dvw-probe"]
+    assert sent["AttachStdout"] is True and sent["AttachStderr"] is True
+    assert h["content-length"] == str(len(b))
+    assert stack.registry.check("e1")
+
+
+def test_exec_transitional_tmux_forms_allowed(stack):
+    stack.set_handler(lambda m, p, h, b, c: http("201 Created", b'{"Id":"e2"}'))
+    for cmd in (["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
+                ["tmux", "list-windows", "-t", "work", "-F", "x"]):
+        resp = exec_create(stack, {**DOCKER_PY_EXEC, "Cmd": cmd})
+        assert status_of(resp) == 201, cmd
+
+
+@pytest.mark.parametrize("patch", [
+    {"Cmd": ["sh"]},
+    {"Cmd": ["sh", "-c", "dvw-probe"]},
+    {"Cmd": ["dvw-probe", "--x"]},
+    {"Cmd": ["/usr/local/bin/dvw-probe"]},
+    {"Cmd": "dvw-probe"},
+    {"Cmd": []},
+    {"Cmd": ["tmux", "kill-server"]},
+    {"Cmd": ["tmux"]},
+    {"Privileged": True},
+    {"Tty": True},
+    {"AttachStdin": True},
+    {"User": "root"},
+    {"User": "0"},
+    {"Env": ["LD_PRELOAD=/tmp/x.so"]},
+    {"WorkingDir": "/"},
+    {"DetachKeys": "ctrl-p"},
+])
+def test_exec_variants_are_denied_before_upstream(stack, patch):
+    before = len(stack.upstream.requests)
+    resp = exec_create(stack, {**DOCKER_PY_EXEC, **patch})
+    assert status_of(resp) == 403, patch
+    assert len(stack.upstream.requests) == before
+
+
+def test_exec_duplicate_keys_use_last_and_are_normalized(stack):
+    # JSON with two Cmd keys: Python keeps the last one, which is the one
+    # validated and the only one re-serialized.
+    raw = b'{"Cmd":["sh"],"AttachStdout":true,"Cmd":["dvw-probe"]}'
+    stack.set_handler(lambda m, p, h, b, c: http("201 Created", b'{"Id":"e3"}'))
+    resp = stack.send(req("POST", "/containers/abc123/exec", raw))
+    assert status_of(resp) == 201
+    assert json.loads(stack.upstream.requests[-1][3])["Cmd"] == ["dvw-probe"]
+    assert stack.upstream.requests[-1][3].count(b'"Cmd"') == 1
+
+
+def test_exec_odd_cased_keys_are_denied(stack):
+    before = len(stack.upstream.requests)
+    resp = stack.send(req("POST", "/containers/abc123/exec",
+                          b'{"cmd":["dvw-probe"]}'))
+    assert status_of(resp) == 403
+    assert len(stack.upstream.requests) == before
+
+
+def test_exec_smuggled_keys_are_stripped_from_the_forwarded_body(stack):
+    stack.set_handler(lambda m, p, h, b, c: http("201 Created", b'{"Id":"e4"}'))
+    resp = exec_create(stack, {**DOCKER_PY_EXEC,
+                               "HostConfig": {"Privileged": True},
+                               "privileged": True})
+    assert status_of(resp) == 201
+    sent = json.loads(stack.upstream.requests[-1][3])
+    assert "HostConfig" not in sent and "privileged" not in sent
+
+
+@pytest.mark.parametrize("raw", [b"not json", b"[1,2]", b'"str"', b"null", b""])
+def test_exec_non_object_body_is_denied(stack, raw):
+    before = len(stack.upstream.requests)
+    resp = stack.send(req("POST", "/containers/abc123/exec", raw))
+    assert status_of(resp) == 403
+    assert len(stack.upstream.requests) == before
+
+
+def test_exec_registry_ttl_and_cap():
+    reg = px.ExecRegistry(ttl=0.05, cap=2)
+    reg.add("a")
+    assert reg.check("a")
+    reg.add("b")
+    reg.add("c")
+    assert not reg.check("a") and reg.check("b") and reg.check("c")
+    import time
+    time.sleep(0.08)
+    assert not reg.check("c")

@@ -54,6 +54,15 @@ _TOKEN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
 _DIGITS = re.compile(r"[0-9]+")
 _FORWARD_HEADERS = ("host", "content-type", "accept", "user-agent")
 
+# Exec create bodies. docker-py sends User: "", Env: null and Privileged:
+# false explicitly, so "absent or false" and "absent or empty" have to accept
+# those spellings rather than requiring the key to be missing.
+_FALSEY = (None, False)
+_EMPTY = (None, "", [], {})
+_TMUX_SUBCOMMANDS = ("list-sessions", "list-windows")
+_PASSTHROUGH = ("Container", "AttachStdout", "AttachStderr", "Tty", "Privileged",
+                "AttachStdin", "User", "Env", "WorkingDir", "DetachKeys", "Cmd")
+
 
 class BadRequest(Exception):
     pass
@@ -221,7 +230,35 @@ class ExecRegistry:
 
 
 def validate_exec_body(body: bytes) -> tuple[bytes, str]:
-    raise Forbidden("exec not implemented yet")  # replaced in Task 4
+    """Check an exec create body and return (re-serialized body, label).
+
+    The body that goes upstream is rebuilt from the fields checked here, so a
+    key this proxy never reasoned about (or a duplicate, or one that differs
+    only in case) cannot ride along to dockerd. Raises Forbidden to deny.
+    """
+    try:
+        data = json.loads(body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise Forbidden("exec body is not JSON") from None
+    if not isinstance(data, dict):
+        raise Forbidden("exec body is not an object")
+    cmd = data.get("Cmd")
+    if not isinstance(cmd, list) or not cmd or not all(isinstance(c, str) for c in cmd):
+        raise Forbidden("Cmd must be a non-empty list of strings")
+    if cmd == ["dvw-probe"]:
+        label = "dvw-probe"
+    elif cmd[0] == "tmux" and len(cmd) >= 2 and cmd[1] in _TMUX_SUBCOMMANDS:
+        label = f"tmux {cmd[1]}"  # transitional, removed with the catalog fallback
+    else:
+        raise Forbidden(f"Cmd not allowed: {cmd[0]!r}")
+    for key in ("Privileged", "Tty", "AttachStdin"):
+        if data.get(key) not in _FALSEY:
+            raise Forbidden(f"{key} must be absent or false")
+    for key in ("User", "Env", "WorkingDir", "DetachKeys"):
+        if data.get(key) not in _EMPTY:
+            raise Forbidden(f"{key} must be absent or empty")
+    clean = {k: data[k] for k in _PASSTHROUGH if k in data}
+    return json.dumps(clean, separators=(",", ":")).encode("utf-8"), label
 
 
 def connect_upstream(upstream: str) -> socket.socket:
