@@ -23,7 +23,7 @@ but this is not enforced: `main` carries no branch protection or rulesets
 - **Image pin reconciliation** (`lib/pin.sh` / `lib/pin-rebuild.sh`) is the one exception: aicoding's
   boot sync rewrites a workspace's `.devcontainer/devcontainer.json` pin but
   deliberately never commits it, while `devpod up --recreate` builds from the
-  committed copy. `dvw pin-rebuild <id>` is the one-stop closing loop (live-branch PR, verified merge gate, source-clone pull via catalog service, rebuild, image assertion). `dvw pin-sync` is retained for fleet-wide sweeps across many repos. The catalog service requires redeployment (`catalog-service/deploy/host-update.sh`) before the new endpoints work; old client plus new server (and vice versa) degrade gracefully to today's behavior. Consumer discovery is free here: the catalog already lists every workspace's `repo@branch`.
+  committed copy. `dvw recreate <id>` detects stale pins and offers to open a pin-sync PR; after merge, `dvw pin-rebuild <id>` is the closing loop (source-clone pull via catalog service, rebuild, image assertion). `dvw pin-sync` is retained for fleet-wide sweeps across many repos. The catalog service requires redeployment (`catalog-service/deploy/host-update.sh`) before the new endpoints work; old client plus new server (and vice versa) degrade gracefully to today's behavior. Consumer discovery is free here: the catalog already lists every workspace's `repo@branch`.
 
 ### Naming: “blueprint” means two things
 
