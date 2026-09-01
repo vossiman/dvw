@@ -1320,7 +1320,9 @@ and update the matching pin-sync.bats assertion.
 - [ ] **Step 4: Run to verify pass**, `bats tests/bats/resolver.bats tests/bats/pin-sync.bats` plus a spot-check of the full bats suite: `tests/bats/run.sh`.
 - [ ] **Step 5: Commit**, `git commit -am "feat(status): outdated-image badge backed by the blueprint comparison"`
 
----### Task 8: TUI, badge, menu entry, action
+---
+
+### Task 8: TUI, badge, menu entry, action
 
 **Files:**
 - Modify: `tui/dvw_tui/client.py` (Workspace field + merge), `tui/dvw_tui/render.py` (`state_cell`), `tui/dvw_tui/screens/main.py` (3 call sites + `u` binding), `tui/dvw_tui/screens/menu.py` (item), `tui/dvw_tui/actions.py` (`pin_rebuild`), `tui/dvw_tui/app.py` (dispatch)
