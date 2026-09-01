@@ -175,6 +175,7 @@ DVW_UNREACHABLE_IDS=""
 DVW_UNKNOWN_IDS=""
 DVW_RUNNING_IDS=""
 DVW_RUNNING_LOADED=""
+DVW_OUTDATED_IDS=""
 
 _dvw_load_running_ids() {
   [[ -n "$DVW_RUNNING_LOADED" ]] && return 0
@@ -203,6 +204,14 @@ _dvw_load_running_ids() {
   # doesn't produce a stray empty line.
   DVW_RUNNING_IDS=$(printf '%s\n%s\n' "$DVW_ALIVE_IDS" "$DVW_STALE_IDS" \
     | grep -v '^$' | sort -u || true)
+
+  # Outdated = image_current explicitly "false" (tri-state: unset/empty stays
+  # unknown, never counted as outdated).
+  local outdated=()
+  for id in "${!DVW_PROBE_IMAGE_CURRENT[@]}"; do
+    [[ "${DVW_PROBE_IMAGE_CURRENT[$id]}" == "false" ]] && outdated+=("$id")
+  done
+  DVW_OUTDATED_IDS=$(printf '%s\n' "${outdated[@]}" | grep -v '^$' | sort -u || true)
 }
 
 # Back-compat: callers that historically read DVW_STALE_IDS via this helper.

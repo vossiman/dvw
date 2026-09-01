@@ -220,6 +220,7 @@ _stub_recreate_deps() {
   run _dvw_pin_preflight demo
   [ "$status" -eq 1 ]                 # non-zero = cmd_recreate skips the rebuild
   echo "$output" | grep -q "PIN SYNC RAN"
+  echo "$output" | grep -qF "dvw pin-rebuild demo"
 }
 
 @test "rebuild pre-flight: declining the offer proceeds with the rebuild" {

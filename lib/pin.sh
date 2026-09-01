@@ -312,7 +312,7 @@ _dvw_pin_preflight() {
   ui_status_warn "$slug@$branch is pinned to $(_dvw_pin_short "$cur") — rebuilding now reinstalls that image"
   if ui_confirm "open a pin-sync PR first?"; then
     cmd_pin_sync "$id"
-    ui_info "merge the PR, then re-run: dvw rebuild $id"
+    ui_info "merge the PR, then: dvw pin-rebuild $id (pulls the source clone and verifies the image)"
     return 1
   fi
   return 0

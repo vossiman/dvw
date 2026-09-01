@@ -74,16 +74,28 @@ _dvw_load_probe() {
     return 0
   }
 
-  local id liveness siblings
+  local id liveness siblings img_cur
   # `// ""` — NOT `// empty`: inside string interpolation `empty` collapses the
   # whole row to nothing, silently dropping every status from a server that
   # predates running_siblings. An empty field leaves the siblings map unset for
   # that id, so old servers read as "unknown" rather than "zero siblings".
-  while IFS=$'\t' read -r id liveness siblings; do
+  #
+  # image_current can't use the same `// ""` shortcut: jq's `//` treats a
+  # literal `false` as falsy too, so `false // ""` collapses to "" and an
+  # outdated image would read as unknown. Spell it out with an explicit null
+  # check instead, which passes `false` through unchanged.
+  #
+  # Delimiter is \x1f (unit separator), NOT a tab: bash's `read` treats tab as
+  # "IFS whitespace" and silently collapses runs of it, so an empty siblings
+  # field ahead of a non-empty image_current field would vanish and shift
+  # image_current's value into the siblings slot. \x1f isn't IFS whitespace,
+  # so empty middle fields survive.
+  while IFS=$'\x1f' read -r id liveness siblings img_cur; do
     [[ -z "$id" ]] && continue
     DVW_PROBE_STATE["$id"]="$liveness"
     [[ -n "$siblings" ]] && DVW_PROBE_SIBLINGS["$id"]="$siblings"
-  done < <(jq -r '.[] | "\(.id)\t\(.liveness)\t\(.running_siblings // "")"' <<<"$status_body")
+    [[ -n "$img_cur" ]] && DVW_PROBE_IMAGE_CURRENT["$id"]="$img_cur"
+  done < <(jq -r $'.[] | "\\(.id)\\u001f\\(.liveness)\\u001f\\(.running_siblings // "")\\u001f" + (if .image_current == null then "" else (.image_current | tostring) end)' <<<"$status_body")
 
   # Orphans -> DVW_PROBE_ORPHAN_INFO (host \t uid \t state \t mountstatus \t src \t wsdest),
   # keyed by container NAME. Twin containers can share one devpod uid (two

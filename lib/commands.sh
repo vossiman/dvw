@@ -210,13 +210,15 @@ cmd_status() {
         --arg stale       "$DVW_STALE_IDS" \
         --arg stopped     "$DVW_STOPPED_IDS" \
         --arg absent      "$DVW_ABSENT_IDS" \
-        --arg unreachable "$DVW_UNREACHABLE_IDS" '
+        --arg unreachable "$DVW_UNREACHABLE_IDS" \
+        --arg outdated    "$DVW_OUTDATED_IDS" '
     def lines: split("\n") | map(select(. != ""));
     ($alive | lines)       as $a |
     ($stale | lines)       as $s |
     ($stopped | lines)     as $o |
     ($absent | lines)      as $b |
     ($unreachable | lines) as $u |
+    ($outdated | lines)    as $od |
     def shortrepo:
       sub("^git@github\\.com:"; "")
       | sub("^https://github\\.com/"; "")
@@ -227,12 +229,13 @@ cmd_status() {
         ((.repo | shortrepo) + "@" + .branch),
         .ide,
         (.id as $id
-         | if   ($s | index($id)) then "⚠ stale"
-           elif ($a | index($id)) then "● running"
-           elif ($o | index($id)) then "○ stopped"
-           elif ($b | index($id)) then "✗ absent"
-           elif ($u | index($id)) then "? unreachable"
-           else                        "? unknown" end),
+         | (if   ($s | index($id)) then "⚠ stale"
+            elif ($a | index($id)) then "● running"
+            elif ($o | index($id)) then "○ stopped"
+            elif ($b | index($id)) then "✗ absent"
+            elif ($u | index($id)) then "? unreachable"
+            else                        "? unknown" end)
+           + (if ($od | index($id)) then " ⬆" else "" end)),
         ("last:" + .last_used_at),
         ("on:" + .created_on)
       ] | @tsv
@@ -268,6 +271,13 @@ cmd_status() {
       ui_status_warn "$id is in the catalog but no container exists on its provider"
       ui_info "  start it: dvw start $id   |   remove the stale catalog entry: dvw rm $id"
     done <<<"$DVW_ABSENT_IDS"
+  fi
+  if [[ -n "${DVW_OUTDATED_IDS:-}" ]]; then
+    echo
+    while IFS= read -r id; do
+      [[ -z "$id" ]] && continue
+      ui_status_warn "$id is running an image older than the blueprint, \`dvw pin-rebuild $id\` to update"
+    done <<<"$DVW_OUTDATED_IDS"
   fi
 }
 

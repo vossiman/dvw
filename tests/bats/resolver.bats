@@ -322,6 +322,28 @@ _ws_json() {
   [ -z "${DVW_PROBE_SIBLINGS[a]:-}" ]
 }
 
+@test "http load_probe: records image_current per id, tolerating old servers" {
+  catalog_route() {
+    case "$1 $2" in
+      "GET /v1/containers/status")
+        _stub_emit '[{"id":"a", "liveness":"alive", "image_current":false},
+                     {"id":"b", "liveness":"alive", "image_current":true},
+                     {"id":"c", "liveness":"alive"}]' 200 ;;
+      "GET /v1/containers/orphans") _stub_emit '[]' 200 ;;
+      "GET /v1/catalog")
+        _stub_emit '{ "version":1, "defaults":{}, "repos":[], "workspaces":[] }' 200 ;;
+      *) _stub_emit '{}' 404 ;;
+    esac
+  }
+  catalog_stub_install
+  _load_http_resolver
+  unset DVW_PROBE_LOADED
+  _dvw_load_probe
+  [ "${DVW_PROBE_IMAGE_CURRENT[a]}" = "false" ]
+  [ "${DVW_PROBE_IMAGE_CURRENT[b]}" = "true" ]
+  [ -z "${DVW_PROBE_IMAGE_CURRENT[c]:-}" ]
+}
+
 @test "http load_probe: twin orphans sharing a devpod uid are both recorded" {
   # 2026-08-09: two racing `devpod up` runs created twin containers with the
   # SAME devpod uid. Keying orphan detail by uid collapsed them — `dvw doctor`
