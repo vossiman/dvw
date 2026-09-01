@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
+from starlette.concurrency import run_in_threadpool
 
-from ..deps import InspectorDep, StoreDep, run_inspect
+from ..deps import BlueprintImageDep, InspectorDep, StoreDep, run_inspect
 from ..models import Orphan, WaitingWindow, WorkspaceStatus, WorkspaceWindows
 
 router = APIRouter(prefix="/containers", tags=["containers"])
@@ -12,6 +13,7 @@ router = APIRouter(prefix="/containers", tags=["containers"])
 async def status(
     store: StoreDep,
     inspector: InspectorDep,
+    blueprint: BlueprintImageDep,
     ids: list[str] | None = Query(default=None),
 ) -> list[WorkspaceStatus]:
     """Bulk liveness for workspaces (alive/stale/stopped/absent).
@@ -21,7 +23,8 @@ async def status(
     """
     if ids is None:
         ids = [w.id for w in store.list_workspaces()]
-    return await run_inspect(inspector.status_many, ids)
+    bp = await run_in_threadpool(blueprint.get)
+    return await run_inspect(inspector.status_many, ids, bp)
 
 
 @router.get("/orphans", response_model=list[Orphan])

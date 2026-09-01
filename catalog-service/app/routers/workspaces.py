@@ -7,6 +7,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import source as source_mod
 from ..deps import (
+    BlueprintImageDep,
     InspectorDep,
     SettingsDep,
     StoreDep,
@@ -154,9 +155,12 @@ async def workspace_siblings(
 
 
 @router.get("/{ws_id}/inspect", response_model=ContainerInspect)
-async def inspect_container(ws_id: WsId, inspector: InspectorDep) -> ContainerInspect:
+async def inspect_container(
+    ws_id: WsId, inspector: InspectorDep, blueprint: BlueprintImageDep
+) -> ContainerInspect:
     """Deep inspection: state, health, mounts, cpu/mem, disk, liveness."""
-    return await run_inspect(inspector.inspect, ws_id)
+    bp = await run_in_threadpool(blueprint.get)
+    return await run_inspect(inspector.inspect, ws_id, bp)
 
 
 async def _get_or_404(store: StoreDep, ws_id: str) -> Workspace:

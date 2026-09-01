@@ -254,6 +254,13 @@ class ContainerInspect(BaseModel):
     disk_bytes: int | None = None
     # alive / stale / stopped / absent — see resolver semantics.
     liveness: str = "absent"
+    # sha256 digest of the image the container runs; None when unknowable
+    # (no container, tag-only image, /images blocked by the socket proxy).
+    image_digest: str | None = None
+    # Blueprint ref at comparison time; None when the blueprint is unreachable.
+    blueprint_image: str | None = None
+    # Tri-state on purpose: None (unknown) must never render as outdated.
+    image_current: bool | None = None
 
 
 class WorkspaceSource(BaseModel):
@@ -301,6 +308,13 @@ class WorkspaceStatus(BaseModel):
     # fail-open value for no session / exec failure / stopped container — a
     # false "attached" misleads; a missed one is harmless.
     attached: int = 0
+    # sha256 digest of the image the container runs; None when unknowable
+    # (no container, tag-only image, /images blocked by the socket proxy).
+    image_digest: str | None = None
+    # Blueprint ref at comparison time; None when the blueprint is unreachable.
+    blueprint_image: str | None = None
+    # Tri-state on purpose: None (unknown) must never render as outdated.
+    image_current: bool | None = None
 
 
 class Orphan(BaseModel):
