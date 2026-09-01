@@ -11,8 +11,8 @@ from tests.test_resolver import FakeClient, FakeContainer
 
 def _inspector(containers, monkeypatch):
     import app.docker_inspect as di
-    monkeypatch.setattr(di.docker, "from_env", lambda timeout=None: FakeClient(containers))
-    return DockerInspector(Settings(docker_host="", resolve_cache_ttl=0))
+    monkeypatch.setattr(di.docker, "DockerClient", lambda base_url=None, timeout=None: FakeClient(containers))
+    return DockerInspector(Settings(docker_host="unix:/nonexistent", resolve_cache_ttl=0))
 
 
 def _probe_container(cid="c1", ws="ws-a", **kw):

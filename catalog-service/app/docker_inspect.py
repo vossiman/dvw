@@ -172,12 +172,9 @@ class DockerInspector:
 
     def __init__(self, settings: Settings):
         self._settings = settings
-        if settings.docker_host:
-            self._client = docker.DockerClient(
-                base_url=settings.docker_host, timeout=settings.docker_timeout
-            )
-        else:
-            self._client = docker.from_env(timeout=settings.docker_timeout)
+        self._client = docker.DockerClient(
+            base_url=settings.docker_host, timeout=settings.docker_timeout
+        )
         self._attached_slots = threading.BoundedSemaphore(
             self._attached_probe_workers
         )

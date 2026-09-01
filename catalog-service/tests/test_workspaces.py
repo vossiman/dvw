@@ -90,3 +90,25 @@ def test_persistence_across_store_reload(client, settings):
 
     reloaded = CatalogStore(settings.catalog_path)
     assert reloaded.get_workspace("proj-git-main").repo == "git@github.com:me/proj"
+
+
+def test_inspect_exposes_agents_git_and_probe(client, inspector):
+    from app.models import AgentProc, ContainerInspect, GitState
+
+    inspector.inspections["ws-a"] = ContainerInspect(
+        workspace_id="ws-a", container_id="c1", running=True, liveness="alive",
+        probe="ok",
+        agents=[AgentProc(cli="claude", pid=42, started=1756790000, cwd="/workspaces/ws-a")],
+        git=GitState(root="/workspaces/ws-a", branch="feat/x", head="abc1234",
+                     dirty=True, ahead=2, behind=0),
+    )
+    body = client.get("/v1/workspaces/ws-a/inspect").json()
+    assert body["probe"] == "ok"
+    assert body["agents"] == [{"cli": "claude", "pid": 42, "started": 1756790000,
+                               "cwd": "/workspaces/ws-a"}]
+    assert body["git"]["branch"] == "feat/x" and body["git"]["ahead"] == 2
+
+
+def test_inspect_defaults_when_probe_missing(client, inspector):
+    body = client.get("/v1/workspaces/ws-zzz/inspect").json()
+    assert body["probe"] == "missing" and body["agents"] == [] and body["git"] is None

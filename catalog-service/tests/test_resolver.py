@@ -44,7 +44,7 @@ class FakeContainer:
 
     def exec_run(self, cmd, demux=False):
         self.exec_calls.append(list(cmd))
-        # `dvw-probe` — the single-exec snapshot. Default (probe=None,
+        # `dvw-probe`: the single-exec snapshot. Default (probe=None,
         # probe_exit=None) is "not installed": exit 127, so every legacy test
         # keeps exercising the tmux fallback unchanged.
         if cmd == ["dvw-probe"]:
@@ -98,8 +98,8 @@ class FakeClient:
 def _inspector(containers, monkeypatch):
     import app.docker_inspect as di
 
-    monkeypatch.setattr(di.docker, "from_env", lambda timeout=None: FakeClient(containers))
-    return DockerInspector(Settings(docker_host="", resolve_cache_ttl=0))
+    monkeypatch.setattr(di.docker, "DockerClient", lambda base_url=None, timeout=None: FakeClient(containers))
+    return DockerInspector(Settings(docker_host="unix:/nonexistent", resolve_cache_ttl=0))
 
 
 def test_no_match_returns_null_container(monkeypatch):
