@@ -93,6 +93,10 @@ it cannot fast-forward past a divergence.
 
 Path resolution reuses the existing devpod agent-directory logic; the
 directory is validated as a git work tree before either endpoint touches it.
+The pull authenticates with whatever git credentials the service account
+already holds on the box (the same ones devpod's own clone used); an auth
+failure is not special-cased, it surfaces git's stderr like any other
+failure.
 
 ### 2. Blueprint digest in the status payload
 
@@ -108,6 +112,12 @@ Added to the container status payload and to `ContainerInspect`:
 - `image_digest` — the container's own `RepoDigests[0]` digest.
 - `image_current` — `true` / `false`, or `null` when either side is unknown.
 
+`image_current` compares the `sha256:` components only: `RepoDigests[0]`
+has the form `repo@sha256:...` while the blueprint ref carries a registry
+prefix, so whole-string comparison would false-negative on identical images.
+A blueprint pinned to a tag rather than a digest cannot be compared and
+yields `null`, never `false`.
+
 `image_digest` is new because the existing `image` field
 (`app/docker_inspect.py:363`) prefers a *tag* over the digest
 (`(c.image.tags or [a.get("Image")])[0]`), and a tag cannot be compared
@@ -117,7 +127,17 @@ display; comparison uses `image_digest` only.
 Tri-state, not boolean: "unknown" (offline, un-pinned repo, no container)
 must not render as "outdated", or the badge cries wolf and gets ignored.
 
-### 3. `dvw pin-rebuild <id>` — the one-stop command
+### 3. `_dvw_pin_state` resolves the live branch everywhere
+
+`_dvw_pin_state` (used by `cmd_pin_sync` and `_dvw_pin_preflight`) gains the
+same branch resolution as `pin-rebuild`: query
+`GET /v1/workspaces/{id}/source` first and use the clone's live branch,
+falling back to the catalog `.branch` (with the existing behaviour) when the
+service is unreachable or the clone is absent. Without this, the standalone
+`dvw pin-sync` and the rebuild preflight would keep opening PRs against the
+creation-time branch — the exact wrong-branch failure this design removes.
+
+### 4. `dvw pin-rebuild <id>` — the one-stop command
 
 New file `lib/pin-rebuild.sh`, sourced alongside `lib/pin.sh`.
 
@@ -136,8 +156,12 @@ chain has already cost a rebuild:
    means no PR is needed; jump to step 6.
 3. **Open PRs.** `_dvw_pin_open_pr` against the build branch, and a second
    against `main` when it differs, so the baseline is fixed once and future
-   workspaces cut from `main` start current. Existing open PRs are reported,
-   not duplicated (today's behaviour). Print both URLs.
+   workspaces cut from `main` start current. The `main` PR is preceded by a
+   `_dvw_repo_pin` check and skipped when `main` is already current or has
+   no pin file — `_dvw_pin_open_pr` treats a byte-identical rewrite as an
+   error, so opening it blindly would report a spurious failure. Existing
+   open PRs are reported, not duplicated (today's behaviour). Print both
+   URLs.
 4. **Wait for the merge, verified.** Poll
    `gh pr view <url> --json state,mergedAt` every 10s. Enter forces an
    immediate re-check; Ctrl-C aborts cleanly leaving the PRs open. Only the
@@ -164,7 +188,7 @@ opens nothing, pulls nothing, rebuilds nothing.
 Exit codes: `0` current (whether or not work was done), `1` a step failed,
 `2` aborted by the user at the merge gate.
 
-### 4. UI
+### 5. UI
 
 - **TUI:** a `⬆` badge (accent, from `render.py`'s palette) in the state cell
   when `image_current` is `false`. `null` renders nothing. Menu gains
