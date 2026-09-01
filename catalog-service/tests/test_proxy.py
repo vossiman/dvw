@@ -1,0 +1,245 @@
+"""dvw-docker-proxy: allowlisting proxy in front of docker.sock.
+
+The proxy runs in a thread on a temp unix socket; upstream is a scripted fake
+on another temp unix socket. Tests speak raw HTTP so what reaches the wire is
+exactly what is asserted.
+"""
+
+from __future__ import annotations
+
+import json
+import socket
+import threading
+
+import pytest
+
+from proxy import dvw_docker_proxy as px
+
+
+class FakeUpstream:
+    """Reads one HTTP request per connection, records it, answers from a
+    handler. handler(method, path, headers, body, conn) -> bytes | None; when
+    it returns None it has written to conn itself (upgrade scenarios)."""
+
+    def __init__(self, path, handler):
+        self.path = path
+        self.handler = handler
+        self.requests: list[tuple[str, str, dict, bytes]] = []
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.bind(path)
+        self.sock.listen(8)
+        self.sock.settimeout(0.05)
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    def _loop(self):
+        while not self.stop.is_set():
+            try:
+                conn, _ = self.sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            threading.Thread(target=self._one, args=(conn,), daemon=True).start()
+
+    def _one(self, conn):
+        try:
+            req = px.read_request(conn)
+        except px.BadRequest:
+            conn.close()
+            return
+        headers = {k.lower(): v for k, v in req.headers}
+        self.requests.append((req.method, req.target, headers, req.body))
+        resp = self.handler(req.method, req.target, headers, req.body, conn)
+        if resp is not None:
+            conn.sendall(resp)
+            conn.close()
+
+    def close(self):
+        self.stop.set()
+        self.thread.join(1)
+        self.sock.close()
+
+
+def http(status, body=b"", extra=b""):
+    return (f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n").encode() + extra + b"\r\n" + body
+
+
+def ok_json(obj):
+    return http("200 OK", json.dumps(obj).encode())
+
+
+@pytest.fixture
+def stack(tmp_path):
+    """Yields (send, upstream) where send(raw_request_bytes) -> raw response."""
+    up_path = str(tmp_path / "up.sock")
+    px_path = str(tmp_path / "px.sock")
+    state = {"handler": lambda m, p, h, b, c: ok_json({"echo": p})}
+    upstream = FakeUpstream(up_path, lambda *a: state["handler"](*a))
+    listen = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listen.bind(px_path)
+    listen.listen(8)
+    stop = threading.Event()
+    registry = px.ExecRegistry()
+    t = threading.Thread(
+        target=px.serve, args=(listen, f"unix:{up_path}", registry, stop), daemon=True)
+    t.start()
+
+    def send(raw: bytes) -> bytes:
+        c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        c.settimeout(3)
+        c.connect(px_path)
+        c.sendall(raw)
+        chunks = []
+        while True:
+            try:
+                d = c.recv(65536)
+            except socket.timeout:
+                break
+            if not d:
+                break
+            chunks.append(d)
+        c.close()
+        return b"".join(chunks)
+
+    class Stack:
+        pass
+
+    s = Stack()
+    s.send = send
+    s.upstream = upstream
+    s.registry = registry
+    s.set_handler = lambda h: state.__setitem__("handler", h)
+    yield s
+    stop.set()
+    listen.close()
+    upstream.close()
+
+
+def req(method, target, body=b"", headers=""):
+    return (f"{method} {target} HTTP/1.1\r\nHost: docker\r\n{headers}"
+            f"Content-Length: {len(body)}\r\n\r\n").encode() + body
+
+
+def status_of(resp: bytes) -> int:
+    return int(resp.split(b" ", 2)[1])
+
+
+def body_of(resp: bytes) -> bytes:
+    return resp.split(b"\r\n\r\n", 1)[1]
+
+
+# ---- allowed plain routes --------------------------------------------------
+
+@pytest.mark.parametrize("target", [
+    "/_ping", "/version", "/info",
+    "/containers/json?all=1&limit=-1&filters=%7B%22label%22%3A%5B%22x%22%5D%7D",
+    "/containers/abc123/json",
+    "/containers/abc123/stats?stream=false",
+    "/containers/abc123/stats?stream=0",
+    "/containers/abc123/stats?stream=False",
+])
+def test_allowed_get_routes_reach_upstream_with_query(stack, target):
+    resp = stack.send(req("GET", target))
+    assert status_of(resp) == 200
+    assert json.loads(body_of(resp)) == {"echo": target}
+    assert stack.upstream.requests[-1][1] == target
+
+
+def test_version_prefix_is_stripped_for_routing_but_forwarded(stack):
+    resp = stack.send(req("GET", "/v1.45/_ping"))
+    assert status_of(resp) == 200
+    assert stack.upstream.requests[-1][1] == "/v1.45/_ping"
+
+
+def test_response_gets_connection_close(stack):
+    resp = stack.send(req("GET", "/_ping"))
+    head = resp.split(b"\r\n\r\n", 1)[0] + b"\r\n"
+    assert b"\r\nConnection: close\r\n" in head
+
+
+# ---- denied ----------------------------------------------------------------
+
+@pytest.mark.parametrize("method,target", [
+    ("POST", "/containers/create"),
+    ("POST", "/containers/abc123/start"),
+    ("DELETE", "/containers/abc123"),
+    ("GET", "/images/json"),
+    ("GET", "/volumes"),
+    ("GET", "/networks"),
+    ("POST", "/build"),
+    ("POST", "/commit"),
+    ("GET", "/swarm"),
+    ("GET", "/system/df"),
+    ("GET", "/events"),
+    ("HEAD", "/_ping"),
+    ("PUT", "/containers/abc123/archive?path=/"),
+    ("GET", "/containers/abc123/stats"),
+    ("GET", "/containers/abc123/stats?stream=true"),
+    ("GET", "/containers/abc123/logs?stdout=1"),
+    ("GET", "/containers/abc123/top"),
+    ("GET", "/containers/../json"),
+    ("GET", "/containers/abc%2Fjson"),
+    ("POST", "/exec/deadbeef/start"),
+    ("GET", "/exec/deadbeef/json"),
+])
+def test_denied_routes_never_reach_upstream(stack, method, target):
+    before = len(stack.upstream.requests)
+    resp = stack.send(req(method, target, body=b"{}"))
+    assert status_of(resp) == 403
+    assert body_of(resp) == px.DENY_BODY
+    assert len(stack.upstream.requests) == before
+
+
+def test_malformed_request_line_is_400(stack):
+    resp = stack.send(b"GARBAGE\r\n\r\n")
+    assert status_of(resp) == 400
+
+
+def test_oversized_head_is_400(stack):
+    resp = stack.send(b"GET /_ping HTTP/1.1\r\nX: " + b"a" * (px.MAX_HEAD + 10) + b"\r\n\r\n")
+    assert status_of(resp) == 400
+
+
+def test_chunked_request_body_is_400(stack):
+    resp = stack.send(b"POST /containers/abc/exec HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
+    assert status_of(resp) == 400
+
+
+# ---- exec id registry ------------------------------------------------------
+
+def test_exec_registry_expires_and_caps():
+    registry = px.ExecRegistry(ttl=60.0, cap=2)
+    registry.add("first")
+    assert registry.check("first")
+    assert not registry.check("never-issued")
+    registry.add("second")
+    registry.add("third")
+    assert not registry.check("first")
+    assert registry.check("third")
+    time_expired = px.ExecRegistry(ttl=-1.0)
+    time_expired.add("stale")
+    assert not time_expired.check("stale")
+
+
+# ---- head/body limits ------------------------------------------------------
+
+def test_large_body_is_not_counted_against_the_head_limit():
+    """The 16 KiB cap applies to the request head, not to a body that arrives
+    in the same read as the end of the head."""
+    left, right = socket.socketpair()
+    body = b"x" * px.MAX_BODY
+    raw = (b"POST /containers/abc/exec HTTP/1.1\r\nHost: docker\r\n"
+           b"Content-Length: %d\r\n\r\n" % len(body)) + body
+    sender = threading.Thread(target=left.sendall, args=(raw,), daemon=True)
+    sender.start()
+    try:
+        request = px.read_request(right)
+        assert request.body == body
+        assert request.path == "/containers/abc/exec"
+    finally:
+        sender.join(2)
+        left.close()
+        right.close()
