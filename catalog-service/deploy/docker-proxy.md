@@ -17,7 +17,15 @@ only non-root member of the docker group, and forwards exactly these routes:
 | GET | `/exec/{id}/json` | same |
 
 Everything else is `403` and never reaches dockerd. Every request is logged
-to the journal as `verdict=allow|deny method= path=`.
+to the journal with one of these verdicts:
+
+| Verdict | Meaning |
+|---|---|
+| `allow` | request matched a route and was forwarded |
+| `deny` | request did not match any route (`403`) |
+| `bad` | request could not be parsed (malformed or smuggled headers) |
+| `cut` | a response or exec stream was truncated at its size or time cap |
+| `upstream-error` | dockerd (or the connection to it) failed after a request was allowed |
 
 ## What this buys
 

@@ -93,7 +93,10 @@ echo "==> 5/8 env file (once)"
 echo "==> 6/8 dvw-docker-proxy (system user + socket-activated unit)"
 PROXY_SOCK="/run/dvw-docker-proxy/docker.sock"
 if ! id dvw-proxy >/dev/null 2>&1; then
-  sudo useradd --system --no-create-home --shell /usr/sbin/nologin --groups docker dvw-proxy
+  # --user-group: don't rely on USERGROUPS_ENAB=yes (a login.defs default
+  # that a hardened host may turn off) to get the dvw-proxy group the
+  # service's Group=dvw-proxy needs.
+  sudo useradd --system --no-create-home --shell /usr/sbin/nologin --user-group --groups docker dvw-proxy
 fi
 # Retire the tecnativa compose proxy if a previous install left it running.
 # The compose file is gone from the checkout, so address the container by
@@ -129,7 +132,7 @@ done
 # Scoped to exactly these commands on these units. Comment out the install
 # below if you'd rather type your sudo password on each update.
 sudo install -m 0440 /dev/stdin /etc/sudoers.d/dvw-catalog <<SUDO
-$USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart dvw-catalog.service, /usr/bin/systemctl status dvw-catalog.service, /usr/bin/systemctl reenable dvw-catalog.service, /usr/bin/systemctl daemon-reload, /usr/bin/systemctl stop dvw-docker-proxy.service, /usr/bin/systemctl restart dvw-docker-proxy.socket, /usr/bin/systemctl restart dvw-docker-proxy.service, /usr/bin/systemctl status dvw-docker-proxy.service
+$USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart dvw-catalog.service, /usr/bin/systemctl status dvw-catalog.service, /usr/bin/systemctl reenable dvw-catalog.service, /usr/bin/systemctl daemon-reload, /usr/bin/systemctl stop dvw-docker-proxy.service, /usr/bin/systemctl restart dvw-docker-proxy.socket, /usr/bin/systemctl restart dvw-docker-proxy.service, /usr/bin/systemctl status dvw-docker-proxy.service, /usr/bin/systemctl reenable dvw-docker-proxy.socket
 SUDO
 sudo systemctl daemon-reload
 sudo systemctl reenable dvw-docker-proxy.socket

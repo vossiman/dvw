@@ -53,8 +53,11 @@ setup() {
     "$DVW_ROOT/catalog-service/deploy/host-install.sh"
 }
 
-@test "catalog unit restricts address families to AF_UNIX only" {
-  grep -qx 'RestrictAddressFamilies=AF_UNIX' "$DVW_ROOT/catalog-service/deploy/dvw-catalog.service"
+@test "catalog unit keeps AF_INET/AF_INET6 for the blueprint fetch and git subprocess; only the proxy unit is AF_UNIX-only" {
+  grep -qx 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6' "$DVW_ROOT/catalog-service/deploy/dvw-catalog.service"
+  grep -q 'blueprint_image.py' "$DVW_ROOT/catalog-service/deploy/dvw-catalog.service"
+  grep -q 'source.py' "$DVW_ROOT/catalog-service/deploy/dvw-catalog.service"
+  grep -qx 'RestrictAddressFamilies=AF_UNIX' "$DVW_ROOT/catalog-service/deploy/dvw-docker-proxy.service"
 }
 
 @test "proxy socket unit is 0600 for the rendered user and the service runs as dvw-proxy in docker group" {

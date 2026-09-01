@@ -57,10 +57,28 @@ if [ "$changed" = 1 ]; then
 fi
 
 if [ "$proxy_changed" = 1 ]; then
-  # A running service keeps its old listener even after the socket unit is
-  # rewritten, so always stop the service before restarting the socket.
-  if ! sudo -n systemctl stop dvw-docker-proxy.service >/dev/null 2>&1 || \
-     ! sudo -n systemctl restart dvw-docker-proxy.socket >/dev/null 2>&1; then
+  # A changed unit may carry a changed [Install] (e.g. SocketMode), so
+  # reenable it the same way the catalog unit is reenabled above.
+  if ! sudo -n systemctl reenable dvw-docker-proxy.socket >/dev/null 2>&1; then
+    echo "WARN: could not reenable dvw-docker-proxy.socket without a password." >&2
+    echo "      Run once:  sudo systemctl reenable dvw-docker-proxy.socket" >&2
+    echo "      (or re-run host-install.sh to refresh the sudoers drop-in)" >&2
+  fi
+fi
+
+# Stop the service, then restart the socket: a running service keeps its old
+# listener even after the socket unit is rewritten. Run both unconditionally
+# (not `A || B` short-circuited) so a failed stop never skips the socket
+# restart, and combine their statuses into one WARN.
+restart_proxy() {
+  local rc=0
+  sudo -n systemctl stop dvw-docker-proxy.service >/dev/null 2>&1 || rc=1
+  sudo -n systemctl restart dvw-docker-proxy.socket >/dev/null 2>&1 || rc=1
+  return "$rc"
+}
+
+if [ "$proxy_changed" = 1 ]; then
+  if ! restart_proxy; then
     echo "WARN: could not restart dvw-docker-proxy.socket without a password." >&2
     echo "      Run once:  sudo systemctl stop dvw-docker-proxy.service && sudo systemctl restart dvw-docker-proxy.socket" >&2
     echo "      (or re-run host-install.sh to refresh the sudoers drop-in)" >&2
@@ -70,8 +88,7 @@ fi
 # The proxy's own code can change without either unit file changing (a git
 # pull that touches proxy/dvw_docker_proxy.py). Restart it the same way.
 if ! git -C "$CHECKOUT" diff --quiet "HEAD@{1}" HEAD -- catalog-service/proxy 2>/dev/null; then
-  if ! sudo -n systemctl stop dvw-docker-proxy.service >/dev/null 2>&1 || \
-     ! sudo -n systemctl restart dvw-docker-proxy.socket >/dev/null 2>&1; then
+  if ! restart_proxy; then
     echo "WARN: proxy code changed but could not restart dvw-docker-proxy without a password." >&2
     echo "      Run once:  sudo systemctl stop dvw-docker-proxy.service && sudo systemctl restart dvw-docker-proxy.socket" >&2
   fi
@@ -88,7 +105,12 @@ if [ ! -S "$PROXY_SOCK" ]; then
   echo "  $SVC_DIR/deploy/host-install.sh" >&2
   exit 1
 fi
-curl -fsS --max-time 2 --unix-socket "$PROXY_SOCK" http://localhost/_ping >/dev/null
+if ! curl -fsS --max-time 2 --unix-socket "$PROXY_SOCK" http://localhost/_ping >/dev/null; then
+  echo "smoke test FAILED: $PROXY_SOCK did not answer /_ping." >&2
+  echo "  sudo systemctl status dvw-docker-proxy.socket dvw-docker-proxy.service" >&2
+  echo "  journalctl -xeu dvw-docker-proxy.service | tail -50" >&2
+  exit 1
+fi
 # Poll QUIETLY until the socket answers: `systemctl restart` returns once the
 # unit execs, but uvicorn needs ~1s to bind $SOCK, so the first attempt(s) fail
 # by design. Suppress those expected per-attempt curl errors (no misleading

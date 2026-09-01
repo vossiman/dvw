@@ -4,7 +4,7 @@
 # There is no systemd in CI, so this can't start real units. Instead it runs
 # the REAL script end to end against a throwaway fake checkout, with
 # sudo/systemctl/useradd/docker/git/uv/curl replaced by stubs on PATH. `sudo`
-# never execs its argv (nothing here may touch the real /etc or /opt) — it
+# never execs its argv: nothing here may touch the real /etc or /opt. It
 # just records the call and, for an `install ... <dest>` invocation, archives
 # whatever was piped to its stdin under a name derived from <dest> so tests
 # can inspect the rendered unit content. This pins two things: the exact
@@ -59,8 +59,11 @@ esac
 exit 0
 EOF
   # sudo: NEVER execs its argv (this must not touch the real /etc or /opt).
-  # Record the call, and for an `install ... <dest>` archive stdin next to a
-  # name derived from <dest> so tests can inspect what render_unit produced.
+  # Record the call, and for an `install ... <dest>` archive stdin under a
+  # name derived from the FULL destination path (slashes turned into
+  # underscores, not just the basename) so two destinations that happen to
+  # share a basename can never collide, and tests can inspect what
+  # render_unit produced.
   cat > "$HOME/stubs/sudo" <<'SUDOEOF'
 #!/bin/sh
 echo "sudo $*" >> "$HOME/calls"
@@ -68,7 +71,8 @@ last=""
 for a in "$@"; do last="$a"; done
 case "$last" in
   /etc/*|/opt/*)
-    cat > "$HOME/rendered_$(basename "$last")" 2>/dev/null
+    key=$(echo "$last" | sed 's#^/##; s#/#_#g')
+    cat > "$HOME/rendered_$key" 2>/dev/null
     ;;
   *)
     cat >/dev/null 2>&1
@@ -89,13 +93,16 @@ teardown() {
 }
 
 run_install() {
-  run env CHECKOUT="$CHECKOUT" BRANCH=main bash "$SCRIPT"
+  # </dev/null: bats' own stdin must never reach the script, so a stub that
+  # ever fell through to reading stdin (e.g. a future `sudo -v` change) fails
+  # fast instead of hanging the test.
+  run env CHECKOUT="$CHECKOUT" BRANCH=main bash "$SCRIPT" </dev/null
 }
 
 @test "installer creates dvw-proxy, skips tecnativa removal when no container, and proxy healthy" {
   run_install
   [ "$status" -eq 0 ]
-  grep -q 'sudo useradd --system --no-create-home --shell /usr/sbin/nologin --groups docker dvw-proxy' "$CALLS"
+  grep -q 'sudo useradd --system --no-create-home --shell /usr/sbin/nologin --user-group --groups docker dvw-proxy' "$CALLS"
   grep -q 'docker rm -f deploy-docker-proxy-1' "$CALLS" && { echo "should not remove a container that was never listed" >&2; return 1; }
   echo "$output" | grep -q '==> proxy healthy'
 }
@@ -118,27 +125,47 @@ run_install() {
   [ "$sock_line" -lt "$catalog_line" ]
 }
 
-@test "sudoers drop-in covers stop/restart of both proxy units" {
+@test "sudoers drop-in covers stop/restart/reenable of both proxy units" {
   run_install
   [ "$status" -eq 0 ]
-  [ -f "$HOME/rendered_dvw-catalog" ]
-  grep -q 'systemctl stop dvw-docker-proxy.service' "$HOME/rendered_dvw-catalog"
-  grep -q 'systemctl restart dvw-docker-proxy.socket' "$HOME/rendered_dvw-catalog"
-  grep -q 'systemctl restart dvw-docker-proxy.service' "$HOME/rendered_dvw-catalog"
+  SUDOERS="$HOME/rendered_etc_sudoers.d_dvw-catalog"
+  [ -f "$SUDOERS" ]
+  grep -q 'systemctl stop dvw-docker-proxy.service' "$SUDOERS"
+  grep -q 'systemctl restart dvw-docker-proxy.socket' "$SUDOERS"
+  grep -q 'systemctl restart dvw-docker-proxy.service' "$SUDOERS"
+  grep -q 'systemctl reenable dvw-docker-proxy.socket' "$SUDOERS"
 }
 
 @test "both proxy units are rendered with SocketUser/User set to \$USER, like the catalog unit" {
   run_install
   [ "$status" -eq 0 ]
-  [ -f "$HOME/rendered_dvw-docker-proxy.socket" ]
-  [ -f "$HOME/rendered_dvw-docker-proxy.service" ]
-  [ -f "$HOME/rendered_dvw-catalog.service" ]
-  grep -qx "SocketUser=$USER" "$HOME/rendered_dvw-docker-proxy.socket"
-  grep -qx "SocketGroup=$(id -gn)" "$HOME/rendered_dvw-docker-proxy.socket"
-  grep -qx "User=$USER" "$HOME/rendered_dvw-catalog.service"
+  SOCK_UNIT="$HOME/rendered_etc_systemd_system_dvw-docker-proxy.socket"
+  SVC_UNIT="$HOME/rendered_etc_systemd_system_dvw-docker-proxy.service"
+  CATALOG_UNIT="$HOME/rendered_etc_systemd_system_dvw-catalog.service"
+  [ -f "$SOCK_UNIT" ]
+  [ -f "$SVC_UNIT" ]
+  [ -f "$CATALOG_UNIT" ]
+  grep -qx "SocketUser=$USER" "$SOCK_UNIT"
+  grep -qx "SocketGroup=$(id -gn)" "$SOCK_UNIT"
+  grep -qx "User=$USER" "$CATALOG_UNIT"
   # dvw-docker-proxy.service's User=dvw-proxy is NOT the vossi placeholder,
   # so render_unit must leave it alone.
-  grep -qx 'User=dvw-proxy' "$HOME/rendered_dvw-docker-proxy.service"
+  grep -qx 'User=dvw-proxy' "$SVC_UNIT"
+}
+
+@test "dvw-proxy user is created with --user-group (not relying on USERGROUPS_ENAB)" {
+  run_install
+  [ "$status" -eq 0 ]
+  grep -q -- '--user-group' "$CALLS"
+  grep -q 'sudo useradd --system --no-create-home --shell /usr/sbin/nologin --user-group --groups docker dvw-proxy' "$CALLS"
+}
+
+@test "host-update.sh reenables dvw-docker-proxy.socket when it changed, like the catalog unit" {
+  UPDATE="$DVW_ROOT/catalog-service/deploy/host-update.sh"
+  grep -q 'systemctl reenable dvw-docker-proxy.socket' "$UPDATE"
+  # Both halves of the restart run unconditionally (not short-circuited by
+  # `||`), so a failed stop never skips the socket restart.
+  grep -q 'systemctl stop dvw-docker-proxy.service.*rc=1\|rc=1' "$UPDATE"
 }
 
 @test "an existing tcp:// CATALOG_DOCKER_HOST is migrated to the proxy socket" {

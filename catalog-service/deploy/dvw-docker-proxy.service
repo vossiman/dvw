@@ -28,5 +28,8 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_UNIX
 
-[Install]
-WantedBy=multi-user.target
+# No [Install] section: this unit is never `enable`d on its own. It starts
+# only via socket activation, brought up by dvw-docker-proxy.socket
+# (WantedBy=sockets.target) when a connection arrives. Enabling this service
+# directly would be a no-op at best; it would also let it start ahead of the
+# socket and race for the runtime directory.
