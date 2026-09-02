@@ -1,0 +1,35 @@
+[Unit]
+Description=dvw docker proxy (route allowlist in front of docker.sock)
+Documentation=https://github.com/vossiman/dvw
+Requires=dvw-docker-proxy.socket docker.service
+After=docker.service
+
+[Service]
+Type=exec
+# Dedicated system user, created by host-install.sh. It is the only non-root
+# member of the docker group on the box; the catalog service user is not.
+User=dvw-proxy
+Group=dvw-proxy
+SupplementaryGroups=docker
+ExecStart=/usr/bin/python3 /opt/dvw-catalog/proxy/dvw_docker_proxy.py
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=2
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX
+
+# No [Install] section: this unit is never `enable`d on its own. It starts
+# only via socket activation, brought up by dvw-docker-proxy.socket
+# (WantedBy=sockets.target) when a connection arrives. Enabling this service
+# directly would be a no-op at best; it would also let it start ahead of the
+# socket and race for the runtime directory.

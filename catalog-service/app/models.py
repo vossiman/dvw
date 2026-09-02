@@ -223,6 +223,26 @@ class WorkspaceWindows(BaseModel):
     windows: list[WindowInfo] = Field(default_factory=list)
 
 
+class AgentProc(BaseModel):
+    """A running agent CLI inside the container, from dvw-probe."""
+
+    cli: str
+    pid: int
+    started: int | None = None
+    cwd: str | None = None
+
+
+class GitState(BaseModel):
+    """Workspace checkout state as seen from inside the container."""
+
+    root: str | None = None
+    branch: str | None = None
+    head: str | None = None
+    dirty: bool | None = None
+    ahead: int | None = None
+    behind: int | None = None
+
+
 class BindMount(BaseModel):
     source: str
     destination: str
@@ -261,6 +281,11 @@ class ContainerInspect(BaseModel):
     blueprint_image: str | None = None
     # Tri-state on purpose: None (unknown) must never render as outdated.
     image_current: bool | None = None
+    # From dvw-probe (one exec inside the container). probe: ok / partial /
+    # missing (container has no dvw-probe yet) / failed (probe broke).
+    agents: list[AgentProc] = Field(default_factory=list)
+    git: GitState | None = None
+    probe: str = "missing"
 
 
 class WorkspaceSource(BaseModel):

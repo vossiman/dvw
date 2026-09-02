@@ -9,7 +9,10 @@ from dvw_tui.render import (
     SUBTLE,
     YELLOW,
     age,
+    agents_line,
+    git_line,
     human_bytes,
+    inspect_lines,
     liveness_cell,
     meter,
     state_cell,
@@ -152,3 +155,32 @@ def test_window_label_waiting_style_is_accent_bold():
     idx = label.plain.index("⏸")
     styles = [s.style for s in label.spans if s.start <= idx < s.end]
     assert any("bold" in str(s) and "#7dcfff" in str(s) for s in styles)
+
+
+def test_agents_line_lists_cli_age_and_cwd():
+    now = 1756800000
+    agents = [{"cli": "claude", "pid": 1, "started": now - 7800, "cwd": "/workspaces/foo"},
+              {"cli": "codex", "pid": 2, "started": now - 300, "cwd": None}]
+    assert agents_line(agents, now) == "claude (2h, /workspaces/foo), codex (5m)"
+
+
+def test_agents_line_none_and_unknown_start():
+    assert agents_line([], 0) == "none"
+    assert agents_line([{"cli": "claude", "pid": 1, "started": None, "cwd": None}], 0) == "claude"
+
+
+def test_git_line_formats_branch_counts_and_dirty():
+    assert git_line({"branch": "feat/x", "ahead": 2, "behind": 0, "dirty": True}) == "feat/x +2 -0 dirty"
+    assert git_line({"branch": "main", "ahead": None, "behind": None, "dirty": False}) == "main clean"
+    assert git_line(None) == "unknown"
+    assert git_line({"branch": None, "head": "abc1234", "dirty": None}) == "abc1234"
+
+
+def test_inspect_lines_include_agents_and_git():
+    data = {"agents": [{"cli": "claude", "pid": 1, "started": None, "cwd": None}],
+            "git": {"branch": "feat/x", "ahead": 1, "behind": 3, "dirty": False},
+            "bind_mounts": [{"source": "/a", "destination": "/b", "rw": True}]}
+    labels = [k for k, _ in inspect_lines(data, now=0)]
+    assert labels.index("agents") < labels.index("mount")
+    assert dict(inspect_lines(data, now=0))["agents"] == "claude"
+    assert dict(inspect_lines(data, now=0))["git"] == "feat/x +1 -3 clean"

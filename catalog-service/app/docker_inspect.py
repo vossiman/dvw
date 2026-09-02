@@ -25,9 +25,11 @@ from docker.models.containers import Container
 
 from .config import Settings
 from .models import (
+    AgentProc,
     BindMount,
     CanonicalContainer,
     ContainerInspect,
+    GitState,
     Orphan,
     SiblingContainer,
     WaitingWindow,
@@ -35,6 +37,7 @@ from .models import (
     WorkspaceStatus,
     WorkspaceWindows,
 )
+from .probe import ProbeMissing, ProbeReport, run_probe
 
 
 def _ws_id_from_mounts(mounts: list[dict], prefix: str) -> str | None:
@@ -90,6 +93,75 @@ class Inspector(Protocol):
     def windows_many(self) -> list[WorkspaceWindows]: ...
 
 
+class Snapshot:
+    """Everything one exec tells us about a running container.
+
+    On the probe path every field is already known: one `dvw-probe` exec
+    answered all of them, so the values are stored eagerly.
+
+    On the legacy path (a container that predates dvw-probe) the fields are
+    filled ON DEMAND, one tmux exec each, and memoized. A caller that only
+    wants `attached` must not pay for the window snapshot, because the bulk
+    status endpoint spends those execs inside a 0.25 s best-effort budget.
+    The windows exec carries session_attached, so fetching windows also
+    fills attached, but never the other way round.
+    """
+
+    __slots__ = ("report", "probe", "_legacy", "_activity", "_attached", "_windows")
+
+    def __init__(
+        self,
+        activity: int | None = -1,
+        attached: int | None = 0,
+        windows: list[WindowInfo] | None = None,
+        report: ProbeReport | None = None,
+        probe: str = "failed",
+        legacy: tuple[DockerInspector, Container] | None = None,
+    ):
+        # legacy is None => eager: every field below is already final.
+        # legacy is set  => None means "not fetched yet".
+        self._legacy = legacy
+        self._activity = activity
+        self._attached = attached
+        self._windows = windows if windows is not None else ([] if legacy is None else None)
+        self.report = report
+        self.probe = probe
+
+    @property
+    def activity(self) -> int:
+        if self._activity is None:
+            insp, c = self._legacy
+            self._activity = insp._legacy_tmux_activity(c)
+        return self._activity
+
+    @property
+    def attached(self) -> int:
+        if self._attached is None:
+            insp, c = self._legacy
+            # Only reached when the windows exec has not run: that exec
+            # already carries session_attached and fills this in.
+            self._attached = insp._legacy_tmux_attached(c)
+        return self._attached
+
+    @property
+    def windows(self) -> list[WindowInfo]:
+        if self._windows is None:
+            insp, c = self._legacy
+            attached, windows = insp._legacy_tmux_windows(c)
+            self._windows = windows
+            if self._attached is None:
+                self._attached = attached
+        return self._windows
+
+    def known_attached(self) -> int | None:
+        """The attached count if it is already known, else None.
+
+        Lets status_many reuse a snapshot without triggering an exec on the
+        request thread, outside the bounded fan-out.
+        """
+        return self._attached
+
+
 class DockerInspector:
     # Attached-client metadata is useful but must never make the bulk
     # liveness endpoint wait for Docker's per-call timeout once per workspace.
@@ -100,12 +172,9 @@ class DockerInspector:
 
     def __init__(self, settings: Settings):
         self._settings = settings
-        if settings.docker_host:
-            self._client = docker.DockerClient(
-                base_url=settings.docker_host, timeout=settings.docker_timeout
-            )
-        else:
-            self._client = docker.from_env(timeout=settings.docker_timeout)
+        self._client = docker.DockerClient(
+            base_url=settings.docker_host, timeout=settings.docker_timeout
+        )
         self._attached_slots = threading.BoundedSemaphore(
             self._attached_probe_workers
         )
@@ -141,7 +210,7 @@ class DockerInspector:
                 out.append(c)
         return out
 
-    def _tmux_work_activity(self, c: Container) -> int:
+    def _legacy_tmux_activity(self, c: Container) -> int:
         """Epoch activity of the tmux `work` session, or -1 if none/unreadable.
 
         Mirrors dvw's resolver: `tmux list-sessions -F '#{session_name}
@@ -170,10 +239,10 @@ class DockerInspector:
                     return -1
         return -1
 
-    def _tmux_work_attached(self, c: Container) -> int:
+    def _legacy_tmux_attached(self, c: Container) -> int:
         """Clients attached to the tmux `work` session; 0 if none/unreadable.
 
-        Same probe shape as _tmux_work_activity but a different consumer:
+        Same probe shape as _legacy_tmux_activity but a different consumer:
         activity serves resolve()'s tie-break, this serves status_many's
         attached indicator. Kept separate so resolver and status semantics
         stay uncoupled.
@@ -201,6 +270,70 @@ class DockerInspector:
                 except ValueError:
                     return 0
         return 0
+
+    # ---- the one exec per container per request ---------------------------
+
+    def _snapshot(self, c: Container, memo: dict[str, Snapshot] | None = None) -> Snapshot:
+        """Probe first; tmux execs only when the probe is not installed.
+
+        `memo` is per request: resolve/status_many/windows_many/inspect pass
+        one dict down so a container is exec'd once per call, whatever asks.
+        A probe that exists but broke (any exit other than 0/126/127, or
+        unusable output) is reported as "failed" and is NOT retried over
+        tmux: the fallback exists for containers predating dvw-probe, not as
+        a second chance for a broken one.
+        """
+        if memo is not None and c.id in memo:
+            return memo[c.id]
+        if c.status != "running":
+            snap = Snapshot(probe="failed")
+        else:
+            try:
+                report = run_probe(c)
+            except ProbeMissing:
+                # Lazy: each field costs its own tmux exec, charged only to
+                # the caller that actually reads it. See Snapshot.
+                snap = Snapshot(
+                    activity=None,
+                    attached=None,
+                    windows=None,
+                    report=None,
+                    probe="missing",
+                    legacy=(self, c),
+                )
+            else:
+                if report is None:
+                    snap = Snapshot(probe="failed")
+                else:
+                    snap = Snapshot(
+                        activity=report.work_activity(),
+                        attached=report.work_attached(),
+                        windows=report.work_windows(),
+                        report=report,
+                        probe="partial" if report.partial else "ok",
+                    )
+        if memo is not None:
+            memo[c.id] = snap
+        return snap
+
+    def _tmux_work_activity(
+        self, c: Container, memo: dict[str, Snapshot] | None = None
+    ) -> int:
+        return self._snapshot(c, memo).activity
+
+    def _tmux_work_attached(
+        self, c: Container, memo: dict[str, Snapshot] | None = None
+    ) -> int:
+        return self._snapshot(c, memo).attached
+
+    def _work_session_windows(
+        self, c: Container, memo: dict[str, Snapshot] | None = None
+    ) -> tuple[int, list[WindowInfo]]:
+        s = self._snapshot(c, memo)
+        # windows first: it carries session_attached, so reading it first
+        # keeps the legacy path at one exec instead of two.
+        windows = s.windows
+        return s.attached, windows
 
     def _uid(self, c: Container) -> str | None:
         return c.labels.get(self._settings.devpod_id_label)
@@ -262,11 +395,12 @@ class DockerInspector:
     def siblings(self, ws_id: str) -> list[SiblingContainer]:
         """Per-container detail for every RUNNING candidate of a workspace.
 
-        Deliberately NOT part of status_many: this execs into each container
-        twice, which is far too expensive for the bulk hot path. Callers should
+        Deliberately NOT part of status_many: this execs into every
+        candidate, which is far too expensive for the bulk hot path. Callers should
         only ask for workspaces that status_many already flagged with
         running_siblings > 1.
         """
+        memo: dict[str, Snapshot] = {}
         out = []
         for c in self._candidates(ws_id):
             out.append(
@@ -275,7 +409,7 @@ class DockerInspector:
                     container_name=c.name,
                     created=c.attrs.get("Created"),
                     state=c.status,
-                    tmux_work_activity=self._tmux_work_activity(c),
+                    tmux_work_activity=self._tmux_work_activity(c, memo),
                     workspaces_owner=self._workspaces_owner(c),
                 )
             )
@@ -308,6 +442,7 @@ class DockerInspector:
     def _resolve_candidates(
         self, ws_id: str, cands: list[Container],
         *, probe_single_activity: bool = True,
+        memo: dict[str, Snapshot] | None = None,
     ) -> CanonicalContainer:
         """Apply the one canonical-container policy to an existing candidate list.
 
@@ -315,13 +450,14 @@ class DockerInspector:
         decision itself avoids a second Docker listing while ensuring attach
         and display can never choose different siblings.
 
-        probe_single_activity=False skips the tmux exec on the (common)
+        probe_single_activity=False skips the snapshot exec on the (common)
         single-candidate path for callers that only need the canonical
         container id and discard tmux_work_activity (windows_many,
         status_many). The choice of container is identical either way; the
         sibling tie-break below always probes because activity IS the
         decision there.
         """
+        memo = {} if memo is None else memo
         if not cands:
             return CanonicalContainer(workspace_id=ws_id, container_id=None)
 
@@ -336,13 +472,13 @@ class DockerInspector:
                 devpod_uid=self._uid(c),
                 state=c.status,
                 tmux_work_activity=(
-                    self._tmux_work_activity(c) if probe_single_activity
+                    self._tmux_work_activity(c, memo) if probe_single_activity
                     else -1
                 ),
             )
 
         # >= 2 candidates: the sibling case. Tie-break by tmux `work` activity.
-        scored = [(self._tmux_work_activity(c), c.attrs.get("Created", ""), c)
+        scored = [(self._tmux_work_activity(c, memo), c.attrs.get("Created", ""), c)
                   for c in cands]
         with_tmux = [t for t in scored if t[0] != -1]
 
@@ -382,7 +518,12 @@ class DockerInspector:
     def inspect(
         self, ws_id: str, blueprint_image: str | None = None
     ) -> ContainerInspect:
-        resolved = self.resolve(ws_id)
+        # One memo for the whole request: resolve()'s tie-break exec and the
+        # snapshot read below are the same exec on the same container.
+        memo: dict[str, Snapshot] = {}
+        resolved = self._resolve_candidates(
+            ws_id, self._candidates(ws_id), memo=memo
+        )
         if resolved.container_id is None:
             return ContainerInspect(
                 workspace_id=ws_id,
@@ -410,7 +551,9 @@ class DockerInspector:
             health=(state.get("Health") or {}).get("Status"),
             created=a.get("Created"),
             started_at=state.get("StartedAt"),
-            image=(c.image.tags or [a.get("Image")])[0] if c.image else a.get("Image"),
+            # Config.Image, not c.image: the latter is a GET /images call,
+            # which the docker socket proxy denies.
+            image=(a.get("Config") or {}).get("Image") or a.get("Image"),
             restart_count=a.get("RestartCount", 0),
             workspace_source=source,
             bind_mounts=[
@@ -432,6 +575,20 @@ class DockerInspector:
             cpu, mem, mem_limit, mem_pct = self._cpu_mem(c)
             info.cpu_pct, info.mem_bytes = cpu, mem
             info.mem_limit, info.mem_pct = mem_limit, mem_pct
+        snap = self._snapshot(c, memo)
+        info.probe = snap.probe
+        if snap.report is not None:
+            info.agents = [AgentProc(**ag.model_dump()) for ag in (snap.report.agents or [])]
+            info.git = (
+                GitState(**snap.report.git.model_dump())
+                if snap.report.git else None
+            )
+            # Docker stats win when present; the probe's cgroup read is the
+            # fallback for a proxy that denies /stats.
+            cg = snap.report.cgroup
+            if info.running and info.mem_bytes is None and cg and cg.mem_current is not None:
+                info.mem_bytes = cg.mem_current
+                info.mem_limit = cg.mem_max
         if source:
             info.disk_bytes = self._disk_usage(source)
         return info
@@ -476,7 +633,10 @@ class DockerInspector:
 
     # ---- bulk status (replaces _dvw_load_probe) --------------------------
 
-    def _attached_many(self, containers: list[Container]) -> dict[str, int]:
+    def _attached_many(
+        self, containers: list[Container],
+        memo: dict[str, Snapshot] | None = None,
+    ) -> dict[str, int]:
         """Best-effort attached counts within one bounded response budget.
 
         A shared semaphore bounds probes across overlapping/repeated requests.
@@ -489,9 +649,12 @@ class DockerInspector:
         result_lock = threading.Lock()
         workers: list[threading.Thread] = []
 
-        def probe(c: Container) -> None:
+        def probe(c: Container, seed: dict[str, Snapshot]) -> None:
             try:
-                count = self._tmux_work_attached(c)
+                # Each worker gets its OWN dict, seeded on this thread with
+                # the snapshot the request already built for that container.
+                # The request memo itself is never shared across threads.
+                count = self._tmux_work_attached(c, seed)
                 with result_lock:
                     attached[c.id] = count
             except Exception:
@@ -504,9 +667,10 @@ class DockerInspector:
         for c in containers:
             if not self._attached_slots.acquire(blocking=False):
                 continue
+            snap = memo.get(c.id) if memo else None
             worker = threading.Thread(
                 target=probe,
-                args=(c,),
+                args=(c, {c.id: snap} if snap is not None else {}),
                 name="dvw-attached",
                 daemon=True,
             )
@@ -548,6 +712,7 @@ class DockerInspector:
         # attach/windows, so container_id/attached can never come from the
         # wrong sibling. The tie-break execs only run for actual duplicates;
         # the common single-candidate case stays exec-free.
+        memo: dict[str, Snapshot] = {}
         selected: dict[str, Container] = {}
         for ws_id in dict.fromkeys(ids):
             running = running_by_dest.get(ws_id, [])
@@ -555,7 +720,7 @@ class DockerInspector:
                 selected[ws_id] = running[0]
             elif running:
                 resolved = self._resolve_candidates(
-                    ws_id, running, probe_single_activity=False
+                    ws_id, running, probe_single_activity=False, memo=memo
                 )
                 canonical = next(
                     (c for c in running if c.id == resolved.container_id),
@@ -571,7 +736,21 @@ class DockerInspector:
         selected_running = {
             c.id: c for c in selected.values() if c.status == "running"
         }
-        attached = self._attached_many(list(selected_running.values()))
+        # The sibling tie-break above already snapshotted its candidates. A
+        # count it already knows (the probe path) is reused as is; one it
+        # would have to exec for (the legacy path) stays in the bounded
+        # fan-out below, which also carries the snapshot so the container is
+        # not probed twice.
+        attached: dict[str, int] = {}
+        pending: list[Container] = []
+        for cid, c in selected_running.items():
+            snap = memo.get(cid)
+            known = snap.known_attached() if snap is not None else None
+            if known is not None:
+                attached[cid] = known
+            else:
+                pending.append(c)
+        attached.update(self._attached_many(pending, memo))
 
         out = []
         for ws_id in ids:
@@ -646,7 +825,7 @@ class DockerInspector:
 
     # ---- window snapshot (tree view) ---------------------------------------
 
-    def _work_session_windows(self, c: Container) -> tuple[int, list[WindowInfo]]:
+    def _legacy_tmux_windows(self, c: Container) -> tuple[int, list[WindowInfo]]:
         """One exec: every window of `work` + the session's attached count.
         (0, []) on any failure — a broken tmux must not 500 an endpoint."""
         if c.status != "running":
@@ -704,6 +883,7 @@ class DockerInspector:
         disagree.
         """
         out: list[WorkspaceWindows] = []
+        memo: dict[str, Snapshot] = {}
         prefix = self._settings.workspace_mount_prefix
         by_workspace: dict[str, list[Container]] = {}
         for c in self._devpod_containers():
@@ -719,14 +899,14 @@ class DockerInspector:
             # here, so the common single-candidate case must stay at one
             # exec per container (the window snapshot itself), not two.
             resolved = self._resolve_candidates(
-                ws_id, candidates, probe_single_activity=False
+                ws_id, candidates, probe_single_activity=False, memo=memo
             )
             if resolved.container_id is None:
                 continue
             canonical = next(
                 c for c in candidates if c.id == resolved.container_id
             )
-            attached, windows = self._work_session_windows(canonical)
+            attached, windows = self._work_session_windows(canonical, memo)
             out.append(WorkspaceWindows(
                 workspace_id=ws_id, container_id=canonical.id,
                 attached=attached, windows=windows))

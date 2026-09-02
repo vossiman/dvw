@@ -11,17 +11,10 @@ Type=exec
 # account, so the unit isn't tied to a specific user.
 User=vossi
 Group=vossi
-# NO SupplementaryGroups=docker. The service reaches Docker through the
-# digest-pinned socket proxy instead (deploy/docker-proxy.compose.yml),
-# configured via CATALOG_DOCKER_HOST. Do not re-add the group; if Docker is
-# unreachable, start the proxy.
-#
-# Be clear about what that swap buys: the proxy narrows the API surface
-# (no /images, /volumes, /networks, /build), so a compromised catalog can
-# reach less. It does NOT remove host-root equivalence — CONTAINERS plus POST
-# still permits creating a container with an arbitrary bind mount. And it
-# trades a group-gated socket for an unauthenticated loopback TCP port, which
-# any local account can reach. See deploy/docker-socket-proxy.md.
+# NO SupplementaryGroups=docker. The service reaches Docker through
+# dvw-docker-proxy instead, over /run/dvw-docker-proxy/docker.sock
+# (see deploy/docker-proxy.md), configured via CATALOG_DOCKER_HOST. Do not
+# re-add the group; if Docker is unreachable, check the proxy.
 
 WorkingDirectory=/opt/dvw-catalog
 Environment=PYTHONUNBUFFERED=1
@@ -60,9 +53,13 @@ ProtectControlGroups=true
 RestrictNamespaces=true
 RestrictRealtime=true
 LockPersonality=true
-# AF_UNIX: local docker socket + the service's own listen socket.
-# AF_INET/AF_INET6: required ONLY when CATALOG_DOCKER_HOST points at the
-# docker-socket-proxy over tcp://127.0.0.1.
+# AF_UNIX: the service's own listen socket and the dvw-docker-proxy socket.
+# AF_INET/AF_INET6: two consumers still need outbound TCP. app/blueprint_image.py
+# does urllib urlopen(raw.githubusercontent.com) for the pin-staleness check
+# (silently negative-caches on failure, no journal entry, so this would
+# degrade to "unknown" with nothing to explain why). app/source.py runs
+# `git pull` as a child process for POST /source/pull, which inherits this
+# seccomp filter.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]

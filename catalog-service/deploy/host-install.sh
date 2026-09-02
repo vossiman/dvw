@@ -86,56 +86,100 @@ echo "==> 5/8 env file (once)"
 [ -f "$SVC_DIR/catalog.env" ] || \
   install -m 0640 "$SVC_DIR/deploy/catalog.env.example" "$SVC_DIR/catalog.env"
 
-# The unit no longer has SupplementaryGroups=docker, so the proxy is the only
-# Docker path. Start it before the service, and fail loudly rather than
-# leaving a catalog that silently reports every workspace as absent.
-#
-# NOTE: this step requires the *installing* account to have working docker CLI
-# access (docker-group membership or equivalent). The service does not, but
-# somebody has to launch the proxy. `docker compose up` fails here with a
-# permission error on /var/run/docker.sock if the installer cannot reach it.
-echo "==> 6/8 docker-socket-proxy (needs docker CLI access for this account)"
-# --renew-anon-volumes: haproxy.cfg.template lives INSIDE the anonymous
-# /usr/local/etc/haproxy volume (see docker-proxy.compose.yml), so without
-# this flag `docker compose up -d` keeps the old volume across a digest
-# bump and the container renders its ACL from the STALE template. Verified:
-# a marker file placed in the volume survived a recreate onto a new image
-# reference, and the new image rendered config from the old template.
-docker compose -f "$SVC_DIR/deploy/docker-proxy.compose.yml" up -d --renew-anon-volumes
-
-echo "==> waiting for the proxy to answer"
-proxy_ok=""
-for _ in $(seq 1 30); do
-  if curl -fsS --max-time 2 http://127.0.0.1:2375/_ping >/dev/null 2>&1; then
-    proxy_ok=1
-    break
-  fi
-  sleep 1
-done
-if [[ -z "$proxy_ok" ]]; then
-  echo "ERROR: docker-socket-proxy did not answer on 127.0.0.1:2375 after 30s." >&2
-  echo "       The catalog cannot reach Docker without it. Check:" >&2
-  echo "       docker compose -f $SVC_DIR/deploy/docker-proxy.compose.yml logs" >&2
-  exit 1
+# The unit no longer has SupplementaryGroups=docker, so dvw-docker-proxy is
+# the only Docker path. The installer needs no docker CLI access itself: the
+# one place it touches docker is the guarded one-time retirement of the old
+# tecnativa container below.
+echo "==> 6/8 dvw-docker-proxy (system user + socket-activated unit)"
+PROXY_SOCK="/run/dvw-docker-proxy/docker.sock"
+if ! id dvw-proxy >/dev/null 2>&1; then
+  # --user-group: don't rely on USERGROUPS_ENAB=yes (a login.defs default
+  # that a hardened host may turn off) to get the dvw-proxy group the
+  # service's Group=dvw-proxy needs.
+  sudo useradd --system --no-create-home --shell /usr/sbin/nologin --user-group --groups docker dvw-proxy
 fi
-echo "==> proxy healthy"
+# Retire the tecnativa compose proxy if a previous install left it running.
+# The compose file is gone from the checkout, so address the container by
+# the name compose gave it (project "deploy", service "docker-proxy").
+# "docker is unreachable" and "the container is gone" are different answers,
+# and only one of them means there is nothing to do. The installing user may
+# already have been removed from the docker group (that is the end state this
+# migration wants), in which case `docker ps` fails and the retirement has to
+# be handed to the operator instead of being silently skipped.
+if command -v docker >/dev/null 2>&1; then
+  if docker_names=$(docker ps -a --format '{{.Names}}' 2>/dev/null); then
+    if printf '%s\n' "$docker_names" | grep -qx 'deploy-docker-proxy-1'; then
+      echo "    removing the retired tecnativa docker-socket-proxy container"
+      docker rm -f deploy-docker-proxy-1 >/dev/null
+    fi
+  else
+    echo "WARN: docker is installed but not reachable as $USER, so the retired" >&2
+    echo "      tecnativa container could not be checked. Remove it by hand:" >&2
+    echo "      sudo docker rm -f deploy-docker-proxy-1" >&2
+  fi
+fi
+# Point the catalog at the proxy socket. Rewrite a tcp:// value left by the
+# previous proxy, and an empty value (config.py now refuses one); add the key
+# when it is missing; leave any other value alone.
+if grep -q '^CATALOG_DOCKER_HOST=tcp://' "$SVC_DIR/catalog.env"; then
+  sed -i "s|^CATALOG_DOCKER_HOST=tcp://.*|CATALOG_DOCKER_HOST=unix://$PROXY_SOCK|" "$SVC_DIR/catalog.env"
+elif grep -q '^CATALOG_DOCKER_HOST=[[:space:]]*$' "$SVC_DIR/catalog.env"; then
+  sed -i "s|^CATALOG_DOCKER_HOST=[[:space:]]*$|CATALOG_DOCKER_HOST=unix://$PROXY_SOCK|" "$SVC_DIR/catalog.env"
+elif ! grep -q '^CATALOG_DOCKER_HOST=' "$SVC_DIR/catalog.env"; then
+  printf '\nCATALOG_DOCKER_HOST=unix://%s\n' "$PROXY_SOCK" >> "$SVC_DIR/catalog.env"
+fi
 
 echo "==> 7/8 systemd units + passwordless-restart sudoers"
 # The committed units default to User=vossi/Group=vossi; render them for whoever
 # is installing so the service isn't tied to a specific account. Usernames/group
 # names are [A-Za-z0-9_-] so they're safe in the sed replacement.
 RUN_GROUP="$(id -gn)"
-for u in dvw-catalog.service dvw-catalog-backup.service dvw-catalog-backup.timer; do
+render_unit() {  # $1 = unit file; renders User/Group and SocketUser/SocketGroup
   sed -e "s/^User=vossi$/User=$USER/" -e "s/^Group=vossi$/Group=$RUN_GROUP/" \
-      "$SVC_DIR/deploy/$u" | sudo install -m 0644 /dev/stdin "/etc/systemd/system/$u"
+      -e "s/^SocketUser=vossi$/SocketUser=$USER/" -e "s/^SocketGroup=vossi$/SocketGroup=$RUN_GROUP/" \
+      "$SVC_DIR/deploy/$1"
+}
+for u in dvw-catalog.service dvw-catalog-backup.service dvw-catalog-backup.timer \
+         dvw-docker-proxy.socket dvw-docker-proxy.service; do
+  render_unit "$u" | sudo install -m 0644 /dev/stdin "/etc/systemd/system/$u"
 done
 # Narrow drop-in so host-update.sh can restart without a password prompt.
-# Scoped to exactly these four commands on this one unit. Comment out the
-# install below if you'd rather type your sudo password on each update.
+# Scoped to exactly these commands on these units. Comment out the install
+# below if you'd rather type your sudo password on each update.
 sudo install -m 0440 /dev/stdin /etc/sudoers.d/dvw-catalog <<SUDO
-$USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart dvw-catalog.service, /usr/bin/systemctl status dvw-catalog.service, /usr/bin/systemctl reenable dvw-catalog.service, /usr/bin/systemctl daemon-reload
+$USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart dvw-catalog.service, /usr/bin/systemctl status dvw-catalog.service, /usr/bin/systemctl reenable dvw-catalog.service, /usr/bin/systemctl daemon-reload, /usr/bin/systemctl stop dvw-docker-proxy.service, /usr/bin/systemctl restart dvw-docker-proxy.socket, /usr/bin/systemctl restart dvw-docker-proxy.service, /usr/bin/systemctl status dvw-docker-proxy.service, /usr/bin/systemctl reenable dvw-docker-proxy.socket
 SUDO
 sudo systemctl daemon-reload
+sudo systemctl reenable dvw-docker-proxy.socket
+# A running service keeps its old listener even after the socket unit is
+# rewritten, so always stop the service before restarting the socket.
+sudo systemctl stop dvw-docker-proxy.service
+sudo systemctl restart dvw-docker-proxy.socket
+echo "==> waiting for the proxy socket to answer"
+proxy_ok=""
+for _ in $(seq 1 30); do
+  if curl -fsS --max-time 2 --unix-socket "$PROXY_SOCK" http://localhost/_ping >/dev/null 2>&1; then
+    proxy_ok=1; break
+  fi
+  sleep 1
+done
+if [[ -z "$proxy_ok" ]]; then
+  echo "ERROR: dvw-docker-proxy did not answer on $PROXY_SOCK after 30s." >&2
+  echo "       sudo systemctl status dvw-docker-proxy.socket dvw-docker-proxy.service" >&2
+  echo "       journalctl -xeu dvw-docker-proxy.service | tail -50" >&2
+  exit 1
+fi
+echo "==> proxy healthy"
+# The retired tecnativa proxy published 127.0.0.1:2375, an unauthenticated
+# Docker API on the loopback interface. If something is still listening there
+# the migration is not finished, whatever this installer managed to do. Warn
+# loudly, but do not fail: the new proxy is up and the catalog works.
+if ss -ltn 2>/dev/null | grep -q '127.0.0.1:2375'; then
+  echo "WARN: something still listens on 127.0.0.1:2375 (the retired tecnativa" >&2
+  echo "      docker-socket-proxy). Stop and remove it:" >&2
+  echo "      sudo docker rm -f deploy-docker-proxy-1" >&2
+  echo "      then re-check with:  ss -ltn | grep 127.0.0.1:2375" >&2
+fi
 # enable --now STARTS an inactive unit but does NOT restart a running one, so
 # re-running this installer against a live service left the old code serving
 # while the checkout and venv were already updated — and the smoke test below

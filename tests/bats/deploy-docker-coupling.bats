@@ -52,3 +52,29 @@ setup() {
   grep -qE 'NOPASSWD:.*systemctl reenable dvw-catalog\.service' \
     "$DVW_ROOT/catalog-service/deploy/host-install.sh"
 }
+
+@test "catalog unit keeps AF_INET/AF_INET6 for the blueprint fetch and git subprocess; only the proxy unit is AF_UNIX-only" {
+  grep -qx 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6' "$DVW_ROOT/catalog-service/deploy/dvw-catalog.service"
+  grep -q 'blueprint_image.py' "$DVW_ROOT/catalog-service/deploy/dvw-catalog.service"
+  grep -q 'source.py' "$DVW_ROOT/catalog-service/deploy/dvw-catalog.service"
+  grep -qx 'RestrictAddressFamilies=AF_UNIX' "$DVW_ROOT/catalog-service/deploy/dvw-docker-proxy.service"
+}
+
+@test "proxy socket unit is 0600 for the rendered user and the service runs as dvw-proxy in docker group" {
+  grep -qx 'SocketMode=0600' "$DVW_ROOT/catalog-service/deploy/dvw-docker-proxy.socket"
+  grep -qx 'SocketUser=vossi' "$DVW_ROOT/catalog-service/deploy/dvw-docker-proxy.socket"
+  grep -qx 'User=dvw-proxy' "$DVW_ROOT/catalog-service/deploy/dvw-docker-proxy.service"
+  grep -qx 'SupplementaryGroups=docker' "$DVW_ROOT/catalog-service/deploy/dvw-docker-proxy.service"
+  # -x, not a plain substring match: the catalog unit's comment block
+  # deliberately says "NO SupplementaryGroups=docker" to explain why.
+  ! grep -qx 'SupplementaryGroups=docker' "$DVW_ROOT/catalog-service/deploy/dvw-catalog.service"
+}
+
+@test "host-install renders SocketUser and installs both proxy units; compose proxy is gone" {
+  grep -q 'SocketUser=vossi\$/SocketUser=\$USER' "$DVW_ROOT/catalog-service/deploy/host-install.sh"
+  grep -q 'dvw-docker-proxy.socket dvw-docker-proxy.service' "$DVW_ROOT/catalog-service/deploy/host-install.sh"
+  grep -q 'useradd --system' "$DVW_ROOT/catalog-service/deploy/host-install.sh"
+  [ ! -e "$DVW_ROOT/catalog-service/deploy/docker-proxy.compose.yml" ]
+  ! grep -q '2375' "$DVW_ROOT/catalog-service/deploy/host-install.sh"
+  ! grep -q '2375' "$DVW_ROOT/catalog-service/deploy/host-update.sh"
+}

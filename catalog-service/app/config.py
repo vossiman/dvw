@@ -30,16 +30,13 @@ class Settings(BaseSettings):
     # When set, every /v1 request must send `Authorization: Bearer <token>`.
     token: str | None = None
 
-    # Docker connection. The deployed posture is the socket proxy, not the
-    # docker group: deploy/catalog.env.example ships
-    # CATALOG_DOCKER_HOST=tcp://127.0.0.1:2375 and dvw-catalog.service carries
-    # no SupplementaryGroups=docker, so a deployed service always sets this.
-    # Empty => docker.from_env() (local /var/run/docker.sock, which needs
-    # docker-group membership); that path is for local development only.
-    # deploy/docker-socket-proxy.md spells out what the proxy does and does not
-    # buy — notably, it narrows the API surface but does not remove host-root
-    # equivalence.
-    docker_host: str = ""
+    # Docker connection. The deployed posture is dvw-docker-proxy on a unix
+    # socket that systemd creates with mode 0600 for the catalog user
+    # (deploy/dvw-docker-proxy.socket); the service itself has no docker
+    # group membership and no TCP. Set CATALOG_DOCKER_HOST to
+    # unix:/var/run/docker.sock only for local development with docker-group
+    # access. Empty is no longer a supported value.
+    docker_host: str = "unix:///run/dvw-docker-proxy/docker.sock"
 
     # The bind-mount destination prefix devpod uses inside every container.
     # The exact workspace id is the trailing path component: /workspaces/<id>.

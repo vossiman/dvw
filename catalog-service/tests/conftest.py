@@ -81,7 +81,7 @@ class FakeBlueprintImage:
 def settings(tmp_path):
     return Settings(
         data_dir=tmp_path,
-        docker_host="",
+        docker_host="unix:/nonexistent",
         token=None,
         devpod_agent_workspaces_dir=tmp_path / "agent",
     )

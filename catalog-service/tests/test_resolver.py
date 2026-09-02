@@ -21,7 +21,7 @@ class FakeContainer:
     def __init__(self, cid, name, uid, dest, status="running",
                  created="2026-01-01T00:00:00Z", tmux_work=None, source="/exists",
                  owner="codespace:codespace", tmux_attached=None,
-                 tmux_windows=None):
+                 tmux_windows=None, probe=None, probe_exit=None):
         self.id = cid
         self.name = name
         self.status = status
@@ -35,15 +35,32 @@ class FakeContainer:
         self._owner = owner
         self._tmux_attached = tmux_attached
         self._tmux_windows = tmux_windows
+        self._probe = probe
+        self._probe_exit = probe_exit
+        self.exec_calls = []
+
+    def reload(self):
+        return None
 
     def exec_run(self, cmd, demux=False):
+        self.exec_calls.append(list(cmd))
+        # `dvw-probe`: the single-exec snapshot. Default (probe=None,
+        # probe_exit=None) is "not installed": exit 127, so every legacy test
+        # keeps exercising the tmux fallback unchanged.
+        if cmd == ["dvw-probe"]:
+            if self._probe_exit is not None:
+                return FakeExecResult(self._probe_exit, b"")
+            if self._probe is None:
+                return FakeExecResult(127, b"exec: dvw-probe: not found")
+            import json as _json
+            return FakeExecResult(0, _json.dumps(self._probe).encode())
         # `stat -c %U:%G /workspaces` — owner probe used to tell a provisioned
         # container from one abandoned before setup-user ran.
         if cmd and cmd[0] == "stat":
             if self._owner is None:
                 return FakeExecResult(1, None)
             return FakeExecResult(0, f"{self._owner}\n".encode())
-        # windows_many's single-exec snapshot — discriminated by
+        # windows_many's single-exec snapshot: discriminated by
         # "pane_current_command" in the format string so it stays distinct
         # from the waiting-probe format below (rewired in Task 2).
         if cmd and "pane_current_command" in (cmd[-1] if cmd else ""):
@@ -81,8 +98,8 @@ class FakeClient:
 def _inspector(containers, monkeypatch):
     import app.docker_inspect as di
 
-    monkeypatch.setattr(di.docker, "from_env", lambda timeout=None: FakeClient(containers))
-    return DockerInspector(Settings(docker_host="", resolve_cache_ttl=0))
+    monkeypatch.setattr(di.docker, "DockerClient", lambda base_url=None, timeout=None: FakeClient(containers))
+    return DockerInspector(Settings(docker_host="unix:/nonexistent", resolve_cache_ttl=0))
 
 
 def test_no_match_returns_null_container(monkeypatch):

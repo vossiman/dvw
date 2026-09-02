@@ -202,8 +202,10 @@ handler task, which cannot stop a thread already mid-write, so a lock owned by
 the awaiting coroutine would be released while its writer was still running and
 let the next request interleave with it.
 
-Hardening (recommended): front the Docker socket with a read-mostly proxy and
-drop the `docker` group — see `deploy/docker-socket-proxy.md`.
+Hardening: the service talks to Docker through `dvw-docker-proxy`, a route
+allowlisting proxy reachable only over a mode-0600 unix socket, so the
+`vossi` user never needs to be in the `docker` group. See
+`deploy/docker-proxy.md`.
 
 ## Configuration
 
