@@ -47,6 +47,19 @@ fi
 echo "==> 0/8 installer needs sudo for /opt, /var/lib, /etc/systemd and sudoers; priming…"
 sudo -v
 
+# DevPod's ssh provider (`devpod ssh --stdio`, the ProxyCommand behind every
+# <ws>.devpod alias) runs `docker inspect/exec/run` on this host as the login
+# user. Without docker-group membership it falls back to `sudo docker`, which
+# has no tty for the password, and every `dvw <ws>` dies with
+# "ssh: handshake failed: EOF". The proxy hardening is for dvw-catalog, not
+# for this user, so the group stays. Removing it locked all workspaces out on
+# 2026-09-02.
+if ! id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then
+  echo "WARN: $USER is not in the docker group. DevPod runs docker on this host" >&2
+  echo "      as $USER, so no workspace can be opened until it is restored:" >&2
+  echo "      sudo gpasswd -a $USER docker" >&2
+fi
+
 echo "==> 1/8 checkout ($BRANCH -> $CHECKOUT)"
 if [ ! -d "$CHECKOUT/.git" ]; then
   sudo install -d -o "$USER" -g "$USER" "$(dirname "$CHECKOUT")"
