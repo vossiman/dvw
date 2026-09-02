@@ -8,6 +8,7 @@ exactly what is asserted.
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import threading
 import time
@@ -727,3 +728,74 @@ def dribble_handler(frame: bytes, gap: float, count: int):
         conn.close()
         return None
     return h
+
+
+def test_exec_create_201_with_a_non_object_body_is_502(stack, thread_errors):
+    """A 201 whose body is a JSON scalar (or list) has no Id to register.
+
+    `.get("Id")` on it would raise AttributeError, which is not one of the
+    exceptions handle_connection catches, so the worker used to die with zero
+    bytes written to the client.
+    """
+    stack.set_handler(lambda m, p, h, b, c: http("201 Created", b'"nope"'))
+    resp = exec_create(stack, DOCKER_PY_EXEC)
+    assert status_of(resp) == 502
+    assert body_of(resp) == px.GATEWAY_BODY
+    assert thread_errors == []
+
+
+@pytest.mark.parametrize("body", [b'[]', b'{}', b'{"Id":123}', b'{"Id":""}'])
+def test_exec_create_201_without_a_usable_id_is_502(stack, thread_errors, body):
+    stack.set_handler(lambda m, p, h, b, c: http("201 Created", body))
+    resp = exec_create(stack, DOCKER_PY_EXEC)
+    assert status_of(resp) == 502
+    assert thread_errors == []
+
+
+def test_unreachable_upstream_is_502(tmp_path, thread_errors, caplog):
+    """A refused or missing upstream socket answers 502, not a silent close."""
+    px_path = str(tmp_path / "px2.sock")
+    listen = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listen.bind(px_path)
+    listen.listen(8)
+    stop = threading.Event()
+    missing = f"unix:{tmp_path / 'nope' / 'absent.sock'}"
+    t = threading.Thread(target=px.serve,
+                         args=(listen, missing, px.ExecRegistry(), stop), daemon=True)
+    t.start()
+    try:
+        with caplog.at_level(logging.WARNING, logger="dvw-docker-proxy"):
+            c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            c.settimeout(3)
+            c.connect(px_path)
+            c.sendall(req("GET", "/_ping"))
+            chunks = []
+            while True:
+                d = c.recv(65536)
+                if not d:
+                    break
+                chunks.append(d)
+            c.close()
+    finally:
+        stop.set()
+        listen.close()
+    resp = b"".join(chunks)
+    assert status_of(resp) == 502
+    assert body_of(resp) == px.GATEWAY_BODY
+    assert thread_errors == []
+    assert any(r.levelno == logging.WARNING and "verdict=upstream-error" in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.parametrize("evil", [b"\xff", b"\x9b"])
+def test_denied_target_is_logged_as_a_repr(stack, caplog, evil):
+    """Bytes 0x80-0xff survive the target check, so the deny log must escape
+    them rather than writing them into the journal raw."""
+    target = b"/containers/" + evil + b"/attach"
+    with caplog.at_level(logging.INFO, logger="dvw-docker-proxy"):
+        resp = stack.send(b"POST " + target + b" HTTP/1.1\r\nHost: docker\r\n"
+                          b"Content-Length: 0\r\n\r\n")
+    assert status_of(resp) == 403
+    denies = [r.getMessage() for r in caplog.records if "verdict=deny" in r.getMessage()]
+    assert denies
+    assert any(repr(target.decode("latin-1")) in m for m in denies)

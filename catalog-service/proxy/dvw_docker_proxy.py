@@ -438,11 +438,18 @@ def _relay_exec_create(client, up, req: Request, body: bytes,
     payload = _drain(up, rest)
     if _upstream_status(head) == b"201":
         try:
-            exec_id = json.loads(_strip_chunked(head, payload)).get("Id")
+            parsed = json.loads(_strip_chunked(head, payload))
         except ValueError:
-            exec_id = None
-        if isinstance(exec_id, str):
-            registry.add(exec_id)
+            parsed = None
+        # Only an object carries an Id. A scalar or a list would raise
+        # AttributeError off .get(), which is not one of the exceptions the
+        # caller catches, so the worker would die with nothing on the wire.
+        exec_id = parsed.get("Id") if isinstance(parsed, dict) else None
+        if not isinstance(exec_id, str) or not exec_id:
+            # A 201 the proxy cannot register is an upstream error: relaying
+            # it would hand the client an exec id that exec start refuses.
+            raise BadRequest("exec create 201 without a usable Id")
+        registry.add(exec_id)
     client.sendall(_with_connection_close(head) + payload)
 
 
@@ -542,14 +549,25 @@ def handle_connection(client, upstream: str, registry: ExecRegistry) -> None:
         try:
             r, body, label = _decide(req, registry)
         except Forbidden as e:
-            log.info("verdict=deny method=%s path=%s reason=%s",
+            # %r, not %s: the target check lets bytes 0x80-0xff through, and a
+            # raw one in the journal is a log-injection primitive.
+            log.info("verdict=deny method=%s path=%r reason=%s",
                      req.method, req.target[:200], e)
             _send_response(client, "403 Forbidden", DENY_BODY)
             return
         log.info("verdict=allow method=%s path=%s%s", req.method, req.path,
                  f" cmd={label}" if label else "")
-        up = connect_upstream(upstream)
         out = _ClientOut(client)
+        try:
+            up = connect_upstream(upstream)
+        except (OSError, ValueError) as e:
+            # A refused, missing or unparseable upstream is the same class of
+            # failure as a head dockerd never finished: answer 502 rather than
+            # closing on the client with nothing said.
+            log.warning("verdict=upstream-error method=%s path=%s reason=%s",
+                        req.method, req.path, e)
+            _send_response(client, "502 Bad Gateway", GATEWAY_BODY)
+            return
         try:
             up.settimeout(30)
             if r.kind == "exec_start":
