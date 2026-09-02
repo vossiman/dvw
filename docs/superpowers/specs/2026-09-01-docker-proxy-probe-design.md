@@ -258,7 +258,7 @@ proxy unit is AF_UNIX-only.
 ## Component 4: TUI
 
 `tui/dvw_tui/render.py` inspect view gains two lines under the existing
-memory meter: `agents: claude (2h 10m, /workspaces/foo), codex (5m)` and
+memory meter: `agents: claude (2h, /workspaces/foo), codex (5m)` and
 `git: feat/x +2 -0 dirty`. Missing data renders as `agents: none` and
 `git: unknown`. The workspace tree label is unchanged. `client.py` passes the
 new fields through; `render.py` tests cover both populated and null cases.

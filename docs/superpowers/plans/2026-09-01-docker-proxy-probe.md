@@ -2932,3 +2932,148 @@ git push -u origin feat/docker-proxy-probe
 ```
 
 PR creation, ticket comments and the vossisrv rollout are outside this plan (see the spec's Rollout section and the session's task list).
+
+## Results
+
+Verified 2026-09-02. `$DVW` = `devpod/dvw` worktree on `feat/docker-proxy-probe`,
+`$AIC` = `devpod/aicoding` worktree on `feat/dvw-probe`.
+
+### Suite pass counts
+
+| Suite | Command | Result |
+|---|---|---|
+| catalog-service pytest | `cd "$DVW"/catalog-service && uv run --extra dev pytest -q` | 280 passed, 1 warning (starlette/httpx deprecation, pre-existing) |
+| tui pytest | `cd "$DVW"/tui && uv run --group dev pytest -q` | 220 passed |
+| dvw bats | `cd "$DVW" && tests/bats/run.sh` | 530 passed, 0 failed (`1..530`) |
+| e2e-dind bats | `cd "$DVW" && DVW_E2E=1 DVW_ROOT="$PWD" bats tests/bats/e2e-dind.bats` | 1 passed, 0 failed |
+| aicoding bats | `cd "$AIC" && tests/bats/run.sh` | 638 passed, 0 failed (`1..638`) |
+
+### e2e log tail
+
+```
+1..1
+ok 1 e2e: proxy + catalog + probe against docker-in-docker
+```
+
+The full run (not `--keep`) logs `==> assert: happy path`, `==> assert: waiting
+marker after agent-notify inside the container`, `==> assert: attacks at the
+proxy socket are refused`, then `==> e2e ok` before the single bats `ok 1`
+line. It exercises: proxy-mediated `/containers/json`, `/containers/{id}/json`,
+`/containers/{id}/stats`, `dvw-probe` exec/start against a real dockerd inside
+docker-in-docker; the catalog's `inspect` endpoint reading probe output
+(agents, git, mounts); a `tmux set-option @waiting` marker surfacing through
+`/v1/containers/waiting`; and six-plus `verdict=deny` proxy log lines for
+`POST /containers/create`, non-probe exec, a privileged exec, `/images/json`,
+a fabricated exec id, and `DELETE /containers/{id}` — all refused with `403`,
+with the workspace container count unchanged (2) after the attack attempts.
+
+### Playtest observations
+
+Re-ran `tests/e2e/dind.sh --keep` to inspect the live catalog + proxy +
+docker-in-docker stack, then rendered the real API responses through
+`tui/dvw_tui/render.py`'s own functions (`inspect_lines`, `window_label`)
+rather than eyeballing raw JSON.
+
+Workspace tree, built from `/v1/containers/status` + `/v1/containers/windows`:
+
+```
+ws-b  [alive]
+   claude  -> claude  0m
+   shell   -> sleep *  0m
+ws-a  [alive]
+   claude  -> claude  0m  (waiting badge shown; waiting_since is a fixed
+                            fixture timestamp from the bats happy-path test,
+                            so age() renders it as a large "waiting Nd")
+   shell   -> sleep *  0m
+```
+
+Both workspaces show `liveness: alive`; `ws-a`'s `claude` window carries the
+`waiting_since` marker set earlier by the bats happy-path assertion
+(`tmux set-option -w -t work:claude @waiting <epoch>`), and `window_label`
+renders it with a waiting indicator, confirming the marker survives from
+proxy-relayed tmux exec through to the render layer.
+
+Inspect pane for `ws-a`, via `GET /v1/workspaces/ws-a/inspect` rendered
+through `inspect_lines`:
+
+```
+container: ws-a
+status: running
+health: -
+image: dvw-e2e-<pid>-workspace
+started: 2026-09-02T00:14:00.443553685Z
+restarts: 0
+cpu: 0%
+memory: 0%   2.1 MiB / 31.0 GiB
+disk: 0 B
+agents: claude (0m, /workspaces/ws-a)
+git: feat/e2e dirty
+mount: /tmp/dvw-e2e-<pid>/ws-a -> /workspaces/ws-a (rw)
+```
+
+`probe: ok` in the raw JSON (not part of `inspect_lines`'s own tuple list,
+consumed by the caller) confirms the catalog reached `dvw-probe` through the
+proxy rather than falling back to the legacy tmux path; the proxy log had no
+`cmd=tmux` line for this run, only `cmd=dvw-probe`. Torn back down with
+`tests/e2e/dind.sh --down` after capture.
+
+### Clean-tree check
+
+`git status --short` was empty in both `$DVW` and `$AIC` after each test run,
+once `clipd/__pycache__/dvw-clipd.cpython-314.pyc` (bytecode cache tracked in
+`$DVW`, dirtied by every pytest/bats run, unrelated to this branch) was
+checked out back to its committed content, and a stray untracked
+`$AIC/bin/__pycache__/` (bytecode cache from running `bin/dvw-probe` locally,
+not tracked, not part of any suite's expected output) was removed.
+
+### Em dash check
+
+Ran the brief's grep plus an extended pass over every file this branch added
+or changed (`git diff --name-only origin/main...HEAD` in both repos):
+no line *added* by this branch (`git diff origin/main...HEAD | grep '^\+[^+]' | grep '—'`)
+introduces a new em dash. The only match was the grep pattern itself in this
+plan's Step 1 shell command, which searches for the literal character and is
+not prose. Full-file greps over the touched files turn up plenty of
+pre-existing em dashes (code comments, docstrings, and `tui/dvw_tui/render.py`'s
+rendered `"—"` placeholder glyphs for missing values) that predate this
+branch and are out of scope.
+
+### Doc sweep
+
+- `catalog-service/README.md:206` used to say "see
+  `deploy/docker-socket-proxy.md`" and described dropping the docker group via
+  that (deleted) proxy. Rewritten to point at `deploy/docker-proxy.md` and
+  describe the `dvw-docker-proxy` unix-socket setup in two sentences.
+- `docs/superpowers/specs/2026-09-01-docker-proxy-probe-design.md` Component 4:
+  the example `agents:` line used a two-unit age (`2h 10m`); `render.py`'s
+  `age()` helper only ever renders one unit, so the example now reads
+  `agents: claude (2h, /workspaces/foo), codex (5m)`.
+- Grepped the whole `$DVW` tree (excluding `.git`, `.superpowers`, `.venv`,
+  `node_modules`) for `docker-socket-proxy.md`, `docker-proxy.compose.yml`,
+  and `tcp://127.0.0.1:2375`. Hits left in place, all historical/behavioral,
+  none live pointers to something that still exists:
+  - `docs/superpowers/plans/2026-09-01-docker-proxy-probe.md` (multiple) —
+    the plan describing the migration itself; explicitly allowed.
+  - `docs/superpowers/specs/2026-09-01-docker-proxy-probe-design.md` line 279
+    (Component 5) references `docker-proxy.compose.yml` being torn down
+    during install, and line 289 references `docker-socket-proxy.md` being
+    rewritten as `docker-proxy.md` — both past-tense descriptions of the
+    completed rename/deletion, in the same section that already names the
+    replacement files; the Problem section itself only mentions
+    `127.0.0.1:2375` as the old, now-replaced endpoint, which is explicitly
+    allowed.
+  - `tests/bats/deploy-docker-coupling.bats:77` asserts
+    `[ ! -e ".../docker-proxy.compose.yml" ]` — a regression test that the
+    compose file stays deleted, not a reference to a live file.
+  - `tests/bats/deploy-proxy.bats:173` sets
+    `CATALOG_DOCKER_HOST=tcp://127.0.0.1:2375` on a fixture `catalog.env`
+    before running the installer, to assert the installer migrates it to the
+    proxy socket — the string is fixture input for a migration test, not a
+    stale reference.
+  - `catalog-service/deploy/host-install.sh` and `deploy/docker-proxy.md`'s
+    migration note carry no matches for the compose filename or the doc
+    filename (both were removed from those files already); `docker-proxy.md`
+    mentions "the previous tecnativa proxy (removed 2026-09)" and has a
+    "Migration from tecnativa" section, which is the allowed migration note.
+  - `catalog-service/deploy/docker-socket-proxy.md` itself no longer exists
+    (deleted by this branch); no other file references it as a live path.
