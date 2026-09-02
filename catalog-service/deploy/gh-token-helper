@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# git credential helper for the deploy scripts on the catalog host.
+#
+# The host user has no GitHub login of its own, but the estate's shared
+# secrets store is bind-mounted there (the same file every devcontainer
+# reads through its own credential helper). This helper answers git's `get`
+# with the GitHub token from that file, so the deploy scripts can fetch
+# with authentication and the value never appears on a command line, in a
+# log, or in git's own config. `store` and `erase` are no-ops: nothing is
+# ever persisted.
+#
+# Usage (what the deploy scripts do):
+#   git -c credential.helper= -c "credential.helper=<abs path to this file>" ...
+# The empty first entry disables any helper configured elsewhere.
+#
+# DVW_SECRETS_FILE overrides the file location (tests).
+set -u
+
+[ "${1:-}" = "get" ] || exit 0
+
+file="${DVW_SECRETS_FILE:-$HOME/.aicodingsetup/.secrets.env}"
+[ -r "$file" ] || exit 0
+
+# Only answer for github.com; anything else falls through to git's default.
+host=""
+while IFS= read -r line; do
+  case "$line" in
+    host=*) host="${line#host=}" ;;
+  esac
+done
+[ "$host" = "github.com" ] || exit 0
+
+token=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?GH_TOKEN=//p' "$file" | head -n 1 | tr -d '"'"'"'[:space:]')
+[ -n "$token" ] || exit 0
+
+printf 'username=x-access-token\npassword=%s\n' "$token"

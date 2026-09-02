@@ -25,10 +25,20 @@ git_retry() {
   done
 }
 
+# Authenticated git. The host user keeps no GitHub login, but the estate's
+# shared secrets store is bind-mounted here, and gh-token-helper reads the
+# token from it per request without ever putting it on a command line. With
+# no readable store the helper answers nothing and git falls back to an
+# anonymous fetch, which GitHub refuses often enough (401 on the
+# upload-pack POST, 2026-09-02) that the retry above exists.
+GH_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-token-helper"
+git_auth() {
+  git -c credential.helper= -c "credential.helper=$GH_HELPER" "$@"
+}
+
 echo "==> git pull"
-# Anonymous pull; GitHub rejects unauthenticated protocol v2 (see host-install.sh).
 git -C "$CHECKOUT" config protocol.version 1
-git_retry git -C "$CHECKOUT" pull --ff-only
+git_retry git_auth -C "$CHECKOUT" pull --ff-only
 
 echo "==> uv sync --frozen"
 export PATH="$HOME/.local/bin:$PATH"
