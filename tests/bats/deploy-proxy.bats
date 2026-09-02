@@ -380,3 +380,45 @@ EOF2
   grep -q '^  if ! cmp -s "\$rendered" "/etc/systemd/system/\$u"; then' "$script"
   grep -q 'sudo -n install -m 0644 "\$rendered" "/etc/systemd/system/\$u"' "$script"
 }
+
+# DVW-13: GitHub answers an unauthenticated fetch with 401 on roughly half
+# of first attempts (2026-09-02, even with protocol.version=1). Retry the
+# network steps a few times instead of handing the failure to the operator.
+@test "installer retries a failing fetch and succeeds on a later attempt" {
+  cat > "$HOME/stubs/git" <<'EOF2'
+#!/bin/sh
+echo "git $*" >> "$HOME/calls"
+case "$*" in
+  *"fetch origin main"*)
+    n=$(cat "$HOME/fetches" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$HOME/fetches"
+    [ "$n" -ge 3 ] || { echo "fatal: could not read Username for 'https://github.com'" >&2; exit 128; } ;;
+esac
+exit 0
+EOF2
+  chmod +x "$HOME/stubs/git"
+  DVW_GIT_RETRY_DELAY=0 run_install
+  [ "$status" -eq 0 ]
+  [ "$(cat "$HOME/fetches")" -eq 3 ]
+  echo "$output" | grep -q 'fetch origin main failed (attempt 1/3); retrying'
+}
+
+@test "installer gives up after three failed fetches" {
+  cat > "$HOME/stubs/git" <<'EOF2'
+#!/bin/sh
+echo "git $*" >> "$HOME/calls"
+case "$*" in
+  *"fetch origin main"*) echo "fatal: could not read Username" >&2; exit 128 ;;
+esac
+exit 0
+EOF2
+  chmod +x "$HOME/stubs/git"
+  DVW_GIT_RETRY_DELAY=0 run_install
+  [ "$status" -ne 0 ]
+  [ "$(grep -c 'git -C .* fetch origin main' "$CALLS")" -eq 3 ]
+}
+
+@test "host-update.sh wraps its pull in the same retry" {
+  script="$DVW_ROOT/catalog-service/deploy/host-update.sh"
+  grep -q '^git_retry() {' "$script"
+  grep -q '^git_retry git -C "\$CHECKOUT" pull --ff-only' "$script"
+}
