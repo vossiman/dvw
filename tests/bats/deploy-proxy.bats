@@ -325,7 +325,7 @@ EOF2
   run_install
   [ "$status" -eq 0 ]
   cfg=$(grep -n "git -C $CHECKOUT config protocol.version 1" "$CALLS" | head -1 | cut -d: -f1)
-  fetch=$(grep -n "git -C $CHECKOUT fetch origin main" "$CALLS" | head -1 | cut -d: -f1)
+  fetch=$(grep -nE "git .*-C $CHECKOUT fetch origin main" "$CALLS" | head -1 | cut -d: -f1)
   [ -n "$cfg" ]
   [ -n "$fetch" ]
   [ "$cfg" -lt "$fetch" ]
@@ -334,7 +334,7 @@ EOF2
 @test "host-update.sh pins protocol.version=1 before its pull" {
   script="$DVW_ROOT/catalog-service/deploy/host-update.sh"
   cfg=$(grep -n 'git -C "\$CHECKOUT" config protocol.version 1' "$script" | head -1 | cut -d: -f1)
-  pull=$(grep -n 'git -C "\$CHECKOUT" pull --ff-only' "$script" | head -1 | cut -d: -f1)
+  pull=$(grep -n 'git_auth -C "\$CHECKOUT" pull --ff-only' "$script" | head -1 | cut -d: -f1)
   [ -n "$cfg" ]
   [ -n "$pull" ]
   [ "$cfg" -lt "$pull" ]
@@ -414,11 +414,11 @@ EOF2
   chmod +x "$HOME/stubs/git"
   DVW_GIT_RETRY_DELAY=0 run_install
   [ "$status" -ne 0 ]
-  [ "$(grep -c 'git -C .* fetch origin main' "$CALLS")" -eq 3 ]
+  [ "$(grep -cE 'git .*-C .* fetch origin main' "$CALLS")" -eq 3 ]
 }
 
 @test "host-update.sh wraps its pull in the same retry" {
   script="$DVW_ROOT/catalog-service/deploy/host-update.sh"
   grep -q '^git_retry() {' "$script"
-  grep -q '^git_retry git -C "\$CHECKOUT" pull --ff-only' "$script"
+  grep -q '^git_retry git_auth -C "\$CHECKOUT" pull --ff-only' "$script"
 }

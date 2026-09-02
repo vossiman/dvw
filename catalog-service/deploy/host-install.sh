@@ -75,20 +75,34 @@ git_retry() {
   done
 }
 
+# Authenticated git. The host user keeps no GitHub login, but the estate's
+# shared secrets store is bind-mounted here, and gh-token-helper reads the
+# token from it per request without ever putting it on a command line. With
+# no readable store (or before the first clone, when the helper is not on
+# disk yet) git falls back to an anonymous fetch, which GitHub refuses often
+# enough (401 on the upload-pack POST, 2026-09-02) that the retry exists.
+GH_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-token-helper"
+git_auth() {
+  if [ -x "$GH_HELPER" ]; then
+    git -c credential.helper= -c "credential.helper=$GH_HELPER" "$@"
+  else
+    git "$@"
+  fi
+}
+
 echo "==> 1/8 checkout ($BRANCH -> $CHECKOUT)"
-# The host pulls anonymously (public repo, no credential kept on it), and
-# GitHub answers 401 to an unauthenticated protocol v2 upload-pack POST
-# while v1 works (seen 2026-09-02). Pin it on the checkout, not globally.
+# protocol v1 is pinned on the checkout, not globally: GitHub answered 401 to
+# unauthenticated protocol v2 upload-pack POSTs while v1 worked (2026-09-02).
 if [ ! -d "$CHECKOUT/.git" ]; then
   sudo install -d -o "$USER" -g "$USER" "$(dirname "$CHECKOUT")"
-  git_retry git -c protocol.version=1 clone --branch "$BRANCH" "$REPO_URL" "$CHECKOUT"
+  git_retry git_auth -c protocol.version=1 clone --branch "$BRANCH" "$REPO_URL" "$CHECKOUT"
   git -C "$CHECKOUT" config protocol.version 1
 else
   git -C "$CHECKOUT" config protocol.version 1
   before=$(git -C "$CHECKOUT" rev-parse HEAD)
-  git_retry git -C "$CHECKOUT" fetch origin "$BRANCH"
+  git_retry git_auth -C "$CHECKOUT" fetch origin "$BRANCH"
   git -C "$CHECKOUT" checkout "$BRANCH"
-  git_retry git -C "$CHECKOUT" pull --ff-only
+  git_retry git_auth -C "$CHECKOUT" pull --ff-only
   after=$(git -C "$CHECKOUT" rev-parse HEAD)
   # bash keeps running the bytes it already read from THIS file, so a pull
   # that changed the installer would finish under the old logic (2026-09-02:
