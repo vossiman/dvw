@@ -70,9 +70,20 @@ if [ ! -d "$CHECKOUT/.git" ]; then
   git -C "$CHECKOUT" config protocol.version 1
 else
   git -C "$CHECKOUT" config protocol.version 1
+  before=$(git -C "$CHECKOUT" rev-parse HEAD)
   git -C "$CHECKOUT" fetch origin "$BRANCH"
   git -C "$CHECKOUT" checkout "$BRANCH"
   git -C "$CHECKOUT" pull --ff-only
+  after=$(git -C "$CHECKOUT" rev-parse HEAD)
+  # bash keeps running the bytes it already read from THIS file, so a pull
+  # that changed the installer would finish under the old logic (2026-09-02:
+  # the old step 6 ran a compose file the pull had just deleted). Hand over
+  # to the fresh copy once; the guard stops a loop if the diff never settles.
+  if [ "$before" != "$after" ] && [ -z "${DVW_INSTALL_REEXEC:-}" ] \
+     && ! git -C "$CHECKOUT" diff --quiet "$before" "$after" -- catalog-service/deploy/host-install.sh; then
+    echo "    installer changed by the pull; re-running the new copy"
+    DVW_INSTALL_REEXEC=1 exec bash "$SVC_DIR/deploy/host-install.sh"
+  fi
 fi
 
 echo "==> 2/8 stable symlink $APP_LINK -> $SVC_DIR"
