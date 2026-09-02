@@ -285,3 +285,34 @@ EOF2
   fi
   echo "$output" | grep -q '==> proxy healthy'
 }
+
+# DevPod's ssh provider runs `docker` on this host as the login user, so that
+# user must stay in the docker group. Removing it (the 2026-09-02 rollout did)
+# locks every workspace out. The installer checks and says so.
+stub_id_with_groups() {
+  cat > "$HOME/stubs/id" <<EOF2
+#!/bin/sh
+case "\$1" in
+  -u) echo 1000 ;;
+  -nG) echo "$1" ;;
+  *) exit 0 ;;
+esac
+EOF2
+  chmod +x "$HOME/stubs/id"
+}
+
+@test "login user outside the docker group warns with the gpasswd recovery command" {
+  stub_id_with_groups "vossi adm sudo"
+  run_install
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "WARN: $USER is not in the docker group"
+  echo "$output" | grep -q "sudo gpasswd -a $USER docker"
+}
+
+@test "login user in the docker group gets no docker-group warning" {
+  stub_id_with_groups "vossi docker sudo"
+  run_install
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'not in the docker group' && { echo "unexpected warning" >&2; return 1; }
+  true
+}

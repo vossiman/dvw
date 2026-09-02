@@ -48,8 +48,12 @@ TUI / dvw CLI ──ssh──> catalog-service (user vossi)
 ```
 
 Trust flows one way. The catalog has no Docker access of its own. The proxy is
-the only non-root process in the docker group. The probe runs inside a
-possibly hostile container and its output is untrusted input to the catalog.
+the only non-root *service* in the docker group. The interactive login user
+stays in the group: DevPod's ssh provider runs `docker inspect/exec/run` on
+the host as that user, and it already holds full sudo, so removing it from
+the group reduces nothing and breaks every workspace (learned 2026-09-02, see
+Rollout). The probe runs inside a possibly hostile container and its output
+is untrusted input to the catalog.
 
 ## Component 1: dvw-docker-proxy
 
@@ -361,10 +365,15 @@ The script is also runnable as `tests/bats/e2e-dind.bats` behind
    `deploy-docker-proxy-1` container is the one step that needs a working
    docker CLI; the installer warns instead of removing it if docker is
    unreachable. Then verify with `ss -xl | grep dvw-docker-proxy`,
-   `id dvw-proxy`, and `ss -ltn | grep 127.0.0.1:2375` printing nothing. Only
-   after that, remove the login user from the `docker` group
-   (`sudo gpasswd -d "$USER" docker`, effective at next login) and confirm
-   with `id -nG "$USER" | tr ' ' '\n' | grep -x docker` printing nothing.
+   `id dvw-proxy`, and `ss -ltn | grep 127.0.0.1:2375` printing nothing.
+   **Do not remove the login user from the `docker` group.** An earlier
+   revision of this step did (`sudo gpasswd -d "$USER" docker`), and it was
+   run on 2026-09-02: DevPod's `vossisrv` provider runs `docker` on the host
+   as that user, fell back to `sudo docker` with no tty for the password,
+   and every `dvw <ws>` died with `ssh: handshake failed: EOF` (surfaced by
+   dvw as "ssh never connected"). Recovery is
+   `sudo gpasswd -a "$USER" docker`; the installer now warns when the
+   login user is outside the group.
 3. Follow-up PR after all workspaces have synced: remove the tmux
    transitional allowlist entry and the catalog fallback.
 4. Tickets: DVW-6 done; DVW-4 done (systemd owns liveness); DVW-1 done
