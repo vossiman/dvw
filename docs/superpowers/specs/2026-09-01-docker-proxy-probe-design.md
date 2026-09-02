@@ -352,10 +352,19 @@ The script is also runnable as `tests/bats/e2e-dind.bats` behind
 1. aicoding PR: probe plus bats tests. Merge, containers pick it up at next
    boot sync.
 2. dvw PR: proxy, catalog, TUI, deploy, e2e. Merge, then on vossisrv run
-   `sudo /opt/dvw/catalog-service/deploy/host-install.sh` once (creates the
-   user, installs the units, rewrites env, removes tecnativa), followed by the
-   smoke test. Verify `ss -xl | grep dvw-docker-proxy`, `id dvw-proxy`, and
-   that `vossi` is not in the docker group.
+   `/opt/dvw/catalog-service/deploy/host-install.sh` once (creates the user,
+   installs the units, rewrites env, removes tecnativa), followed by the smoke
+   test. Not with `sudo`: the script refuses to run as root and calls `sudo`
+   itself for the steps that need it.
+   Order matters. Re-run the installer as the normal login user **while that
+   user is still in the `docker` group**, because retiring the old
+   `deploy-docker-proxy-1` container is the one step that needs a working
+   docker CLI; the installer warns instead of removing it if docker is
+   unreachable. Then verify with `ss -xl | grep dvw-docker-proxy`,
+   `id dvw-proxy`, and `ss -ltn | grep 127.0.0.1:2375` printing nothing. Only
+   after that, remove the login user from the `docker` group
+   (`sudo gpasswd -d "$USER" docker`, effective at next login) and confirm
+   with `id -nG "$USER" | tr ' ' '\n' | grep -x docker` printing nothing.
 3. Follow-up PR after all workspaces have synced: remove the tmux
    transitional allowlist entry and the catalog fallback.
 4. Tickets: DVW-6 done; DVW-4 done (systemd owns liveness); DVW-1 done

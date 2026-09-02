@@ -54,7 +54,13 @@ Re-run `/opt/dvw/catalog-service/deploy/host-install.sh` once. It creates
 `CATALOG_DOCKER_HOST` in `catalog.env`, and removes the
 `deploy-docker-proxy-1` container. Verify afterwards:
 
-    ss -xl | grep dvw-docker-proxy
-    id dvw-proxy
-    id vossi | grep -v docker
+    ss -xl | grep dvw-docker-proxy                    # the new socket is there
+    ss -ltn | grep 127.0.0.1:2375                     # MUST print nothing
+    id dvw-proxy                                      # the service user exists
+    id -nG "$USER" | tr ' ' '\n' | grep -x docker     # MUST print nothing
     curl -fsS --unix-socket /run/dvw-docker-proxy/docker.sock http://localhost/_ping
+
+The two "must print nothing" checks are the ones that say the old path is
+really gone: port 2375 was the tecnativa proxy's unauthenticated Docker API on
+loopback, and membership of the `docker` group is root equivalence for the
+login user. Both greps exit 1 when they print nothing, which is the pass.

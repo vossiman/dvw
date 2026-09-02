@@ -2964,7 +2964,7 @@ docker-in-docker; the catalog's `inspect` endpoint reading probe output
 (agents, git, mounts); a `tmux set-option @waiting` marker surfacing through
 `/v1/containers/waiting`; and six-plus `verdict=deny` proxy log lines for
 `POST /containers/create`, non-probe exec, a privileged exec, `/images/json`,
-a fabricated exec id, and `DELETE /containers/{id}` — all refused with `403`,
+a fabricated exec id, and `DELETE /containers/{id}`, all refused with `403`,
 with the workspace container count unchanged (2) after the attack attempts.
 
 ### Playtest observations
@@ -3030,13 +3030,14 @@ not tracked, not part of any suite's expected output) was removed.
 
 Ran the brief's grep plus an extended pass over every file this branch added
 or changed (`git diff --name-only origin/main...HEAD` in both repos):
-no line *added* by this branch (`git diff origin/main...HEAD | grep '^\+[^+]' | grep '—'`)
-introduces a new em dash. The only match was the grep pattern itself in this
-plan's Step 1 shell command, which searches for the literal character and is
-not prose. Full-file greps over the touched files turn up plenty of
-pre-existing em dashes (code comments, docstrings, and `tui/dvw_tui/render.py`'s
-rendered `"—"` placeholder glyphs for missing values) that predate this
-branch and are out of scope.
+no line *added* by this branch introduces a new em dash. Exactly one added
+line contains the character at all, and it is not prose: the Step 1 shell
+command above, whose grep pattern is the literal character it searches for.
+Re-check with `git diff origin/main...HEAD | grep '^+[^+]'` piped through a
+grep for that character. Full-file greps over the touched files turn up
+plenty of pre-existing em dashes (code comments, docstrings, and the
+placeholder glyphs `tui/dvw_tui/render.py` renders for missing values) that
+predate this branch and are out of scope.
 
 ### Doc sweep
 
@@ -3052,23 +3053,23 @@ branch and are out of scope.
   `node_modules`) for `docker-socket-proxy.md`, `docker-proxy.compose.yml`,
   and `tcp://127.0.0.1:2375`. Hits left in place, all historical/behavioral,
   none live pointers to something that still exists:
-  - `docs/superpowers/plans/2026-09-01-docker-proxy-probe.md` (multiple) —
+  - `docs/superpowers/plans/2026-09-01-docker-proxy-probe.md` (multiple):
     the plan describing the migration itself; explicitly allowed.
   - `docs/superpowers/specs/2026-09-01-docker-proxy-probe-design.md` line 279
     (Component 5) references `docker-proxy.compose.yml` being torn down
     during install, and line 289 references `docker-socket-proxy.md` being
-    rewritten as `docker-proxy.md` — both past-tense descriptions of the
+    rewritten as `docker-proxy.md`. Both are past-tense descriptions of the
     completed rename/deletion, in the same section that already names the
     replacement files; the Problem section itself only mentions
     `127.0.0.1:2375` as the old, now-replaced endpoint, which is explicitly
     allowed.
   - `tests/bats/deploy-docker-coupling.bats:77` asserts
-    `[ ! -e ".../docker-proxy.compose.yml" ]` — a regression test that the
+    `[ ! -e ".../docker-proxy.compose.yml" ]`, a regression test that the
     compose file stays deleted, not a reference to a live file.
   - `tests/bats/deploy-proxy.bats:173` sets
     `CATALOG_DOCKER_HOST=tcp://127.0.0.1:2375` on a fixture `catalog.env`
     before running the installer, to assert the installer migrates it to the
-    proxy socket — the string is fixture input for a migration test, not a
+    proxy socket. The string is fixture input for a migration test, not a
     stale reference.
   - `catalog-service/deploy/host-install.sh` and `deploy/docker-proxy.md`'s
     migration note carry no matches for the compose filename or the doc

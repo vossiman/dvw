@@ -101,15 +101,30 @@ fi
 # Retire the tecnativa compose proxy if a previous install left it running.
 # The compose file is gone from the checkout, so address the container by
 # the name compose gave it (project "deploy", service "docker-proxy").
-if command -v docker >/dev/null 2>&1 && \
-   docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx 'deploy-docker-proxy-1'; then
-  echo "    removing the retired tecnativa docker-socket-proxy container"
-  docker rm -f deploy-docker-proxy-1 >/dev/null
+# "docker is unreachable" and "the container is gone" are different answers,
+# and only one of them means there is nothing to do. The installing user may
+# already have been removed from the docker group (that is the end state this
+# migration wants), in which case `docker ps` fails and the retirement has to
+# be handed to the operator instead of being silently skipped.
+if command -v docker >/dev/null 2>&1; then
+  if docker_names=$(docker ps -a --format '{{.Names}}' 2>/dev/null); then
+    if printf '%s\n' "$docker_names" | grep -qx 'deploy-docker-proxy-1'; then
+      echo "    removing the retired tecnativa docker-socket-proxy container"
+      docker rm -f deploy-docker-proxy-1 >/dev/null
+    fi
+  else
+    echo "WARN: docker is installed but not reachable as $USER, so the retired" >&2
+    echo "      tecnativa container could not be checked. Remove it by hand:" >&2
+    echo "      sudo docker rm -f deploy-docker-proxy-1" >&2
+  fi
 fi
 # Point the catalog at the proxy socket. Rewrite a tcp:// value left by the
-# previous proxy; add the key when it is missing; leave any other value alone.
+# previous proxy, and an empty value (config.py now refuses one); add the key
+# when it is missing; leave any other value alone.
 if grep -q '^CATALOG_DOCKER_HOST=tcp://' "$SVC_DIR/catalog.env"; then
   sed -i "s|^CATALOG_DOCKER_HOST=tcp://.*|CATALOG_DOCKER_HOST=unix://$PROXY_SOCK|" "$SVC_DIR/catalog.env"
+elif grep -q '^CATALOG_DOCKER_HOST=[[:space:]]*$' "$SVC_DIR/catalog.env"; then
+  sed -i "s|^CATALOG_DOCKER_HOST=[[:space:]]*$|CATALOG_DOCKER_HOST=unix://$PROXY_SOCK|" "$SVC_DIR/catalog.env"
 elif ! grep -q '^CATALOG_DOCKER_HOST=' "$SVC_DIR/catalog.env"; then
   printf '\nCATALOG_DOCKER_HOST=unix://%s\n' "$PROXY_SOCK" >> "$SVC_DIR/catalog.env"
 fi
@@ -155,6 +170,16 @@ if [[ -z "$proxy_ok" ]]; then
   exit 1
 fi
 echo "==> proxy healthy"
+# The retired tecnativa proxy published 127.0.0.1:2375, an unauthenticated
+# Docker API on the loopback interface. If something is still listening there
+# the migration is not finished, whatever this installer managed to do. Warn
+# loudly, but do not fail: the new proxy is up and the catalog works.
+if ss -ltn 2>/dev/null | grep -q '127.0.0.1:2375'; then
+  echo "WARN: something still listens on 127.0.0.1:2375 (the retired tecnativa" >&2
+  echo "      docker-socket-proxy). Stop and remove it:" >&2
+  echo "      sudo docker rm -f deploy-docker-proxy-1" >&2
+  echo "      then re-check with:  ss -ltn | grep 127.0.0.1:2375" >&2
+fi
 # enable --now STARTS an inactive unit but does NOT restart a running one, so
 # re-running this installer against a live service left the old code serving
 # while the checkout and venv were already updated — and the smoke test below
