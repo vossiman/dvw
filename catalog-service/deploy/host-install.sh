@@ -60,20 +60,32 @@ if ! id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then
   echo "      sudo gpasswd -a $USER docker" >&2
 fi
 
+# GitHub rejects roughly half of first unauthenticated fetch attempts with a
+# 401 (2026-09-02; the retry always succeeded). Three tries, short pause.
+git_retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    "$@" && return 0
+    [ "$attempt" -lt 3 ] || return 1
+    echo "    $* failed (attempt $attempt/3); retrying" >&2
+    sleep "${DVW_GIT_RETRY_DELAY:-2}"
+  done
+}
+
 echo "==> 1/8 checkout ($BRANCH -> $CHECKOUT)"
 # The host pulls anonymously (public repo, no credential kept on it), and
 # GitHub answers 401 to an unauthenticated protocol v2 upload-pack POST
 # while v1 works (seen 2026-09-02). Pin it on the checkout, not globally.
 if [ ! -d "$CHECKOUT/.git" ]; then
   sudo install -d -o "$USER" -g "$USER" "$(dirname "$CHECKOUT")"
-  git -c protocol.version=1 clone --branch "$BRANCH" "$REPO_URL" "$CHECKOUT"
+  git_retry git -c protocol.version=1 clone --branch "$BRANCH" "$REPO_URL" "$CHECKOUT"
   git -C "$CHECKOUT" config protocol.version 1
 else
   git -C "$CHECKOUT" config protocol.version 1
   before=$(git -C "$CHECKOUT" rev-parse HEAD)
-  git -C "$CHECKOUT" fetch origin "$BRANCH"
+  git_retry git -C "$CHECKOUT" fetch origin "$BRANCH"
   git -C "$CHECKOUT" checkout "$BRANCH"
-  git -C "$CHECKOUT" pull --ff-only
+  git_retry git -C "$CHECKOUT" pull --ff-only
   after=$(git -C "$CHECKOUT" rev-parse HEAD)
   # bash keeps running the bytes it already read from THIS file, so a pull
   # that changed the installer would finish under the old logic (2026-09-02:

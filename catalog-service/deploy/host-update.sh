@@ -10,10 +10,22 @@ CHECKOUT="${CHECKOUT:-/opt/dvw}"
 SVC_DIR="$CHECKOUT/catalog-service"
 SOCK="/run/dvw-catalog/catalog.sock"
 
+# GitHub rejects roughly half of first unauthenticated fetch attempts with a
+# 401 (2026-09-02; the retry always succeeded). Three tries, short pause.
+git_retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    "$@" && return 0
+    [ "$attempt" -lt 3 ] || return 1
+    echo "    $* failed (attempt $attempt/3); retrying" >&2
+    sleep "${DVW_GIT_RETRY_DELAY:-2}"
+  done
+}
+
 echo "==> git pull"
 # Anonymous pull; GitHub rejects unauthenticated protocol v2 (see host-install.sh).
 git -C "$CHECKOUT" config protocol.version 1
-git -C "$CHECKOUT" pull --ff-only
+git_retry git -C "$CHECKOUT" pull --ff-only
 
 echo "==> uv sync --frozen"
 export PATH="$HOME/.local/bin:$PATH"
