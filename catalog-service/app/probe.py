@@ -32,7 +32,12 @@ class ProbeSession(BaseModel):
     model_config = ConfigDict(extra="ignore")
     name: Str
     attached: NonNeg = 0
-    activity: NonNeg = -1
+    # None, not -1: the probe emits -1 for "activity unknown", and a NonNeg
+    # field with a -1 default only worked because pydantic skips validating
+    # defaults. An explicit -1 on the wire would have dropped the whole
+    # report. Null and absent both mean unknown; work_activity() maps that
+    # back to -1 for callers.
+    activity: int | None = None
 
 
 class ProbeWindow(BaseModel):
@@ -40,7 +45,7 @@ class ProbeWindow(BaseModel):
     id: Str
     name: Str
     active: bool = False
-    activity: NonNeg = -1
+    activity: int | None = None  # -1/null both mean unknown; see ProbeSession
     waiting_since: NonNeg | None = None
     command: Str = ""
 
@@ -92,7 +97,7 @@ class ProbeReport(BaseModel):
             return -1
         for s in self.tmux.sessions:
             if s.name == "work":
-                return s.activity
+                return -1 if s.activity is None else s.activity
         return -1
 
     def work_attached(self) -> int:
@@ -111,7 +116,7 @@ class ProbeReport(BaseModel):
                 window_id=w.id,
                 name=w.name,
                 active=w.active,
-                activity=w.activity,
+                activity=-1 if w.activity is None else w.activity,
                 waiting_since=w.waiting_since,
                 command=w.command,
             )

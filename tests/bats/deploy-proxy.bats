@@ -163,9 +163,45 @@ run_install() {
 @test "host-update.sh reenables dvw-docker-proxy.socket when it changed, like the catalog unit" {
   UPDATE="$DVW_ROOT/catalog-service/deploy/host-update.sh"
   grep -q 'systemctl reenable dvw-docker-proxy.socket' "$UPDATE"
-  # Both halves of the restart run unconditionally (not short-circuited by
-  # `||`), so a failed stop never skips the socket restart.
-  grep -q 'systemctl stop dvw-docker-proxy.service.*rc=1\|rc=1' "$UPDATE"
+}
+
+@test "host-update restarts the socket even when the service stop fails" {
+  UPDATE="$DVW_ROOT/catalog-service/deploy/host-update.sh"
+  # git: pull succeeds; `diff --quiet ... catalog-service/proxy` reports a
+  # change (exit 1), which is the branch that restarts the proxy.
+  cat > "$HOME/stubs/git" <<'EOF'
+#!/bin/sh
+echo "git $*" >> "$HOME/calls"
+case "$*" in
+  *"diff --quiet"*) exit 1 ;;
+esac
+exit 0
+EOF
+  # sudo: as in setup(), but the proxy stop FAILS. The socket restart must
+  # still run, and the failure must surface as the WARN.
+  cat > "$HOME/stubs/sudo" <<'EOF'
+#!/bin/sh
+echo "sudo $*" >> "$HOME/calls"
+case "$*" in
+  *"systemctl stop dvw-docker-proxy.service"*) exit 1 ;;
+esac
+exit 0
+EOF
+  chmod +x "$HOME/stubs/git" "$HOME/stubs/sudo"
+  run env CHECKOUT="$CHECKOUT" bash "$UPDATE" </dev/null
+  # The run ends at the smoke test, which needs a real /run socket. Everything
+  # under test happens before that, and pinning the reason keeps an earlier
+  # breakage from passing as this expected stop.
+  echo "$output" | grep -q 'smoke test FAILED: /run/dvw-docker-proxy/docker.sock is missing'
+  grep -nE 'sudo -n systemctl (stop dvw-docker-proxy\.service|restart dvw-docker-proxy\.socket)' \
+    "$CALLS" > "$WORK/useq"
+  cat "$WORK/useq"
+  stop_line=$(grep -n 'systemctl stop dvw-docker-proxy.service' "$WORK/useq" | head -1 | cut -d: -f1)
+  sock_line=$(grep -n 'systemctl restart dvw-docker-proxy.socket' "$WORK/useq" | head -1 | cut -d: -f1)
+  [ -n "$stop_line" ]
+  [ -n "$sock_line" ]
+  [ "$stop_line" -lt "$sock_line" ]
+  echo "$output" | grep -q 'WARN: proxy code changed but could not restart'
 }
 
 @test "an existing tcp:// CATALOG_DOCKER_HOST is migrated to the proxy socket" {
@@ -189,4 +225,63 @@ EOF
   run_install
   [ "$status" -eq 0 ]
   grep -q 'docker rm -f deploy-docker-proxy-1' "$CALLS"
+}
+
+@test "an empty CATALOG_DOCKER_HOST is rewritten to the proxy socket" {
+  # config.py refuses an empty value, so "leave any other value alone" must
+  # not extend to a key that is present but blank.
+  install -m 0640 "$SVC_DIR/deploy/catalog.env.example" "$SVC_DIR/catalog.env"
+  sed -i 's|^CATALOG_DOCKER_HOST=.*|CATALOG_DOCKER_HOST=|' "$SVC_DIR/catalog.env"
+  run_install
+  [ "$status" -eq 0 ]
+  grep -qx 'CATALOG_DOCKER_HOST=unix:///run/dvw-docker-proxy/docker.sock' "$SVC_DIR/catalog.env"
+}
+
+@test "an unreachable docker warns instead of silently skipping the tecnativa retirement" {
+  # The installing user may already be out of the docker group, which is the
+  # end state this migration wants. Then `docker ps` fails, and "no container"
+  # is not a conclusion the installer may draw.
+  cat > "$HOME/stubs/docker" <<'EOF2'
+#!/bin/sh
+echo "docker $*" >> "$HOME/calls"
+echo "permission denied while trying to connect to the Docker daemon socket" >&2
+exit 1
+EOF2
+  chmod +x "$HOME/stubs/docker"
+  run_install
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'WARN: docker is installed but not reachable'
+  if grep -q 'docker rm -f deploy-docker-proxy-1' "$CALLS"; then
+    echo "must not claim to remove what it could not see" >&2
+    return 1
+  fi
+  echo "$output" | grep -q 'sudo docker rm -f deploy-docker-proxy-1' 
+}
+
+@test "a leftover 127.0.0.1:2375 listener warns but does not fail the install" {
+  cat > "$HOME/stubs/ss" <<'EOF2'
+#!/bin/sh
+echo "ss $*" >> "$HOME/calls"
+echo "LISTEN 0      4096       127.0.0.1:2375       0.0.0.0:*"
+EOF2
+  chmod +x "$HOME/stubs/ss"
+  run_install
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'WARN: something still listens on 127.0.0.1:2375'
+}
+
+@test "no 2375 listener means no leftover-proxy warning" {
+  cat > "$HOME/stubs/ss" <<'EOF2'
+#!/bin/sh
+echo "ss $*" >> "$HOME/calls"
+echo "LISTEN 0      4096         0.0.0.0:22          0.0.0.0:*"
+EOF2
+  chmod +x "$HOME/stubs/ss"
+  run_install
+  [ "$status" -eq 0 ]
+  if echo "$output" | grep -q '127.0.0.1:2375'; then
+    echo "should not warn without a listener" >&2
+    return 1
+  fi
+  echo "$output" | grep -q '==> proxy healthy'
 }

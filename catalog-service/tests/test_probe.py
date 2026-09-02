@@ -109,8 +109,6 @@ def test_validation_failure_log_never_echoes_probe_content(caplog):
 
 @pytest.mark.parametrize("field_path,bad_value", [
     (("tmux", "sessions", 0, "attached"), -1),
-    (("tmux", "sessions", 0, "activity"), -1),
-    (("tmux", "windows", 0, "activity"), -1),
     (("tmux", "windows", 0, "waiting_since"), -1),
     (("agents", 0, "pid"), -1),
     (("agents", 0, "started"), -1),
@@ -131,3 +129,28 @@ def test_negative_values_rejected(field_path, bad_value):
     node[field_path[-1]] = bad_value
     with pytest.raises(Exception):
         ProbeReport.model_validate(data)
+
+
+def test_activity_null_or_missing_reads_as_unknown():
+    """activity is the one field where -1 means "unknown", so the model takes
+    null (and an absent key) rather than rejecting it as negative."""
+    import copy
+    for mutate in (lambda s: s.__setitem__("activity", None),
+                   lambda s: s.pop("activity")):
+        data = copy.deepcopy(GOOD)
+        mutate(data["tmux"]["sessions"][0])
+        mutate(data["tmux"]["windows"][0])
+        r = ProbeReport.model_validate(data)
+        assert r.work_activity() == -1
+        assert r.work_windows()[0].activity == -1
+
+
+def test_explicit_minus_one_activity_keeps_the_report():
+    """An explicit -1 (the probe's own sentinel) must not drop the report."""
+    import copy
+    data = copy.deepcopy(GOOD)
+    data["tmux"]["sessions"][0]["activity"] = -1
+    data["tmux"]["windows"][0]["activity"] = -1
+    r = ProbeReport.model_validate(data)
+    assert r.work_activity() == -1
+    assert r.work_windows()[0].activity == -1
