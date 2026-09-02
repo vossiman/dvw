@@ -1,5 +1,6 @@
-"""docker_inspect uses dvw-probe first and falls back to tmux execs only
-when the probe is missing (exit 126/127). One exec per container per call."""
+"""docker_inspect gets everything from one dvw-probe exec per container per
+call. A container without the probe (exit 126/127) reports "missing" with an
+empty snapshot; there is no tmux fallback."""
 
 from __future__ import annotations
 
@@ -70,93 +71,6 @@ def test_sibling_tiebreak_uses_probe_activity(monkeypatch):
     assert r.container_id == "c-b" and r.tmux_work_activity == 1756799990
 
 
-def test_probe_missing_falls_back_to_tmux(monkeypatch):
-    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a", tmux_work=100,
-                      tmux_attached=2, tmux_windows="@1\twork\t1\t5\t\tclaude\t2\n")
-    insp = _inspector([c], monkeypatch)
-    (ww,) = insp.windows_many()
-    assert ww.attached == 2 and ww.windows[0].window_id == "@1"
-    assert insp.resolve("ws-a").tmux_work_activity == 100
-    assert any(cmd[0] == "tmux" for cmd in c.exec_calls)
-
-
-def test_probe_missing_windows_costs_one_tmux_exec(monkeypatch):
-    # The windows exec already carries session_attached, and windows_many
-    # never reads activity: one tmux exec, not three.
-    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a", tmux_work=100,
-                      tmux_attached=2, tmux_windows="@1\twork\t1\t5\t\tclaude\t2\n")
-    insp = _inspector([c], monkeypatch)
-    insp.windows_many()
-    tmux = [cmd for cmd in c.exec_calls if cmd[0] == "tmux"]
-    assert [cmd[1] for cmd in tmux] == ["list-windows"]
-
-
-def test_probe_missing_detached_session_does_not_fire_the_attached_exec(monkeypatch):
-    # session_attached=0 is the normal DETACHED state, not "no answer": the
-    # windows exec answered, so the attached exec must not run.
-    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a", tmux_work=100,
-                      tmux_attached=4, tmux_windows="@1\twork\t1\t5\t\tclaude\t0\n")
-    insp = _inspector([c], monkeypatch)
-    (ww,) = insp.windows_many()
-    assert ww.attached == 0
-    tmux = [cmd for cmd in c.exec_calls if cmd[0] == "tmux"]
-    assert [cmd[1] for cmd in tmux] == ["list-windows"]
-
-
-def test_attached_many_on_legacy_container_runs_only_the_attached_exec(monkeypatch):
-    # The bulk status fan-out spends its execs inside a 0.25 s budget: a
-    # container without dvw-probe must cost exactly the one list-sessions
-    # exec it did before the probe existed.
-    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a", tmux_work=100,
-                      tmux_attached=3, tmux_windows="@1\twork\t1\t5\t\tclaude\t2\n")
-    insp = _inspector([c], monkeypatch)
-    assert insp._attached_many([c]) == {"c1": 3}
-    tmux = [cmd for cmd in c.exec_calls if cmd[0] == "tmux"]
-    assert len(tmux) == 1
-    assert tmux[0] == ["tmux", "list-sessions", "-F",
-                       "#{session_name} #{session_attached}"]
-
-
-def test_status_many_legacy_container_costs_one_tmux_exec(monkeypatch):
-    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a", tmux_work=100,
-                      tmux_attached=3, tmux_windows="@1\twork\t1\t5\t\tclaude\t2\n")
-    insp = _inspector([c], monkeypatch)
-    (st,) = insp.status_many(["ws-a"])
-    assert st.attached == 3
-    tmux = [cmd for cmd in c.exec_calls if cmd[0] == "tmux"]
-    assert [cmd[1] for cmd in tmux] == ["list-sessions"]
-
-
-def test_status_many_legacy_siblings_are_not_probed_twice(monkeypatch):
-    # The tie-break snapshot is handed to the attached worker, so the winner
-    # pays one probe attempt, one activity exec and one attached exec.
-    a = FakeContainer("c-a", "a", "u-a", "/workspaces/ws-a", tmux_work=200,
-                      tmux_attached=3)
-    b = FakeContainer("c-b", "b", "u-b", "/workspaces/ws-a", tmux_work=100,
-                      tmux_attached=5)
-    insp = _inspector([a, b], monkeypatch)
-    (st,) = insp.status_many(["ws-a"])
-    assert st.container_id == "c-a" and st.attached == 3
-    assert sum(1 for cmd in a.exec_calls if cmd == ["dvw-probe"]) == 1
-    assert [cmd[1] for cmd in a.exec_calls if cmd[0] == "tmux"] == [
-        "list-sessions", "list-sessions"]
-
-
-def test_probe_missing_fallback_argvs_are_proxy_allowed(monkeypatch):
-    # Structural pin: the fallback may only send argv lists the docker proxy
-    # allows. Byte-identical or the deployed proxy 403s the fallback.
-    from proxy.dvw_docker_proxy import _TMUX_ALLOWED
-
-    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a", tmux_work=100)
-    insp = _inspector([c], monkeypatch)
-    insp.windows_many()
-    insp.status_many(["ws-a"])
-    tmux = [cmd for cmd in c.exec_calls if cmd[0] == "tmux"]
-    assert tmux, "fallback sent no tmux exec"
-    for cmd in tmux:
-        assert cmd in [list(a) for a in _TMUX_ALLOWED], cmd
-
-
 def test_probe_failure_is_not_a_fallback(monkeypatch):
     # exit 1 means the probe exists but broke: no tmux exec, empty snapshot.
     c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a", probe_exit=1,
@@ -179,10 +93,36 @@ def test_inspect_carries_agents_git_and_probe_state(monkeypatch):
 
 
 def test_inspect_probe_missing_state(monkeypatch):
-    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a", tmux_work=1)
+    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a")
     insp = _inspector([c], monkeypatch)
     info = insp.inspect("ws-a")
     assert info.probe == "missing" and info.agents == [] and info.git is None
+    assert c.exec_calls == [["dvw-probe"]]
+
+
+def test_probe_missing_is_reported_not_worked_around(monkeypatch):
+    # No tmux fallback: a container without dvw-probe costs exactly one exec
+    # per call and answers with the empty snapshot, whoever asks.
+    c = FakeContainer("c1", "n1", "u1", "/workspaces/ws-a")
+    insp = _inspector([c], monkeypatch)
+    (ww,) = insp.windows_many()
+    assert ww.windows == [] and ww.attached == 0
+    (st,) = insp.status_many(["ws-a"])
+    assert st.attached == 0
+    assert insp.resolve("ws-a").tmux_work_activity == -1
+    assert insp._attached_many([c]) == {"c1": 0}
+    assert all(cmd == ["dvw-probe"] for cmd in c.exec_calls)
+
+
+def test_status_many_siblings_without_probe_are_probed_once(monkeypatch):
+    # The tie-break snapshot is handed to the attached worker: each sibling
+    # pays one probe attempt and nothing else.
+    a = FakeContainer("c-a", "a", "u-a", "/workspaces/ws-a")
+    b = FakeContainer("c-b", "b", "u-b", "/workspaces/ws-a")
+    insp = _inspector([a, b], monkeypatch)
+    (st,) = insp.status_many(["ws-a"])
+    assert st.attached == 0
+    assert a.exec_calls == [["dvw-probe"]] and b.exec_calls == [["dvw-probe"]]
 
 
 def test_inspect_partial_report_is_partial(monkeypatch):

@@ -4,9 +4,9 @@
 Listens on a unix socket that systemd creates with mode 0600 for the catalog
 user, talks to /var/run/docker.sock as a member of the docker group, and
 forwards exactly the routes the catalog needs. Everything else is refused
-before the upstream is contacted. Exec is restricted to one command
-(`dvw-probe`, plus a transitional tmux form), so a compromised catalog can
-read tmux state and nothing more. Stdlib only; runs with /usr/bin/python3.
+before the upstream is contacted. Exec is restricted to exactly one command,
+`dvw-probe`, so a compromised catalog can read the probe's report and nothing
+more. Stdlib only; runs with /usr/bin/python3.
 
 Spec: docs/superpowers/specs/2026-09-01-docker-proxy-probe-design.md.
 """
@@ -70,21 +70,10 @@ _FORWARD_HEADERS = ("host", "content-type", "accept", "user-agent")
 # those spellings rather than requiring the key to be missing. The checks are
 # by type, not by equality: 0 == False in Python, so an equality test would
 # let {"Privileged": 0} through.
-# The tmux forms are the exact argv lists catalog-service/app/docker_inspect.py
-# sends today, matched whole. Nothing looser will do: tmux argv is a command
-# language, where a ";" element separates commands and a "#(...)" sequence in
-# a -F format string runs a shell job, so any prefix match is a shell.
 # Absent or empty, checked against each field's real Docker API type, so an
 # empty value of the wrong type ({"User": {}}) is refused rather than waved
 # through as "empty".
 _EMPTY_TYPES = {"User": str, "Env": list, "WorkingDir": str, "DetachKeys": str}
-_TMUX_ALLOWED = (
-    ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
-    ["tmux", "list-sessions", "-F", "#{session_name} #{session_attached}"],
-    ["tmux", "list-windows", "-t", "work", "-F",
-     "#{window_id}\t#{window_name}\t#{window_active}\t#{window_activity}"
-     "\t#{@waiting}\t#{pane_current_command}\t#{session_attached}"],
-)
 _PASSTHROUGH = ("Container", "AttachStdout", "AttachStderr", "Tty", "Privileged",
                 "AttachStdin", "User", "Env", "WorkingDir", "DetachKeys", "Cmd")
 
@@ -270,12 +259,9 @@ def validate_exec_body(body: bytes) -> tuple[bytes, str]:
     cmd = data.get("Cmd")
     if not isinstance(cmd, list) or not cmd or not all(isinstance(c, str) for c in cmd):
         raise Forbidden("Cmd must be a non-empty list of strings")
-    if cmd == ["dvw-probe"]:
-        label = "dvw-probe"
-    elif cmd in _TMUX_ALLOWED:
-        label = f"tmux {cmd[1]}"  # transitional, removed with the catalog fallback
-    else:
+    if cmd != ["dvw-probe"]:
         raise Forbidden(f"Cmd not allowed: {cmd[0]!r}")
+    label = "dvw-probe"
     for key in ("Privileged", "Tty", "AttachStdin"):
         value = data.get(key)
         if not (value is None or value is False):

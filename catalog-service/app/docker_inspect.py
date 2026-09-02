@@ -94,72 +94,35 @@ class Inspector(Protocol):
 
 
 class Snapshot:
-    """Everything one exec tells us about a running container.
+    """Everything one `dvw-probe` exec tells us about a running container.
 
-    On the probe path every field is already known: one `dvw-probe` exec
-    answered all of them, so the values are stored eagerly.
-
-    On the legacy path (a container that predates dvw-probe) the fields are
-    filled ON DEMAND, one tmux exec each, and memoized. A caller that only
-    wants `attached` must not pay for the window snapshot, because the bulk
-    status endpoint spends those execs inside a 0.25 s best-effort budget.
-    The windows exec carries session_attached, so fetching windows also
-    fills attached, but never the other way round.
+    One exec answers every field, so the values are stored eagerly. A
+    container whose probe is missing or broken gets the empty snapshot with
+    `probe` recording which; nothing is fetched on demand any more.
     """
 
-    __slots__ = ("report", "probe", "_legacy", "_activity", "_attached", "_windows")
+    __slots__ = ("report", "probe", "activity", "attached", "windows")
 
     def __init__(
         self,
-        activity: int | None = -1,
-        attached: int | None = 0,
+        activity: int = -1,
+        attached: int = 0,
         windows: list[WindowInfo] | None = None,
         report: ProbeReport | None = None,
         probe: str = "failed",
-        legacy: tuple[DockerInspector, Container] | None = None,
     ):
-        # legacy is None => eager: every field below is already final.
-        # legacy is set  => None means "not fetched yet".
-        self._legacy = legacy
-        self._activity = activity
-        self._attached = attached
-        self._windows = windows if windows is not None else ([] if legacy is None else None)
+        self.activity = activity
+        self.attached = attached
+        self.windows = windows if windows is not None else []
         self.report = report
         self.probe = probe
 
-    @property
-    def activity(self) -> int:
-        if self._activity is None:
-            insp, c = self._legacy
-            self._activity = insp._legacy_tmux_activity(c)
-        return self._activity
-
-    @property
-    def attached(self) -> int:
-        if self._attached is None:
-            insp, c = self._legacy
-            # Only reached when the windows exec has not run: that exec
-            # already carries session_attached and fills this in.
-            self._attached = insp._legacy_tmux_attached(c)
-        return self._attached
-
-    @property
-    def windows(self) -> list[WindowInfo]:
-        if self._windows is None:
-            insp, c = self._legacy
-            attached, windows = insp._legacy_tmux_windows(c)
-            self._windows = windows
-            if self._attached is None:
-                self._attached = attached
-        return self._windows
-
     def known_attached(self) -> int | None:
-        """The attached count if it is already known, else None.
+        """The attached count; always known now that every snapshot is eager.
 
-        Lets status_many reuse a snapshot without triggering an exec on the
-        request thread, outside the bounded fan-out.
+        Kept so status_many can reuse a snapshot without a second exec.
         """
-        return self._attached
+        return self.attached
 
 
 class DockerInspector:
@@ -210,78 +173,17 @@ class DockerInspector:
                 out.append(c)
         return out
 
-    def _legacy_tmux_activity(self, c: Container) -> int:
-        """Epoch activity of the tmux `work` session, or -1 if none/unreadable.
-
-        Mirrors dvw's resolver: `tmux list-sessions -F '#{session_name}
-        #{session_activity}'`, take the `work` row, else -1.
-        """
-        if c.status != "running":
-            return -1
-        try:
-            res = c.exec_run(
-                ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
-                demux=True,
-            )
-        except Exception:
-            return -1
-        if res.exit_code != 0:
-            return -1
-        stdout = res.output[0] if isinstance(res.output, tuple) else res.output
-        if not stdout:
-            return -1
-        for line in stdout.decode("utf-8", "replace").splitlines():
-            parts = line.split()
-            if len(parts) == 2 and parts[0] == "work":
-                try:
-                    return int(parts[1])
-                except ValueError:
-                    return -1
-        return -1
-
-    def _legacy_tmux_attached(self, c: Container) -> int:
-        """Clients attached to the tmux `work` session; 0 if none/unreadable.
-
-        Same probe shape as _legacy_tmux_activity but a different consumer:
-        activity serves resolve()'s tie-break, this serves status_many's
-        attached indicator. Kept separate so resolver and status semantics
-        stay uncoupled.
-        """
-        if c.status != "running":
-            return 0
-        try:
-            res = c.exec_run(
-                ["tmux", "list-sessions", "-F",
-                 "#{session_name} #{session_attached}"],
-                demux=True,
-            )
-        except Exception:
-            return 0
-        if res.exit_code != 0:
-            return 0
-        stdout = res.output[0] if isinstance(res.output, tuple) else res.output
-        if not stdout:
-            return 0
-        for line in stdout.decode("utf-8", "replace").splitlines():
-            parts = line.split()
-            if len(parts) == 2 and parts[0] == "work":
-                try:
-                    return max(0, int(parts[1]))
-                except ValueError:
-                    return 0
-        return 0
-
     # ---- the one exec per container per request ---------------------------
 
     def _snapshot(self, c: Container, memo: dict[str, Snapshot] | None = None) -> Snapshot:
-        """Probe first; tmux execs only when the probe is not installed.
+        """One `dvw-probe` exec per container per request.
 
         `memo` is per request: resolve/status_many/windows_many/inspect pass
         one dict down so a container is exec'd once per call, whatever asks.
-        A probe that exists but broke (any exit other than 0/126/127, or
-        unusable output) is reported as "failed" and is NOT retried over
-        tmux: the fallback exists for containers predating dvw-probe, not as
-        a second chance for a broken one.
+        A container without the probe (exit 126/127) reports "missing" and a
+        probe that exists but broke (any other non-zero exit, or unusable
+        output) reports "failed"; both get the empty snapshot. There is no
+        tmux fallback: every workspace ships the probe via aicoding boot sync.
         """
         if memo is not None and c.id in memo:
             return memo[c.id]
@@ -291,16 +193,7 @@ class DockerInspector:
             try:
                 report = run_probe(c)
             except ProbeMissing:
-                # Lazy: each field costs its own tmux exec, charged only to
-                # the caller that actually reads it. See Snapshot.
-                snap = Snapshot(
-                    activity=None,
-                    attached=None,
-                    windows=None,
-                    report=None,
-                    probe="missing",
-                    legacy=(self, c),
-                )
+                snap = Snapshot(probe="missing")
             else:
                 if report is None:
                     snap = Snapshot(probe="failed")
@@ -330,10 +223,7 @@ class DockerInspector:
         self, c: Container, memo: dict[str, Snapshot] | None = None
     ) -> tuple[int, list[WindowInfo]]:
         s = self._snapshot(c, memo)
-        # windows first: it carries session_attached, so reading it first
-        # keeps the legacy path at one exec instead of two.
-        windows = s.windows
-        return s.attached, windows
+        return s.attached, s.windows
 
     def _uid(self, c: Container) -> str | None:
         return c.labels.get(self._settings.devpod_id_label)
@@ -736,11 +626,10 @@ class DockerInspector:
         selected_running = {
             c.id: c for c in selected.values() if c.status == "running"
         }
-        # The sibling tie-break above already snapshotted its candidates. A
-        # count it already knows (the probe path) is reused as is; one it
-        # would have to exec for (the legacy path) stays in the bounded
-        # fan-out below, which also carries the snapshot so the container is
-        # not probed twice.
+        # The sibling tie-break above already snapshotted its candidates; a
+        # count it knows is reused as is. Containers it did not touch go
+        # through the bounded fan-out below, which also carries the snapshot
+        # so the container is not probed twice.
         attached: dict[str, int] = {}
         pending: list[Container] = []
         for cid, c in selected_running.items():
@@ -824,55 +713,6 @@ class DockerInspector:
         return out
 
     # ---- window snapshot (tree view) ---------------------------------------
-
-    def _legacy_tmux_windows(self, c: Container) -> tuple[int, list[WindowInfo]]:
-        """One exec: every window of `work` + the session's attached count.
-        (0, []) on any failure — a broken tmux must not 500 an endpoint."""
-        if c.status != "running":
-            return 0, []
-        try:
-            res = c.exec_run(
-                ["tmux", "list-windows", "-t", "work", "-F",
-                 "#{window_id}\t#{window_name}\t#{window_active}"
-                 "\t#{window_activity}\t#{@waiting}\t#{pane_current_command}"
-                 "\t#{session_attached}"],
-                demux=True,
-            )
-        except Exception:
-            return 0, []
-        if res.exit_code != 0:
-            return 0, []
-        stdout = res.output[0] if isinstance(res.output, tuple) else res.output
-        if not stdout:
-            return 0, []
-        attached = 0
-        windows: list[WindowInfo] = []
-        for line in stdout.decode("utf-8", "replace").splitlines():
-            parts = line.split("\t")
-            if len(parts) != 7 or not parts[0].startswith("@"):
-                continue
-            win_id, name, active, activity, waiting, command, sess_att = parts
-            try:
-                attached = max(attached, max(0, int(sess_att)))
-            except ValueError:
-                pass
-
-            def _int(v: str, default: int) -> int:
-                try:
-                    return int(v)
-                except ValueError:
-                    return default
-
-            waiting_since = _int(waiting, -1) if waiting else -1
-            windows.append(WindowInfo(
-                window_id=win_id,
-                name=name,
-                active=active == "1",
-                activity=_int(activity, -1),
-                waiting_since=waiting_since if waiting_since >= 0 else None,
-                command=command,
-            ))
-        return attached, windows
 
     def windows_many(self) -> list[WorkspaceWindows]:
         """Window snapshots from the same canonical containers attach uses.

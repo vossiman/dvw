@@ -27,8 +27,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$PWD"
 POINTER="${DVW_E2E_POINTER:-/tmp/dvw-e2e-last}"
-PROBE_SRC="${DVW_PROBE_SRC:-/workspaces/devmachine/devpod/aicoding/.claude/worktrees/feat/dvw-probe/bin/dvw-probe}"
-[ -f "$PROBE_SRC" ] || PROBE_SRC=/workspaces/devmachine/devpod/aicoding/bin/dvw-probe
+PROBE_SRC="${DVW_PROBE_SRC:-/workspaces/devmachine/devpod/aicoding/bin/dvw-probe}"
 
 log() { printf '==> %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }

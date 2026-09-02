@@ -42,38 +42,71 @@ class FakeContainer:
     def reload(self):
         return None
 
+    def _synth_report(self):
+        """Build a probe report from the legacy tmux_* kwargs.
+
+        The tmux fallback is gone from the catalog, so the fixtures that used
+        to answer three tmux execs now answer the one dvw-probe exec with the
+        same facts. tmux_work=None with nothing else means "no work session".
+        The windows string keeps the old tab format so the parsing tests keep
+        their inputs; garbage lines are dropped here the way tmux output was.
+        """
+        if self._tmux_work is None and self._tmux_attached is None and self._tmux_windows is None:
+            return None
+        attached = self._tmux_attached
+        windows = []
+        if self._tmux_windows is not None:
+            for line in self._tmux_windows.splitlines():
+                parts = line.split("\t")
+                if len(parts) != 7 or not parts[0].startswith("@"):
+                    continue
+                win_id, name, active, activity, waiting, command, sess_att = parts
+                try:
+                    attached = max(attached or 0, max(0, int(sess_att)))
+                except ValueError:
+                    pass
+
+                def _int(v, default):
+                    try:
+                        return int(v)
+                    except ValueError:
+                        return default
+
+                waiting_since = _int(waiting, -1) if waiting else -1
+                windows.append({"id": win_id, "name": name, "active": active == "1",
+                                "activity": _int(activity, -1),
+                                "waiting_since": waiting_since if waiting_since >= 0 else None,
+                                "command": command})
+        sessions = []
+        if self._tmux_work is not None or attached is not None or windows:
+            sessions.append({"name": "work",
+                             "attached": attached or 0,
+                             "activity": self._tmux_work if self._tmux_work is not None else -1})
+        return {"schema": 1, "ts": 1, "partial": False,
+                "tmux": {"sessions": sessions, "windows": windows},
+                "agents": None, "git": None, "cgroup": None}
+
     def exec_run(self, cmd, demux=False):
         self.exec_calls.append(list(cmd))
-        # `dvw-probe`: the single-exec snapshot. Default (probe=None,
-        # probe_exit=None) is "not installed": exit 127, so every legacy test
-        # keeps exercising the tmux fallback unchanged.
+        # `dvw-probe`: the single exec the catalog makes. probe= gives the
+        # report verbatim; probe_exit= a broken probe; otherwise the legacy
+        # tmux_* kwargs are turned into a report, and a fixture with none of
+        # them is a container without the probe (exit 127).
         if cmd == ["dvw-probe"]:
             if self._probe_exit is not None:
                 return FakeExecResult(self._probe_exit, b"")
-            if self._probe is None:
-                return FakeExecResult(127, b"exec: dvw-probe: not found")
             import json as _json
-            return FakeExecResult(0, _json.dumps(self._probe).encode())
+            report = self._probe if self._probe is not None else self._synth_report()
+            if report is None:
+                return FakeExecResult(127, b"exec: dvw-probe: not found")
+            return FakeExecResult(0, _json.dumps(report).encode())
         # `stat -c %U:%G /workspaces` — owner probe used to tell a provisioned
         # container from one abandoned before setup-user ran.
         if cmd and cmd[0] == "stat":
             if self._owner is None:
                 return FakeExecResult(1, None)
             return FakeExecResult(0, f"{self._owner}\n".encode())
-        # windows_many's single-exec snapshot: discriminated by
-        # "pane_current_command" in the format string so it stays distinct
-        # from the waiting-probe format below (rewired in Task 2).
-        if cmd and "pane_current_command" in (cmd[-1] if cmd else ""):
-            if self._tmux_windows is None:
-                return FakeExecResult(1, None)
-            return FakeExecResult(0, self._tmux_windows.encode())
-        if cmd and "session_attached" in cmd[-1]:
-            if self._tmux_attached is None:
-                return FakeExecResult(1, None)
-            return FakeExecResult(0, f"work {self._tmux_attached}\nother 0\n".encode())
-        if self._tmux_work is None:
-            return FakeExecResult(1, None)
-        return FakeExecResult(0, f"work {self._tmux_work}\nother 123\n".encode())
+        return FakeExecResult(1, None)
 
 
 class FakeContainers:
@@ -505,7 +538,7 @@ def test_repeated_slow_status_requests_do_not_queue_more_probes(monkeypatch):
         original = c.exec_run
 
         def delayed(cmd, demux=False, *, container=c, run=original):
-            if cmd and "session_attached" in cmd[-1]:
+            if cmd == ["dvw-probe"]:
                 calls.append(container.id)
                 time.sleep(0.4)
             return run(cmd, demux=demux)

@@ -119,23 +119,18 @@ def test_windows_many_single_candidate_costs_one_exec_per_container(monkeypatch)
     assert calls == [["dvw-probe"]] * 3
 
 
-def test_windows_many_fallback_never_snapshots_a_container_twice(monkeypatch):
-    # Same invariant on the legacy path: a container without dvw-probe pays
-    # the fallback execs once, not once per caller within the request.
+def test_windows_many_probe_missing_never_snapshots_a_container_twice(monkeypatch):
+    # Same invariant for a container without dvw-probe: the one failed probe
+    # attempt is memoized for the request, no second exec of any kind.
     containers = [
-        FakeContainer(f"c{i}", f"n{i}", f"u{i}", f"/workspaces/ws-{i}",
-                      tmux_windows=f"@{i}\tw\t1\t100\t\tbash\t1\n")
+        FakeContainer(f"c{i}", f"n{i}", f"u{i}", f"/workspaces/ws-{i}")
         for i in range(3)
     ]
     insp = _inspector(containers, monkeypatch)
 
     assert len(insp.windows_many()) == 3
     for c in containers:
-        # One probe attempt, then the ONE tmux exec the window snapshot
-        # needs. The activity and attached execs belong to callers that read
-        # those fields; windows_many reads neither.
-        assert [cmd[0] for cmd in c.exec_calls] == ["dvw-probe", "tmux"]
-        assert c.exec_calls[1][1] == "list-windows"
+        assert c.exec_calls == [["dvw-probe"]]
 
 
 def test_windows_many_omits_ambiguous_siblings_without_tmux(monkeypatch):
