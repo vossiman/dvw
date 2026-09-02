@@ -5,6 +5,9 @@
 #
 #   /opt/dvw/catalog-service/deploy/host-update.sh
 set -euo pipefail
+# On a 401 git would otherwise stop at a "Username for" prompt, and the
+# retry below never runs. Fail fast instead; the pull is anonymous anyway.
+export GIT_TERMINAL_PROMPT=0
 
 CHECKOUT="${CHECKOUT:-/opt/dvw}"
 SVC_DIR="$CHECKOUT/catalog-service"

@@ -24,3 +24,10 @@ setup() {
   grep -qE 'systemctl restart dvw-catalog\.service' \
     "$DVW_ROOT/catalog-service/deploy/host-update.sh"
 }
+
+@test "deploy scripts never block on a git credential prompt" {
+  # A GitHub 401 makes git ask for a username unless prompting is off; with
+  # the prompt, the git_retry loop never gets its second attempt.
+  grep -qE '^export GIT_TERMINAL_PROMPT=0' "$INSTALL"
+  grep -qE '^export GIT_TERMINAL_PROMPT=0' "$DVW_ROOT/catalog-service/deploy/host-update.sh"
+}

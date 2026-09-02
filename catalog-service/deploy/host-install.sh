@@ -25,6 +25,9 @@
 #   BRANCH     default main
 #   CHECKOUT   default /opt/dvw
 set -euo pipefail
+# On a 401 git would otherwise stop at a "Username for" prompt, and the
+# retry never runs. Fail fast instead; the clone is anonymous anyway.
+export GIT_TERMINAL_PROMPT=0
 
 REPO_URL="${REPO_URL:-https://github.com/vossiman/dvw.git}"
 BRANCH="${BRANCH:-main}"
