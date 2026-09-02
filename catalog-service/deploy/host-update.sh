@@ -35,8 +35,15 @@ for u in dvw-catalog.service dvw-catalog-backup.service dvw-catalog-backup.timer
          dvw-docker-proxy.socket dvw-docker-proxy.service; do
   rendered="$(mktemp)"
   render_unit "$u" > "$rendered"
-  if ! sudo cmp -s "$rendered" "/etc/systemd/system/$u"; then
-    sudo install -m 0644 "$rendered" "/etc/systemd/system/$u"
+  # Units are 0644, so the comparison needs no sudo; only installing a
+  # changed one does, and that is outside the passwordless drop-in.
+  if ! cmp -s "$rendered" "/etc/systemd/system/$u"; then
+    if ! sudo -n install -m 0644 "$rendered" "/etc/systemd/system/$u"; then
+      echo "ERROR: $u changed and installing it needs a password." >&2
+      echo "       Re-run from a terminal (ssh -t), or run host-install.sh." >&2
+      rm -f "$rendered"
+      exit 1
+    fi
     changed=1
     case "$u" in
       dvw-docker-proxy.*) proxy_changed=1 ;;

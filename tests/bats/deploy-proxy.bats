@@ -339,3 +339,44 @@ EOF2
   [ -n "$pull" ]
   [ "$cfg" -lt "$pull" ]
 }
+
+# DVW-9: step 1 pulls the checkout the running script lives in, and bash keeps
+# executing the already-read old bytes. When the pull changed the installer
+# itself, re-exec the fresh copy once (guarded against loops).
+@test "installer re-execs itself once when the pull changed host-install.sh" {
+  cat > "$HOME/stubs/git" <<'EOF2'
+#!/bin/sh
+echo "git $*" >> "$HOME/calls"
+case "$*" in
+  *"rev-parse HEAD"*)
+    if [ -e "$HOME/pulled" ]; then echo bbbbbbb; else echo aaaaaaa; fi ;;
+  *"pull --ff-only"*) touch "$HOME/pulled" ;;
+  *"diff --quiet"*) exit 1 ;;
+esac
+exit 0
+EOF2
+  chmod +x "$HOME/stubs/git"
+  # The re-exec targets the checkout's own copy, as on the host.
+  cp "$SCRIPT" "$SVC_DIR/deploy/host-install.sh"
+  run_install
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'installer changed by the pull; re-running the new copy'
+  [ "$(echo "$output" | grep -c '==> 1/8 checkout')" -eq 2 ]
+}
+
+@test "installer does not re-exec when the pull left host-install.sh untouched" {
+  run_install
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | grep -c '==> 1/8 checkout')" -eq 1 ]
+}
+
+# DVW-12: the unit refresh compared with `sudo cmp`, which is outside the
+# sudoers drop-in, so every host-update.sh run needed a password even when no
+# unit changed. Units are 0644: compare without sudo, and only the rare
+# install of a changed unit escalates, non-interactively, with a clear message.
+@test "host-update.sh compares units without sudo and installs them with sudo -n" {
+  script="$DVW_ROOT/catalog-service/deploy/host-update.sh"
+  ! grep -q 'sudo cmp' "$script"
+  grep -q '^  if ! cmp -s "\$rendered" "/etc/systemd/system/\$u"; then' "$script"
+  grep -q 'sudo -n install -m 0644 "\$rendered" "/etc/systemd/system/\$u"' "$script"
+}
