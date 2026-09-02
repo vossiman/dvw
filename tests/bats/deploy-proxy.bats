@@ -316,3 +316,26 @@ EOF2
   echo "$output" | grep -q 'not in the docker group' && { echo "unexpected warning" >&2; return 1; }
   true
 }
+
+# vossisrv pulls anonymously (dvw is public, no credential on the host), and
+# GitHub answers 401 to an unauthenticated protocol v2 upload-pack POST
+# (2026-09-02). Both deploy scripts pin protocol.version=1 on the checkout
+# before they fetch, so the pull never depends on the operator's git config.
+@test "installer pins protocol.version=1 on the checkout before fetching" {
+  run_install
+  [ "$status" -eq 0 ]
+  cfg=$(grep -n "git -C $CHECKOUT config protocol.version 1" "$CALLS" | head -1 | cut -d: -f1)
+  fetch=$(grep -n "git -C $CHECKOUT fetch origin main" "$CALLS" | head -1 | cut -d: -f1)
+  [ -n "$cfg" ]
+  [ -n "$fetch" ]
+  [ "$cfg" -lt "$fetch" ]
+}
+
+@test "host-update.sh pins protocol.version=1 before its pull" {
+  script="$DVW_ROOT/catalog-service/deploy/host-update.sh"
+  cfg=$(grep -n 'git -C "\$CHECKOUT" config protocol.version 1' "$script" | head -1 | cut -d: -f1)
+  pull=$(grep -n 'git -C "\$CHECKOUT" pull --ff-only' "$script" | head -1 | cut -d: -f1)
+  [ -n "$cfg" ]
+  [ -n "$pull" ]
+  [ "$cfg" -lt "$pull" ]
+}

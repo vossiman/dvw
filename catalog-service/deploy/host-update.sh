@@ -11,6 +11,8 @@ SVC_DIR="$CHECKOUT/catalog-service"
 SOCK="/run/dvw-catalog/catalog.sock"
 
 echo "==> git pull"
+# Anonymous pull; GitHub rejects unauthenticated protocol v2 (see host-install.sh).
+git -C "$CHECKOUT" config protocol.version 1
 git -C "$CHECKOUT" pull --ff-only
 
 echo "==> uv sync --frozen"

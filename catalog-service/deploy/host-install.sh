@@ -61,10 +61,15 @@ if ! id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then
 fi
 
 echo "==> 1/8 checkout ($BRANCH -> $CHECKOUT)"
+# The host pulls anonymously (public repo, no credential kept on it), and
+# GitHub answers 401 to an unauthenticated protocol v2 upload-pack POST
+# while v1 works (seen 2026-09-02). Pin it on the checkout, not globally.
 if [ ! -d "$CHECKOUT/.git" ]; then
   sudo install -d -o "$USER" -g "$USER" "$(dirname "$CHECKOUT")"
-  git clone --branch "$BRANCH" "$REPO_URL" "$CHECKOUT"
+  git -c protocol.version=1 clone --branch "$BRANCH" "$REPO_URL" "$CHECKOUT"
+  git -C "$CHECKOUT" config protocol.version 1
 else
+  git -C "$CHECKOUT" config protocol.version 1
   git -C "$CHECKOUT" fetch origin "$BRANCH"
   git -C "$CHECKOUT" checkout "$BRANCH"
   git -C "$CHECKOUT" pull --ff-only
