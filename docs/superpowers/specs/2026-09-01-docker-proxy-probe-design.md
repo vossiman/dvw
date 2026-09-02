@@ -375,7 +375,9 @@ The script is also runnable as `tests/bats/e2e-dind.bats` behind
    `sudo gpasswd -a "$USER" docker`; the installer now warns when the
    login user is outside the group.
 3. Follow-up PR after all workspaces have synced: remove the tmux
-   transitional allowlist entry and the catalog fallback.
+   transitional allowlist entry and the catalog fallback. Done 2026-09-02
+   (DVW-8): exec create accepts only `["dvw-probe"]`, and a container
+   without the probe reports `probe: "missing"` with an empty snapshot.
 4. Tickets: DVW-6 done; DVW-4 done (systemd owns liveness); DVW-1 done
    (superseded). devMachine submodule bumps as usual.
 

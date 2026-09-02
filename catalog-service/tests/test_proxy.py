@@ -359,24 +359,6 @@ def test_exec_probe_is_forwarded_normalized_and_id_registered(stack):
     assert stack.registry.check("e1")
 
 
-def test_exec_transitional_tmux_forms_allowed(stack):
-    """Only the three argv lists the catalog sends today, byte for byte."""
-    stack.set_handler(lambda m, p, h, b, c: http("201 Created", b'{"Id":"e2"}'))
-    for cmd in px._TMUX_ALLOWED:
-        resp = exec_create(stack, {**DOCKER_PY_EXEC, "Cmd": list(cmd)})
-        assert status_of(resp) == 201, cmd
-
-
-def test_tmux_allowlist_matches_what_the_catalog_sends():
-    assert px._TMUX_ALLOWED == (
-        ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
-        ["tmux", "list-sessions", "-F", "#{session_name} #{session_attached}"],
-        ["tmux", "list-windows", "-t", "work", "-F",
-         "#{window_id}\t#{window_name}\t#{window_active}\t#{window_activity}"
-         "\t#{@waiting}\t#{pane_current_command}\t#{session_attached}"],
-    )
-
-
 @pytest.mark.parametrize("patch", [
     {"Cmd": ["sh"]},
     {"Cmd": ["sh", "-c", "dvw-probe"]},
@@ -386,16 +368,13 @@ def test_tmux_allowlist_matches_what_the_catalog_sends():
     {"Cmd": []},
     {"Cmd": ["tmux", "kill-server"]},
     {"Cmd": ["tmux"]},
-    # tmux argv is a command language: ";" separates commands and "#(...)" in a
-    # format string runs a shell job, so a prefix check would be a shell.
-    {"Cmd": ["tmux", "list-sessions", ";", "kill-server"]},
-    {"Cmd": ["tmux", "list-sessions", "-F", "#(id)"]},
-    {"Cmd": ["tmux", "list-sessions", "-F", "#(id > /tmp/pwned)"]},
-    {"Cmd": ["tmux", "list-sessions"]},
-    {"Cmd": ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}",
-             ";", "new-session", "-d"]},
-    {"Cmd": ["tmux", "list-sessions", "-F", "#{session_name} #{session_activityy}"]},
-    {"Cmd": ["tmux", "list-windows", "-t", "work", "-F", "x"]},
+    # The transitional tmux allowlist is gone (DVW-8): the exact argv the
+    # catalog used to send is denied like any other command.
+    {"Cmd": ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"]},
+    {"Cmd": ["tmux", "list-sessions", "-F", "#{session_name} #{session_attached}"]},
+    {"Cmd": ["tmux", "list-windows", "-t", "work", "-F",
+             "#{window_id}\t#{window_name}\t#{window_active}\t#{window_activity}"
+             "\t#{@waiting}\t#{pane_current_command}\t#{session_attached}"]},
     {"Privileged": True},
     {"Tty": True},
     {"AttachStdin": True},
