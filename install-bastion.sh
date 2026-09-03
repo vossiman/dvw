@@ -65,11 +65,16 @@ fi
 # flag is in the dvw config; `DVW_PUSH_WATCH=0` there turns it back off.
 # shellcheck source=lib/config.sh
 . "$HERE/lib/config.sh"
-if (( ! CHECK_ONLY )) && [[ "${DVW_BASTION_NO_WATCH:-}" != "1" ]]; then
+watch_re='^[[:space:]]*DVW_PUSH_WATCH[[:space:]]*='
+if grep -qsE "${watch_re}[[:space:]]*\"?1\"?[[:space:]]*(#.*)?$" "$DVW_CONFIG"; then
+  ok "push watcher enabled in $DVW_CONFIG"
+elif grep -qsE "$watch_re" "$DVW_CONFIG"; then
+  # An explicit other value is the user's decision; re-running the installer
+  # must not flip it back.
+  ok "push watcher disabled by hand in $DVW_CONFIG (left alone)"
+elif (( ! CHECK_ONLY )) && [[ "${DVW_BASTION_NO_WATCH:-}" != "1" ]]; then
   dvw_config_set DVW_PUSH_WATCH 1
   ok "push watcher enabled (DVW_PUSH_WATCH=1 in $DVW_CONFIG)"
-elif grep -qsE '^[[:space:]]*DVW_PUSH_WATCH[[:space:]]*=[[:space:]]*1' "$DVW_CONFIG"; then
-  ok "push watcher enabled in $DVW_CONFIG"
 else
   bad "push watcher not enabled (re-run without --check, or set DVW_PUSH_WATCH=1 in $DVW_CONFIG)"
 fi

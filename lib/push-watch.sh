@@ -26,6 +26,10 @@ _dvw_push_watch_log() { echo "$(_dvw_push_watch_dir)/push-watch.log"; }
 # exiting. Seconds; overridable for tests.
 : "${DVW_PUSH_WATCH_INTERVAL:=1}"
 : "${DVW_PUSH_WATCH_IDLE_EXIT:=120}"
+# Minimum age (seconds since last write) before an upload counts as settled.
+# Size-stable across two polls alone would deliver an SFTP stream that merely
+# stalled for one interval, truncated, and never resend it.
+: "${DVW_PUSH_WATCH_SETTLE:=2}"
 # Extension allowlist (spec): the watcher delivers without asking, so it only
 # touches the kinds of files a phone paste produces. Lowercased, space
 # separated. `dvw push <file>` remains the route for anything else.
@@ -33,13 +37,38 @@ _dvw_push_watch_log() { echo "$(_dvw_push_watch_dir)/push-watch.log"; }
 
 _dvw_push_watch_enabled() { [[ "${DVW_PUSH_WATCH:-0}" == "1" ]]; }
 
+# Running pid from the pidfile, empty if absent, dead, or reused. The pidfile
+# survives a reboot, so a bare kill -0 could bless an unrelated process that
+# inherited the number (and `watch stop` would then kill it): the second line
+# of the pidfile records the /proc identity (start time + uid, connect.sh's
+# _dvw_proc_identity) and must still match.
 _dvw_push_watch_live_pid() {
-  local pidfile pid
+  local pidfile pid recorded current
   pidfile=$(_dvw_push_watch_pidfile)
   [[ -f "$pidfile" ]] || return 0
-  pid=$(cat "$pidfile" 2>/dev/null)
-  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && echo "$pid"
+  { read -r pid; read -r recorded; } < "$pidfile" 2>/dev/null || true
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  kill -0 "$pid" 2>/dev/null || return 0
+  if [[ -n "${recorded:-}" ]] && type _dvw_proc_identity >/dev/null 2>&1; then
+    current=$(_dvw_proc_identity "$pid")
+    [[ -z "$current" || "$current" == "$recorded" ]] || return 0
+  fi
+  echo "$pid"
   return 0
+}
+
+# Upload in progress? True when the file was written to within the settle
+# window or, where fuser exists, some process (sftp-server runs as this user)
+# still has it open.
+_dvw_push_watch_busy() {
+  local f="$1" now mtime
+  now=$(date +%s) || return 0
+  mtime=$(stat -c %Y -- "$f" 2>/dev/null) || return 0
+  (( now - mtime < DVW_PUSH_WATCH_SETTLE )) && return 0
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -s -- "$f" 2>/dev/null && return 0
+  fi
+  return 1
 }
 
 _dvw_push_watch_logline() {
@@ -83,6 +112,7 @@ _dvw_push_watch_deliver() {
     _dvw_push_watch_logline "ok   $base -> $ws"
     # Confirmation inside the session, best effort: a tmux server in the
     # container shows the landed path briefly. Absent tmux, nothing to show.
+    [[ "$(_dvw_ws_container_state "$ws")" == yes ]] || continue
     ssh -o BatchMode=yes -o ConnectTimeout=5 "${ws}.devpod" \
       tmux display-message -d 3000 "dvw: /tmp/$base ready" >/dev/null 2>&1 || true
   done < <(_dvw_push_live_sessions)
@@ -110,6 +140,7 @@ _dvw_push_watch_tick() {
       DVW_PW_SIZE[$f]=$bytes
       continue
     fi
+    _dvw_push_watch_busy "$f" && continue
     DVW_PW_DONE[$f]=1
     _dvw_push_watch_deliver "$f" || true
   done < <(_dvw_push_list_fresh)
@@ -153,7 +184,8 @@ _dvw_push_watch_ensure() {
   mkdir -p "$dir"
   chmod 700 "$dir"
   ( setsid "$DVW_ROOT/dvw" watch run >> "$(_dvw_push_watch_log)" 2>&1 \
-      & echo $! > "$(_dvw_push_watch_pidfile)" ) </dev/null
+      & { echo $!; type _dvw_proc_identity >/dev/null 2>&1 && _dvw_proc_identity $!; } \
+      > "$(_dvw_push_watch_pidfile)" ) </dev/null
   sleep 0.2
   pid=$(_dvw_push_watch_live_pid)
   if [[ -z "$pid" ]]; then

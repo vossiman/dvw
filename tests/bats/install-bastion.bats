@@ -44,6 +44,14 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   [ ! -f "$HOME/.config/dvw/config" ]
 }
 
+@test "a hand-set DVW_PUSH_WATCH=0 survives re-running the installer" {
+  printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/devpod"; chmod +x "$HOME/.local/bin/devpod"
+  mkdir -p "$HOME/.config/dvw"; printf 'DVW_PUSH_WATCH=0\n' > "$HOME/.config/dvw/config"
+  run bash "$SCRIPT"
+  grep -qx 'DVW_PUSH_WATCH=0' "$HOME/.config/dvw/config"
+  echo "$output" | grep -q 'disabled by hand'
+}
+
 @test "check mode reports the watcher flag without writing it" {
   printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/devpod"; chmod +x "$HOME/.local/bin/devpod"
   run bash "$SCRIPT" --check

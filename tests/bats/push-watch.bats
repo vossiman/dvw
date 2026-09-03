@@ -32,12 +32,13 @@ exit 0
 EOF
   chmod +x "$STUB_BIN/scp" "$STUB_BIN/ssh"
   export DVW_PUSH_WATCH_INTERVAL=1
+  export DVW_PUSH_WATCH_SETTLE=0
   export DVW_ROOT
 }
 
 teardown() {
   if [[ -f "$HOME/.dvw/push-watch.pid" ]]; then
-    kill "$(cat "$HOME/.dvw/push-watch.pid")" 2>/dev/null || true
+    kill "$(head -n1 "$HOME/.dvw/push-watch.pid")" 2>/dev/null || true
   fi
   rm -rf "$TMPDIR"
 }
@@ -83,6 +84,27 @@ _scp_count() { grep -c '\.devpod:/tmp/$' "$SCP_ARGS" || true; }
   [ "$(_scp_count)" -eq 0 ]
   _dvw_push_watch_tick
   [ "$(_scp_count)" -eq 1 ]
+}
+
+@test "a file written within the settle window is held back" {
+  _load
+  export DVW_PUSH_WATCH_SETTLE=60
+  printf 'data' > "$TMPDIR/$UUID_A.png"
+  _dvw_push_watch_tick; _dvw_push_watch_tick; _dvw_push_watch_tick
+  [ "$(_scp_count)" -eq 0 ]
+  touch -d '-120 seconds' "$TMPDIR/$UUID_A.png"
+  _dvw_push_watch_tick
+  [ "$(_scp_count)" -eq 1 ]
+}
+
+@test "live_pid: a reused pid with a different /proc identity is not ours" {
+  _load
+  mkdir -p "$HOME/.dvw"
+  printf '%s\nbogus-identity\n' "$$" > "$HOME/.dvw/push-watch.pid"
+  [ -z "$(_dvw_push_watch_live_pid)" ]
+  printf '%s\n%s\n' "$$" "$(_dvw_proc_identity $$)" > "$HOME/.dvw/push-watch.pid"
+  [ "$(_dvw_push_watch_live_pid)" = "$$" ]
+  rm -f "$HOME/.dvw/push-watch.pid"
 }
 
 @test "delivery fans out to every live session workspace" {
@@ -170,11 +192,11 @@ EOF
   chmod +x "$STUB_BIN/dvw"
   DVW_ROOT="$STUB_BIN"
   run -0 _dvw_push_watch_ensure
-  pid=$(cat "$HOME/.dvw/push-watch.pid")
+  pid=$(head -n1 "$HOME/.dvw/push-watch.pid")
   kill -0 "$pid"
   [ "$(cat "$HOME/dvw-args" | tr '\n' ' ')" = "watch run " ]
   run -0 _dvw_push_watch_ensure
-  [ "$(cat "$HOME/.dvw/push-watch.pid")" = "$pid" ]
+  [ "$(head -n1 "$HOME/.dvw/push-watch.pid")" = "$pid" ]
   run -0 cmd_watch status
   [[ "$output" == *"running (pid $pid"* ]]
   run -0 cmd_watch stop
