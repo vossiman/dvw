@@ -59,12 +59,13 @@ _dvw_push_fresh_roots() {
   return 0
 }
 
-# Newest fresh Termius-style upload across _dvw_push_fresh_roots. Termius
-# mobile names SFTP paste-uploads as bare UUIDv4 + original extension
-# (observed 2026-08-18; undocumented upstream — recognizer only, never
-# load-bearing: if it changes, `dvw push <file>` still works). Prints the
-# path; rc 1 (silent) when none.
-_dvw_push_pick_fresh() {
+# Fresh Termius-style uploads across _dvw_push_fresh_roots, newest first,
+# one path per line, size-capped. Termius mobile names SFTP paste-uploads as
+# bare UUIDv4 + original extension (observed 2026-08-18; undocumented
+# upstream — recognizer only, never load-bearing: if it changes, `dvw push
+# <file>` still works). Always rc 0; empty when none. Shared by the picker
+# below and the bastion watcher (lib/push-watch.sh).
+_dvw_push_list_fresh() {
   local fresh="${DVW_PUSH_FRESH_MINUTES:-10}" line f
   local -a roots
   mapfile -t roots < <(_dvw_push_fresh_roots)
@@ -72,12 +73,19 @@ _dvw_push_pick_fresh() {
     f="${line#* }"
     _dvw_push_check_size "$f" || continue
     printf '%s\n' "$f"
-    return 0
   done < <(find "${roots[@]}" -maxdepth 1 -type f -user "$(id -un)" \
       -mmin -"$fresh" -regextype posix-extended \
       -regex '.*/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\.[A-Za-z0-9]+' \
       -printf '%T@ %p\n' 2>/dev/null | sort -rn)
-  return 1
+  return 0
+}
+
+# Newest fresh upload. Prints the path; rc 1 (silent) when none.
+_dvw_push_pick_fresh() {
+  local f
+  f=$(_dvw_push_list_fresh | head -n1)
+  [[ -n "$f" ]] || return 1
+  printf '%s\n' "$f"
 }
 
 # Gate: refuse unless the catalog reports a RUNNING container for $1. Every

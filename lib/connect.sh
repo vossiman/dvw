@@ -217,6 +217,10 @@ _dvw_ssh_session() {
   if type _dvw_clipd_ensure_quiet >/dev/null 2>&1; then
     _dvw_clipd_ensure_quiet
   fi
+  # Bastion push watcher (lib/push-watch.sh): no-op unless DVW_PUSH_WATCH=1.
+  if type _dvw_push_watch_ensure_quiet >/dev/null 2>&1; then
+    _dvw_push_watch_ensure_quiet
+  fi
   local max_total="${DVW_SSH_RECONNECT_TOTAL_MAX:-50}"
   local connect_timeout="${DVW_SSH_RECONNECT_CONNECT_TIMEOUT:-10}"
   local -a retry_opts=()

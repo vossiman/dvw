@@ -7,6 +7,7 @@
 #   File:  ${DVW_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/dvw/config}
 #   Form:  plain `KEY=value` lines; `#` comments and blank lines ignored
 #   Keys:  DVW_CATALOG_HOST  DVW_CATALOG_SOCK  DVW_CATALOG_TOKEN  DVW_PROVIDER
+#         DVW_PUSH_WATCH (1 = arm the bastion push watcher on connect)
 #
 # Precedence is env > config file > built-in default: the file only fills a key
 # not already set in the environment, and the libs keep their `${VAR:-…}`
@@ -15,7 +16,7 @@
 DVW_CONFIG="${DVW_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/dvw/config}"
 
 # Keys dvw honors from the file; anything else is ignored without error.
-DVW_CONFIG_KEYS="DVW_CATALOG_HOST DVW_CATALOG_SOCK DVW_CATALOG_TOKEN DVW_PROVIDER"
+DVW_CONFIG_KEYS="DVW_CATALOG_HOST DVW_CATALOG_SOCK DVW_CATALOG_TOKEN DVW_PROVIDER DVW_PUSH_WATCH"
 
 # dvw_load_config [FILE]
 # Apply recognized KEY=value lines as environment, but only where the variable
