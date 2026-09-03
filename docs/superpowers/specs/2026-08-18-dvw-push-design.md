@@ -195,6 +195,10 @@ real phone paste on jumpi relayed to a running workspace and read back.
 
 ## Future work (explicitly deferred)
 
+*Built 2026-09-03 as `dvw watch`, see `2026-09-03-dvw-push-watch-design.md`
+(polling instead of inotify, connect-path arming instead of a systemd unit).
+The sketch below is kept as the original record.*
+
 **Opt-in watcher on jumpi** — the zero-command version: a systemd user unit
 (off by default, enabled via install-bastion.sh flag) inotify-watching
 `/tmp` with the same UUID/owner/freshness/size filters **plus** an

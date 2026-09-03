@@ -34,6 +34,36 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   [ "$status" -ne 0 ]
 }
 
+@test "enables the push watcher in the dvw config; DVW_BASTION_NO_WATCH=1 skips it" {
+  printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/devpod"; chmod +x "$HOME/.local/bin/devpod"
+  run bash "$SCRIPT"
+  grep -qx 'DVW_PUSH_WATCH=1' "$HOME/.config/dvw/config"
+  echo "$output" | grep -q 'push watcher enabled'
+  rm -f "$HOME/.config/dvw/config"
+  DVW_BASTION_NO_WATCH=1 run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -f "$HOME/.config/dvw/config" ]
+  echo "$output" | grep -q 'push watcher skipped'
+}
+
+@test "a hand-set DVW_PUSH_WATCH=0 survives re-running the installer" {
+  printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/devpod"; chmod +x "$HOME/.local/bin/devpod"
+  mkdir -p "$HOME/.config/dvw"; printf 'DVW_PUSH_WATCH=0\n' > "$HOME/.config/dvw/config"
+  run bash "$SCRIPT"
+  grep -qx 'DVW_PUSH_WATCH=0' "$HOME/.config/dvw/config"
+  echo "$output" | grep -q 'disabled by hand'
+}
+
+@test "check mode reports the watcher flag without writing it" {
+  printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/devpod"; chmod +x "$HOME/.local/bin/devpod"
+  run bash "$SCRIPT" --check
+  [ ! -f "$HOME/.config/dvw/config" ]
+  echo "$output" | grep -q 'push watcher not enabled'
+  mkdir -p "$HOME/.config/dvw"; printf 'DVW_PUSH_WATCH=1\n' > "$HOME/.config/dvw/config"
+  run bash "$SCRIPT" --check
+  echo "$output" | grep -q 'push watcher enabled'
+}
+
 @test "delegates dvw client install to dvw-install.sh" {
   printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/devpod"; chmod +x "$HOME/.local/bin/devpod"
   run bash "$SCRIPT"

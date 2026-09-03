@@ -27,6 +27,9 @@ dvw_load_config
 # pull.sh reuses push.sh's target resolution and RUNNING gate — source it after.
 # shellcheck source=lib/pull.sh
 . "$DVW_ROOT/lib/pull.sh"
+# push-watch.sh reuses push.sh's fresh listing and session registry — source it after.
+# shellcheck source=lib/push-watch.sh
+. "$DVW_ROOT/lib/push-watch.sh"
 # shellcheck source=lib/commands.sh
 . "$DVW_ROOT/lib/commands.sh"
 # shellcheck source=lib/wizard.sh
@@ -134,6 +137,8 @@ main() {
       shift; cmd_pull "$@" ;;
     clipd)
       shift; cmd_clipd "$@" ;;
+    watch)
+      shift; cmd_watch "$@" ;;
     doctor)
       cmd_doctor ;;
     audit)
@@ -148,7 +153,7 @@ main() {
         exit "$tui_rc"
       else
         ui_error "the dvw TUI is unavailable — $(_dvw_tui_unavailable_reason)"
-        ui_info "subcommands: <id> | attach | push | pull | clipd | new | rm | stop | start | recreate | pin-sync | pin-rebuild | update | status | doctor | audit | config | -l"
+        ui_info "subcommands: <id> | attach | push | pull | watch | clipd | new | rm | stop | start | recreate | pin-sync | pin-rebuild | update | status | doctor | audit | config | -l"
         exit 1
       fi ;;
     *)

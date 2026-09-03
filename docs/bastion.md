@@ -53,7 +53,21 @@ picker, newest first.
 Termius mobile (7.5.0+) can paste images and files into a terminal: it
 uploads them over SFTP to `/tmp` **on jumpi** (named `<uuid>.<ext>`) and
 types that path into the terminal. Your prompt lives inside a workspace
-container, so the typed path is one `dvw push` away from being valid:
+container, so the file has to be relayed there.
+
+**With the watcher (default after `install-bastion.sh`):** one tab. At the
+agent prompt type `look at `, paste the image, wait a second or two, hit
+enter. The watcher (`dvw watch`) sees the upload land on jumpi and copies it
+to the same `/tmp/<uuid>.<ext>` path inside every workspace you are attached
+to from jumpi; tmux flashes `dvw: /tmp/<uuid>.png ready` when it is there.
+It starts itself when you attach and stops a couple of minutes after your
+last session ends. `dvw watch status` shows whether it is running,
+`~/.dvw/push-watch.log` what it delivered or skipped, `dvw watch stop`
+stops it, and `DVW_PUSH_WATCH=0` in `~/.config/dvw/config` turns it off for
+good. Only image, pdf, txt and md uploads are relayed unattended; anything
+else still goes through `dvw push`.
+
+**Without it,** the typed path is one `dvw push` away from being valid:
 
 1. **Tab 1** — attached to a workspace via `dvw`/`dvw attach`. At the agent
    prompt type `look at ` and paste the image. Termius uploads it and types

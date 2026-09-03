@@ -60,7 +60,28 @@ if (( ! CHECK_ONLY )); then
   ok "dvw client installed/refreshed"
 fi
 
-# 3. Reachability report
+# 3. Push watcher: relay Termius paste-uploads into attached workspaces
+# without the second tab (lib/push-watch.sh). Armed on connect once this
+# flag is in the dvw config; `DVW_PUSH_WATCH=0` there turns it back off.
+# shellcheck source=lib/config.sh
+. "$HERE/lib/config.sh"
+watch_re='^[[:space:]]*DVW_PUSH_WATCH[[:space:]]*='
+if grep -qsE "${watch_re}[[:space:]]*\"?1\"?[[:space:]]*(#.*)?$" "$DVW_CONFIG"; then
+  ok "push watcher enabled in $DVW_CONFIG"
+elif grep -qsE "$watch_re" "$DVW_CONFIG"; then
+  # An explicit other value is the user's decision; re-running the installer
+  # must not flip it back.
+  ok "push watcher disabled by hand in $DVW_CONFIG (left alone)"
+elif [[ "${DVW_BASTION_NO_WATCH:-}" == "1" ]]; then
+  ok "push watcher skipped (DVW_BASTION_NO_WATCH=1)"
+elif (( ! CHECK_ONLY )); then
+  dvw_config_set DVW_PUSH_WATCH 1
+  ok "push watcher enabled (DVW_PUSH_WATCH=1 in $DVW_CONFIG)"
+else
+  bad "push watcher not enabled (re-run without --check, or set DVW_PUSH_WATCH=1 in $DVW_CONFIG)"
+fi
+
+# 4. Reachability report
 if ssh -o BatchMode=yes -o ConnectTimeout=5 vossisrv true 2>/dev/null; then
   ok "vossisrv reachable via ssh"
 else
@@ -76,6 +97,8 @@ cat <<'EOF'
 
 Next steps (manual, see docs/bastion.md):
  - Termius host "jumpi" -> this box, your normal key. Full dvw available.
+ - Paste an image in an attached session: it lands in the container's /tmp
+   within ~2s (dvw watch status / dvw watch stop to inspect or disable).
  - Optional zero-keystroke attach: a SECOND keypair restricted in
    ~/.ssh/authorized_keys to:  command="dvw attach",no-port-forwarding,no-X11-forwarding <pubkey>
    and a second Termius host "jumpi ⏸" using that key.
