@@ -41,7 +41,9 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   echo "$output" | grep -q 'push watcher enabled'
   rm -f "$HOME/.config/dvw/config"
   DVW_BASTION_NO_WATCH=1 run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
   [ ! -f "$HOME/.config/dvw/config" ]
+  echo "$output" | grep -q 'push watcher skipped'
 }
 
 @test "a hand-set DVW_PUSH_WATCH=0 survives re-running the installer" {

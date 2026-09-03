@@ -57,7 +57,7 @@ _load() {
   _dvw_ws_container_state() { echo "${STATE_OVERRIDE:-yes}"; }
   _dvw_ensure_ssh_alias() { return 0; }
   _dvw_ensure_local_devpod_state() { return 0; }
-  declare -gA DVW_PW_DONE=() DVW_PW_SIZE=()
+  declare -gA DVW_PW_DONE=() DVW_PW_SIZE=() DVW_PW_SENT=() DVW_PW_TRIES=()
 }
 
 _scp_count() { grep -c '\.devpod:/tmp/$' "$SCP_ARGS" || true; }
@@ -140,6 +140,36 @@ _scp_count() { grep -c '\.devpod:/tmp/$' "$SCP_ARGS" || true; }
   [ "$(_scp_count)" -eq 0 ]
 }
 
+@test "a transient failure is retried on the next poll, then delivered once" {
+  _load
+  printf 'data' > "$TMPDIR/$UUID_A.png"
+  SCP_STUB_RC=1 _dvw_push_watch_tick
+  SCP_STUB_RC=1 _dvw_push_watch_tick
+  [ "$(grep -c 'fail.*ws1' "$HOME/.dvw/push-watch.log")" -eq 1 ]
+  _dvw_push_watch_tick
+  _dvw_push_watch_tick
+  [ "$(grep -c 'ok   .*ws1' "$HOME/.dvw/push-watch.log")" -eq 1 ]
+  [ "$(_scp_count)" -eq 2 ]
+}
+
+@test "a target that keeps failing is given up after DVW_PUSH_WATCH_ATTEMPTS" {
+  _load
+  export DVW_PUSH_WATCH_ATTEMPTS=2 SCP_STUB_RC=1
+  printf 'data' > "$TMPDIR/$UUID_A.png"
+  for _ in 1 2 3 4 5; do _dvw_push_watch_tick; done
+  [ "$(_scp_count)" -eq 2 ]
+}
+
+@test "a workspace attached later still receives an already-delivered file" {
+  _load
+  printf 'data' > "$TMPDIR/$UUID_A.png"
+  _dvw_push_watch_tick; _dvw_push_watch_tick
+  printf 'ws1\nws2\n' > "$LIVE"
+  _dvw_push_watch_tick
+  [ "$(grep -c 'ws1.devpod' "$SCP_ARGS")" -eq 1 ]
+  [ "$(grep -c 'ws2.devpod' "$SCP_ARGS")" -eq 1 ]
+}
+
 @test "one failing target does not stop delivery to the others" {
   _load
   printf 'ws1\nws2\n' > "$LIVE"
@@ -162,12 +192,16 @@ EOF
   grep -q "ws1.devpod tmux display-message .*dvw: /tmp/$UUID_A.png ready" "$SSH_ARGS"
 }
 
-@test "run: files present at startup are skipped, a later upload is delivered, exits when idle" {
+@test "run: files older than the launch cutoff are skipped, newer ones delivered, exits when idle" {
   _load
   export DVW_PUSH_WATCH_IDLE_EXIT=2
   printf 'old' > "$TMPDIR/$UUID_A.png"
-  # Upload B arrives after start; sessions vanish afterwards so the loop ends.
-  ( sleep 1.5; printf 'new' > "$TMPDIR/$UUID_B.png"; sleep 3; : > "$LIVE" ) &
+  touch -d '-30 seconds' "$TMPDIR/$UUID_A.png"
+  # Launch cutoff is a few seconds ago; B lands before the scan (a paste in
+  # the preflight gap) but after the cutoff, so it must still be delivered.
+  export DVW_PUSH_WATCH_SINCE=$(( $(date +%s) - 5 ))
+  printf 'new' > "$TMPDIR/$UUID_B.png"
+  ( sleep 4; : > "$LIVE" ) &
   run -0 timeout 15 bash -c '
     source "$DVW_ROOT/lib/connect.sh"; source "$DVW_ROOT/lib/push.sh"; source "$DVW_ROOT/lib/push-watch.sh"
     _dvw_log_action() { :; }
@@ -195,6 +229,7 @@ EOF
   pid=$(head -n1 "$HOME/.dvw/push-watch.pid")
   kill -0 "$pid"
   [ "$(cat "$HOME/dvw-args" | tr '\n' ' ')" = "watch run " ]
+  [[ -f "$HOME/.dvw/push-watch.lock" ]]
   run -0 _dvw_push_watch_ensure
   [ "$(head -n1 "$HOME/.dvw/push-watch.pid")" = "$pid" ]
   run -0 cmd_watch status
@@ -203,6 +238,22 @@ EOF
   [[ ! -f "$HOME/.dvw/push-watch.pid" ]]
   run -0 cmd_watch status
   [[ "$output" == *"not running"* ]]
+}
+
+@test "ensure: two concurrent starts launch exactly one loop" {
+  _load
+  cat > "$STUB_BIN/dvw" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >> "$HOME/dvw-pids"
+sleep 300 & wait
+STUB
+  chmod +x "$STUB_BIN/dvw"
+  DVW_ROOT="$STUB_BIN"
+  _dvw_push_watch_ensure & _dvw_push_watch_ensure & wait
+  sleep 0.3
+  [ "$(wc -l < "$HOME/dvw-pids")" -eq 1 ]
+  [ "$(head -n1 "$HOME/.dvw/push-watch.pid")" = "$(cat "$HOME/dvw-pids")" ]
+  cmd_watch stop >/dev/null
 }
 
 @test "ensure_quiet is a no-op unless DVW_PUSH_WATCH=1" {

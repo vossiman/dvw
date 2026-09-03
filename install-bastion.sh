@@ -72,7 +72,9 @@ elif grep -qsE "$watch_re" "$DVW_CONFIG"; then
   # An explicit other value is the user's decision; re-running the installer
   # must not flip it back.
   ok "push watcher disabled by hand in $DVW_CONFIG (left alone)"
-elif (( ! CHECK_ONLY )) && [[ "${DVW_BASTION_NO_WATCH:-}" != "1" ]]; then
+elif [[ "${DVW_BASTION_NO_WATCH:-}" == "1" ]]; then
+  ok "push watcher skipped (DVW_BASTION_NO_WATCH=1)"
+elif (( ! CHECK_ONLY )); then
   dvw_config_set DVW_PUSH_WATCH 1
   ok "push watcher enabled (DVW_PUSH_WATCH=1 in $DVW_CONFIG)"
 else

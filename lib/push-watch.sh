@@ -83,50 +83,52 @@ _dvw_push_watch_ext_ok() {
   [[ " $DVW_PUSH_WATCH_EXTS " == *" $ext "* ]]
 }
 
-# Relay $1 into every live-session workspace. Each target passes the RUNNING
-# gate (never boot a stopped workspace via the auto-starting alias) and then
-# the same scp `dvw push` uses. Best effort per target: one failing workspace
-# must not stop delivery to the others. Returns 0 if at least one delivery
-# succeeded.
-_dvw_push_watch_deliver() {
-  local f="$1" base ws delivered=0 rc
+# Attempts per (file, workspace) pair before giving up: a transient catalog
+# blip or scp failure is retried on later polls, a workspace that stays
+# stopped is not hammered every second for the whole fresh window.
+: "${DVW_PUSH_WATCH_ATTEMPTS:=3}"
+
+# Relay $1 to one workspace. RUNNING gate first (never boot a stopped
+# workspace via the auto-starting alias), then the same scp `dvw push` uses.
+# rc 0 only on a completed transfer; the caller decides whether to retry.
+_dvw_push_watch_deliver_one() {
+  local f="$1" ws="$2" base rc=0
   base=$(basename -- "$f")
-  while IFS= read -r ws; do
-    [[ -n "$ws" ]] || continue
-    if [[ "$(_dvw_ws_container_state "$ws")" != yes ]]; then
-      _dvw_push_watch_logline "skip $base -> $ws: not running (or catalog unreachable)"
-      continue
-    fi
-    if ! _dvw_ensure_local_devpod_state "$ws" >/dev/null 2>&1 \
-        || ! _dvw_ensure_ssh_alias "$ws" >/dev/null 2>&1; then
-      _dvw_push_watch_logline "skip $base -> $ws: alias setup failed"
-      continue
-    fi
-    rc=0
-    scp -q -o BatchMode=yes -- "$f" "${ws}.devpod:/tmp/" || rc=$?
-    if (( rc != 0 )); then
-      _dvw_push_watch_logline "fail $base -> $ws: scp rc=$rc"
-      continue
-    fi
-    delivered=1
-    _dvw_push_watch_logline "ok   $base -> $ws"
-    # Confirmation inside the session, best effort: a tmux server in the
-    # container shows the landed path briefly. Absent tmux, nothing to show.
-    [[ "$(_dvw_ws_container_state "$ws")" == yes ]] || continue
-    ssh -o BatchMode=yes -o ConnectTimeout=5 "${ws}.devpod" \
-      tmux display-message -d 3000 "dvw: /tmp/$base ready" >/dev/null 2>&1 || true
-  done < <(_dvw_push_live_sessions)
-  (( delivered ))
+  if [[ "$(_dvw_ws_container_state "$ws")" != yes ]]; then
+    _dvw_push_watch_logline "skip $base -> $ws: not running (or catalog unreachable)"
+    return 1
+  fi
+  if ! _dvw_ensure_local_devpod_state "$ws" >/dev/null 2>&1 \
+      || ! _dvw_ensure_ssh_alias "$ws" >/dev/null 2>&1; then
+    _dvw_push_watch_logline "skip $base -> $ws: alias setup failed"
+    return 1
+  fi
+  scp -q -o BatchMode=yes -- "$f" "${ws}.devpod:/tmp/" || rc=$?
+  if (( rc != 0 )); then
+    _dvw_push_watch_logline "fail $base -> $ws: scp rc=$rc"
+    return 1
+  fi
+  _dvw_push_watch_logline "ok   $base -> $ws"
+  # Confirmation inside the session, best effort: a tmux server in the
+  # container shows the landed path briefly. Absent tmux, nothing to show.
+  [[ "$(_dvw_ws_container_state "$ws")" == yes ]] || return 0
+  ssh -o BatchMode=yes -o ConnectTimeout=5 "${ws}.devpod" \
+    tmux display-message -d 3000 "dvw: /tmp/$base ready" >/dev/null 2>&1 || true
+  return 0
 }
 
-# One poll. Keeps state in three caller-owned associative arrays:
-#   DVW_PW_DONE[path]=1     delivered (or deliberately skipped) already
-#   DVW_PW_SIZE[path]=bytes size at the previous tick (upload-in-progress guard)
-# A file is delivered only when its size is unchanged since the last tick, so
-# a Termius upload still streaming in is never copied half-written. Prints
-# nothing; logs to the watch log.
+# One poll. State lives in caller-owned associative arrays:
+#   DVW_PW_DONE[path]=1        skipped for good (startup backlog, extension)
+#   DVW_PW_SIZE[path]=bytes    size at the previous tick (upload guard)
+#   DVW_PW_SENT[path|ws]=1     delivered to that workspace
+#   DVW_PW_TRIES[path|ws]=n    failed attempts so far for that pair
+# A file is delivered only once its size is unchanged since the last tick and
+# it has settled (_dvw_push_watch_busy), so a Termius upload still streaming
+# in is never copied half-written. Each live workspace is tried separately and
+# a failure is retried on later polls, so one bad target never costs the
+# others their copy and a blip never loses a paste. Prints nothing; logs.
 _dvw_push_watch_tick() {
-  local f bytes
+  local f bytes ws key
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
     [[ -n "${DVW_PW_DONE[$f]:-}" ]] && continue
@@ -141,20 +143,35 @@ _dvw_push_watch_tick() {
       continue
     fi
     _dvw_push_watch_busy "$f" && continue
-    DVW_PW_DONE[$f]=1
-    _dvw_push_watch_deliver "$f" || true
+    while IFS= read -r ws; do
+      [[ -n "$ws" ]] || continue
+      key="$f|$ws"
+      [[ -n "${DVW_PW_SENT[$key]:-}" ]] && continue
+      (( ${DVW_PW_TRIES[$key]:-0} >= DVW_PUSH_WATCH_ATTEMPTS )) && continue
+      if _dvw_push_watch_deliver_one "$f" "$ws"; then
+        DVW_PW_SENT[$key]=1
+      else
+        DVW_PW_TRIES[$key]=$(( ${DVW_PW_TRIES[$key]:-0} + 1 ))
+      fi
+    done < <(_dvw_push_live_sessions)
   done < <(_dvw_push_list_fresh)
   return 0
 }
 
-# Foreground loop. Files already present at startup are marked done: they
-# were either pushed by hand or are not wanted, and re-sending everything
-# from the last ten minutes on every (re)start would be a surprise.
+# Foreground loop. Files already present when the watcher was *launched* are
+# marked done: they were either pushed by hand or are not wanted, and
+# re-sending the last ten minutes on every (re)start would be a surprise.
+# The cutoff is the launch time handed over by ensure (DVW_PUSH_WATCH_SINCE),
+# not the time this scan runs: the child re-runs dvw's preflights first, and
+# a paste that lands in that gap must still be delivered.
 _dvw_push_watch_run() {
-  local -A DVW_PW_DONE=() DVW_PW_SIZE=()
-  local f idle=0 sessions
+  local -A DVW_PW_DONE=() DVW_PW_SIZE=() DVW_PW_SENT=() DVW_PW_TRIES=()
+  local f idle=0 sessions since mtime
+  since="${DVW_PUSH_WATCH_SINCE:-$(date +%s)}"
   while IFS= read -r f; do
-    [[ -n "$f" ]] && DVW_PW_DONE[$f]=1
+    [[ -n "$f" ]] || continue
+    mtime=$(stat -c %Y -- "$f" 2>/dev/null) || continue
+    (( mtime < since )) && DVW_PW_DONE[$f]=1
   done < <(_dvw_push_list_fresh)
   _dvw_push_watch_logline "start pid=$$ interval=${DVW_PUSH_WATCH_INTERVAL}s idle-exit=${DVW_PUSH_WATCH_IDLE_EXIT}s"
   while :; do
@@ -177,13 +194,27 @@ _dvw_push_watch_run() {
 # child of a fresh `dvw watch run` process so it survives the connect that
 # spawned it and picks up code changes from a dvw update on its next start.
 _dvw_push_watch_ensure() {
-  local pid dir
-  pid=$(_dvw_push_watch_live_pid)
-  [[ -n "$pid" ]] && return 0
+  local dir
   dir=$(_dvw_push_watch_dir)
   mkdir -p "$dir"
   chmod 700 "$dir"
-  ( setsid "$DVW_ROOT/dvw" watch run >> "$(_dvw_push_watch_log)" 2>&1 \
+  # Check-and-launch under a lock: two attaches arriving together must not
+  # both pass the pid check and start two loops (double delivery, and only
+  # the last pidfile writer could ever be stopped).
+  (
+    exec 9>"$dir/push-watch.lock"
+    flock -w 10 9 || { ui_error "watch: could not take the start lock"; exit 1; }
+    _dvw_push_watch_launch
+  )
+}
+
+_dvw_push_watch_launch() {
+  local pid since
+  pid=$(_dvw_push_watch_live_pid)
+  [[ -n "$pid" ]] && return 0
+  since=$(date +%s)
+  ( DVW_PUSH_WATCH_SINCE="$since" setsid "$DVW_ROOT/dvw" watch run 9>&- \
+      >> "$(_dvw_push_watch_log)" 2>&1 \
       & { echo $!; type _dvw_proc_identity >/dev/null 2>&1 && _dvw_proc_identity $!; } \
       > "$(_dvw_push_watch_pidfile)" ) </dev/null
   sleep 0.2
