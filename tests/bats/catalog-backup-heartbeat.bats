@@ -30,18 +30,23 @@ STUB
 }
 teardown() { rm -rf "$WORK"; }
 
-# run_push_step [URL]: the unit's push line, with systemd's ${VAR} expansion
-# applied for CATALOG_BACKUP_PUSH_URL, executed by /bin/sh.
+# run_push_step [URL]: the unit's push line as systemd would hand it to
+# /bin/sh: `$$` becomes a literal `$` for the shell to expand, and any
+# remaining `${...}` would be substituted by systemd from the environment
+# BEFORE the shell parses the line, which is exactly the shape this unit must
+# not have. The URL is passed through the environment, as EnvironmentFile=
+# does on the host.
 run_push_step() {
   local line cmd
   line="$(grep '^ExecStart=.*git push' "$UNIT")"
   [ -n "$line" ]
   cmd="${line#ExecStart=}"; cmd="${cmd#-}"
-  cmd="${cmd//\$\{CATALOG_BACKUP_PUSH_URL\}/${1:-}}"
   case "$cmd" in "/bin/sh -c '"*"'") ;; *) echo "push line is not a /bin/sh -c '...' command: $cmd" >&2; return 1 ;; esac
+  case "${cmd//\$\$\{/}" in *'${'*) echo "unit has a systemd-expanded \${VAR}; use \$\${VAR}: $cmd" >&2; return 1 ;; esac
+  cmd="${cmd//\$\$/\$}"
   cmd="${cmd#/bin/sh -c }"
   cmd="${cmd#\'}"; cmd="${cmd%\'}"
-  sh -c "$cmd"
+  if [ -n "${1:-}" ]; then CATALOG_BACKUP_PUSH_URL="$1" sh -c "$cmd"; else env -u CATALOG_BACKUP_PUSH_URL sh -c "$cmd"; fi
 }
 
 @test "unit reads the catalog env file and does not hard-fail without it" {
@@ -70,4 +75,10 @@ run_push_step() {
 
 @test "catalog.env.example documents the variable" {
   grep -q '^#CATALOG_BACKUP_PUSH_URL=' "$DVW_ROOT/catalog-service/deploy/catalog.env.example"
+}
+
+@test "a URL carrying shell metacharacters is passed literally, not expanded or executed" {
+  run_push_step 'https://uptime.example/api/push/TOK?status=up&msg=$HOME$(touch "$HOME/pwned")'
+  grep -qF 'msg=$HOME$(touch "$HOME/pwned")' "$HOME/calls"
+  [ ! -e "$HOME/pwned" ]
 }

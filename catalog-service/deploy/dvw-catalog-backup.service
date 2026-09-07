@@ -16,7 +16,10 @@ EnvironmentFile=-/opt/dvw-catalog/catalog.env
 # Commits are no-ops when nothing changed; the push is best-effort so a
 # missing/unreachable remote never fails the unit. The Kuma heartbeat goes
 # out only after a successful push: a push that fails, or a timer that never
-# fires, leaves the monitor silent, which is the signal (DVW-14). systemd
-# expands ${CATALOG_BACKUP_PUSH_URL} before the shell sees the line.
+# fires, leaves the monitor silent, which is the signal (DVW-14).
+# `$$` hands the shell a literal `${CATALOG_BACKUP_PUSH_URL}` to expand from its
+# environment inside the quotes; a plain `${...}` would have systemd paste
+# the URL into the shell source before parsing, and a URL containing `$` or
+# `$(` would be expanded or executed by the shell (codex review, PR #74).
 ExecStart=/bin/sh -c 'git add -A && (git diff --cached --quiet || git commit -q -m "snapshot $(date -Iseconds)")'
-ExecStart=/bin/sh -c 'if git push --quiet; then [ -z "${CATALOG_BACKUP_PUSH_URL}" ] || curl -fsS -m 15 "${CATALOG_BACKUP_PUSH_URL}" >/dev/null || echo "kuma heartbeat failed"; else echo "git push failed; no heartbeat sent"; fi'
+ExecStart=/bin/sh -c 'if git push --quiet; then [ -z "$${CATALOG_BACKUP_PUSH_URL:-}" ] || curl -fsS -m 15 "$${CATALOG_BACKUP_PUSH_URL}" >/dev/null || echo "kuma heartbeat failed"; else echo "git push failed; no heartbeat sent"; fi'
