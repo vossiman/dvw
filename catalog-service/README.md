@@ -114,6 +114,12 @@ data dir + its git-backup repo, `uv sync --frozen`s the venv, installs the units
 adds a narrow passwordless-restart sudoers drop-in, reenables + starts everything,
 and smoke-tests `/v1/health`.
 
+**Backup heartbeat (DVW-14)** — `dvw-catalog-backup.timer` commits and pushes
+the data dir nightly. Set `CATALOG_BACKUP_PUSH_URL` in `/opt/dvw-catalog/catalog.env`
+to a Kuma push monitor URL and the unit GETs it after each successful push;
+a stopped timer or a failing push then shows up as a silent monitor. Unset
+means no heartbeat.
+
 **Updates** — one command on the box:
 
 ```bash

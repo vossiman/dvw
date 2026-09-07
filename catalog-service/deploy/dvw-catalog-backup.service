@@ -9,8 +9,14 @@ Type=oneshot
 User=vossi
 Group=vossi
 WorkingDirectory=/var/lib/dvw-catalog
+# Optional CATALOG_BACKUP_PUSH_URL (a Kuma push monitor). The file is the
+# service's own env file; a missing file is fine.
+EnvironmentFile=-/opt/dvw-catalog/catalog.env
 # /var/lib/dvw-catalog is a git repo (host-install.sh inits it once).
 # Commits are no-ops when nothing changed; the push is best-effort so a
-# missing/unreachable remote never fails the unit.
+# missing/unreachable remote never fails the unit. The Kuma heartbeat goes
+# out only after a successful push: a push that fails, or a timer that never
+# fires, leaves the monitor silent, which is the signal (DVW-14). systemd
+# expands ${CATALOG_BACKUP_PUSH_URL} before the shell sees the line.
 ExecStart=/bin/sh -c 'git add -A && (git diff --cached --quiet || git commit -q -m "snapshot $(date -Iseconds)")'
-ExecStart=-/usr/bin/git push --quiet
+ExecStart=/bin/sh -c 'if git push --quiet; then [ -z "${CATALOG_BACKUP_PUSH_URL}" ] || curl -fsS -m 15 "${CATALOG_BACKUP_PUSH_URL}" >/dev/null || echo "kuma heartbeat failed"; else echo "git push failed; no heartbeat sent"; fi'
