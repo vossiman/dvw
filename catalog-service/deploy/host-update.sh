@@ -38,7 +38,17 @@ git_auth() {
 
 echo "==> git pull"
 git -C "$CHECKOUT" config protocol.version 1
+before=$(git -C "$CHECKOUT" rev-parse HEAD)
 git_retry git_auth -C "$CHECKOUT" pull --ff-only
+after=$(git -C "$CHECKOUT" rev-parse HEAD)
+# bash keeps running the bytes it already read from THIS file, so a pull that
+# changed the updater would finish under the old logic (same trap as
+# host-install.sh). Hand over to the fresh copy once.
+if [ "$before" != "$after" ] && [ -z "${DVW_UPDATE_REEXEC:-}" ] \
+   && ! git -C "$CHECKOUT" diff --quiet "$before" "$after" -- catalog-service/deploy/host-update.sh; then
+  echo "    updater changed by the pull; re-running the new copy"
+  DVW_UPDATE_REEXEC=1 exec bash "$SVC_DIR/deploy/host-update.sh"
+fi
 
 "$SVC_DIR/deploy/configure-backup-remote.sh" /var/lib/dvw-catalog "$SVC_DIR/catalog.env" "$GH_HELPER"
 

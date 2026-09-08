@@ -12,7 +12,11 @@ DATA_DIR="$1"; ENV_FILE="$2"; GH_HELPER="$3"
 remote=""
 [ -r "$ENV_FILE" ] && remote="$(sed -n 's/^[[:space:]]*CATALOG_BACKUP_REMOTE=//p' "$ENV_FILE" | head -n 1 | tr -d '"'"'"'[:space:]')"
 if [ -z "$remote" ]; then
-  echo "    CATALOG_BACKUP_REMOTE unset in $ENV_FILE: no off-box copy of $DATA_DIR" >&2
+  if existing="$(git -C "$DATA_DIR" remote get-url origin 2>/dev/null)"; then
+    echo "    CATALOG_BACKUP_REMOTE unset in $ENV_FILE; the backup keeps pushing to $existing" >&2
+  else
+    echo "    CATALOG_BACKUP_REMOTE unset in $ENV_FILE: no off-box copy of $DATA_DIR" >&2
+  fi
   exit 0
 fi
 
@@ -25,9 +29,8 @@ fi
 # deploy scripts' git_auth wrapper, so the helper lives in this repo's config.
 git -C "$DATA_DIR" config credential.helper "$GH_HELPER"
 git -C "$DATA_DIR" branch -M main 2>/dev/null || true
-if ! git -C "$DATA_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
-  git -C "$DATA_DIR" branch --set-upstream-to=origin/main main 2>/dev/null \
-    || git -C "$DATA_DIR" config branch.main.remote origin
-  git -C "$DATA_DIR" config branch.main.merge refs/heads/main
-fi
+# Unconditional: an upstream left over from a hand-configured remote would
+# otherwise keep the nightly push going to the old destination.
+git -C "$DATA_DIR" config branch.main.remote origin
+git -C "$DATA_DIR" config branch.main.merge refs/heads/main
 echo "    backup remote: origin -> $remote (upstream main)"

@@ -44,6 +44,31 @@ setup() {
   [ "$(git -C "$OTHER" rev-parse main)" = "$(git -C "$DATA" rev-parse main)" ]
 }
 
+@test "a stale hand-set upstream is repointed at origin/main" {
+  STALE="$BATS_TEST_TMPDIR/stale.git"; git init -q --bare "$STALE"
+  git -C "$DATA" remote add backup "$STALE"
+  git -C "$DATA" branch -M main
+  git -C "$DATA" push -q -u backup main
+  run bash "$SCRIPT" "$DATA" "$ENV" "$HELPER"
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$DATA" config branch.main.remote)" = "origin" ]
+  git -C "$DATA" push --quiet
+  [ "$(git -C "$BARE" rev-parse main)" = "$(git -C "$DATA" rev-parse main)" ]
+}
+
+@test "unset with an existing origin reports that origin stays in use" {
+  bash "$SCRIPT" "$DATA" "$ENV" "$HELPER"
+  printf 'OTHER=1\n' > "$ENV"
+  run bash "$SCRIPT" "$DATA" "$ENV" "$HELPER"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"keeps pushing to $BARE"* ]]
+  [ "$(git -C "$DATA" remote get-url origin)" = "$BARE" ]
+}
+
+@test "the updater re-runs itself when the pull changed it" {
+  grep -q 'DVW_UPDATE_REEXEC=1 exec bash "\$SVC_DIR/deploy/host-update.sh"' "$DVW_ROOT/catalog-service/deploy/host-update.sh"
+}
+
 @test "the installer and updater both call it with the helper" {
   grep -q 'configure-backup-remote.sh" "\$DATA_DIR" "\$SVC_DIR/catalog.env" "\$GH_HELPER"' "$DVW_ROOT/catalog-service/deploy/host-install.sh"
   grep -q 'configure-backup-remote.sh" /var/lib/dvw-catalog "\$SVC_DIR/catalog.env" "\$GH_HELPER"' "$DVW_ROOT/catalog-service/deploy/host-update.sh"
