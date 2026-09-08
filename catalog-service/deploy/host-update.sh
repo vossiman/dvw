@@ -40,6 +40,8 @@ echo "==> git pull"
 git -C "$CHECKOUT" config protocol.version 1
 git_retry git_auth -C "$CHECKOUT" pull --ff-only
 
+"$SVC_DIR/deploy/configure-backup-remote.sh" /var/lib/dvw-catalog "$SVC_DIR/catalog.env" "$GH_HELPER"
+
 echo "==> uv sync --frozen"
 export PATH="$HOME/.local/bin:$PATH"
 ( cd "$SVC_DIR" && uv sync --frozen --no-dev )

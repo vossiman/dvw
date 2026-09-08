@@ -143,6 +143,7 @@ export PATH="$HOME/.local/bin:$PATH"
 echo "==> 5/8 env file (once)"
 [ -f "$SVC_DIR/catalog.env" ] || \
   install -m 0640 "$SVC_DIR/deploy/catalog.env.example" "$SVC_DIR/catalog.env"
+"$SVC_DIR/deploy/configure-backup-remote.sh" "$DATA_DIR" "$SVC_DIR/catalog.env" "$GH_HELPER"
 
 # The unit no longer has SupplementaryGroups=docker, so dvw-docker-proxy is
 # the only Docker path. The installer needs no docker CLI access itself: the
