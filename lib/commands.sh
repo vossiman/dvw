@@ -183,7 +183,13 @@ cmd_recreate() {
   # proceeds. Fail-open — see _dvw_pin_preflight.
   if [[ "${DVW_SKIP_PIN_PREFLIGHT:-}" != "1" ]] \
      && declare -F _dvw_pin_preflight >/dev/null 2>&1; then
-    _dvw_pin_preflight "$id" || return 0
+    local pf_rc=0
+    _dvw_pin_preflight "$id" || pf_rc=$?
+    if (( pf_rc == 1 )); then
+      return 0          # pin-rebuild took over and rebuilt; nothing left to do
+    elif (( pf_rc > 1 )); then
+      return 1          # it took over and failed; do not rebuild over that
+    fi
   fi
   ui_action "recreating" "$id (ide=$ide)"
   _dvw_run_or_print devpod up "$id" --recreate --ide "$ide" || return 1

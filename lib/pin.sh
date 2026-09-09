@@ -319,7 +319,9 @@ _dvw_pin_preflight() {
 
   ui_status_warn "$slug@$branch is pinned to $(_dvw_pin_short "$cur") — rebuilding now reinstalls that image"
   if ui_confirm "run pin-rebuild instead (PR, merge, pull, rebuild, verify)?"; then
-    cmd_pin_rebuild "$id"
+    # 1 = handed over and it finished the job; 2 = handed over and it failed.
+    # The caller must tell those apart, or a failed rebuild reports success.
+    cmd_pin_rebuild "$id" || return 2
     return 1
   fi
   return 0

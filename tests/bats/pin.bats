@@ -246,6 +246,23 @@ _stub_recreate_deps() {
   echo "$output" | grep -q "PIN REBUILD RAN:demo"
 }
 
+# Astra review of PR #79: the handoff swallowed pin-rebuild's status, so a
+# failed pull/rebuild/verify still let `dvw recreate` exit 0.
+@test "rebuild pre-flight: a failing hand-over is rc 2, and fails the recreate" {
+  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
+  ui_confirm() { return 0; }
+  cmd_pin_rebuild() { return 1; }
+  run _dvw_pin_preflight demo
+  [ "$status" -eq 2 ]
+
+  _stub_recreate_deps
+  unset -f _dvw_pin_preflight
+  _dvw_pin_preflight() { return 2; }
+  run cmd_recreate demo
+  [ "$status" -ne 0 ]
+  ! grep -q "ran:devpod up" "$BATS_TEST_TMPDIR/calls" 2>/dev/null
+}
+
 @test "rebuild pre-flight: declining the offer proceeds with the rebuild" {
   _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
   ui_confirm() { return 1; }          # user says no
