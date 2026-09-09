@@ -37,6 +37,7 @@ from .models import (
     WorkspaceStatus,
     WorkspaceWindows,
 )
+from .activity import ActivitySample
 from .probe import ProbeMissing, ProbeReport, run_probe
 
 
@@ -91,6 +92,7 @@ class Inspector(Protocol):
     def orphans(self, catalog_ids: set[str]) -> list[Orphan]: ...
     def waiting_windows(self) -> list[WaitingWindow]: ...
     def windows_many(self) -> list[WorkspaceWindows]: ...
+    def activity_many(self, ids: list[str]) -> list[ActivitySample]: ...
 
 
 class Snapshot:
@@ -520,6 +522,49 @@ class DockerInspector:
         except (subprocess.SubprocessError, ValueError, IndexError):
             pass
         return None
+
+    def activity_many(self, ids: list[str]) -> list[ActivitySample]:
+        """Read-only background samples; duplicate running siblings are unknown.
+
+        Do not use the status endpoint's 250ms attachment deadline: an activity
+        absence decision needs the complete probe. One pass runs at a time.
+        """
+        sampled_at = time.monotonic()
+        by_workspace = {}
+        for c in self._devpod_containers():
+            wid = _ws_id_from_mounts(c.attrs.get("Mounts", []), self._settings.workspace_mount_prefix)
+            if wid in ids and c.status == "running":
+                by_workspace.setdefault(wid, []).append(c)
+        result = []
+        for wid in dict.fromkeys(ids):
+            candidates = by_workspace.get(wid, [])
+            sample = ActivitySample(wid, sampled_at=sampled_at)
+            result.append(sample)
+            if not candidates:
+                sample.running = False
+                continue
+            if len(candidates) != 1:
+                continue
+            c = candidates[0]
+            sample.container_id = c.id
+            sample.started_at = c.attrs.get("State", {}).get("StartedAt")
+            sample.running = True
+            try:
+                report = self._snapshot(c).report
+            except Exception:
+                continue
+            # Container timestamps share the host clock. Stale, future or old
+            # reports cannot establish absence, even if otherwise well formed.
+            if report is None or not -5 <= time.time() - report.ts <= 90:
+                continue
+            sample.complete = not report.partial
+            if report.activity is not None:
+                sample.signals = report.activity.model_dump()
+            # Older probes can still establish positive tmux/agent evidence.
+            if report.tmux and report.tmux.sessions:
+                sample.signals["tmux_sessions"] = len(report.tmux.sessions)
+            sample.signals["agents"] = len(report.agents) if report.agents is not None else None
+        return result
 
     # ---- bulk status (replaces _dvw_load_probe) --------------------------
 

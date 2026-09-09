@@ -6,14 +6,16 @@ Run (prod):  uvicorn app.main:app --uds /run/dvw-catalog/catalog.sock --workers 
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from . import __version__
+from .activity import ActivityObserver
 from .blueprint_store import BlueprintStore
 from .blueprint_image import BlueprintImageCache
 from .config import get_settings
@@ -71,7 +73,16 @@ async def lifespan(app: FastAPI):
         settings.catalog_path,
         settings.docker_host or "<local socket>",
     )
-    yield
+    app.state.activity_observer = ActivityObserver()
+    activity_task = asyncio.create_task(app.state.activity_observer.run(
+        app.state.store, app.state.inspector))
+    try:
+        yield
+    finally:
+        activity_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await activity_task
+        wlock.close()
 
 
 def _error(status: int, code: str, message: str, details=None) -> JSONResponse:

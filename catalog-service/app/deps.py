@@ -20,6 +20,7 @@ from .blueprint_image import BlueprintImageCache
 from .config import Settings, get_settings
 from .docker_inspect import Inspector
 from .models import CanonicalContainer
+from .activity import ActivityObserver
 from .store import CatalogStore
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -40,6 +41,13 @@ def get_blueprint_store(request: Request) -> BlueprintStore:
 
 def get_blueprint_image_cache(request: Request) -> BlueprintImageCache:
     return request.app.state.blueprint_image
+
+
+def get_activity_observer(request: Request) -> ActivityObserver:
+    return request.app.state.activity_observer
+
+
+ActivityDep = Annotated[ActivityObserver, Depends(get_activity_observer)]
 
 
 StoreDep = Annotated[CatalogStore, Depends(get_store)]

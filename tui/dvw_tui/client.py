@@ -51,6 +51,7 @@ class Workspace:
     liveness: str = "unknown"  # merged in from /containers/status
     attached: int = 0  # merged in from /containers/status
     image_current: bool | None = None  # merged in from /containers/status
+    activity: dict | None = None
 
     @property
     def short_repo(self) -> str:
@@ -107,8 +108,10 @@ class CatalogClient:
     async def workspaces_with_status(self) -> list[Workspace]:
         ws = await self.workspaces()
         statuses = await self.statuses()
+        activities = await self.activities()
         for w in ws:
             s = statuses.get(w.id, {})
+            w.activity = activities.get(w.id)
             w.liveness = s.get("liveness", "unknown")
             try:
                 w.attached = max(0, int(s.get("attached", 0) or 0))
@@ -117,6 +120,31 @@ class CatalogClient:
             v = s.get("image_current")
             w.image_current = v if isinstance(v, bool) else None
         return ws
+
+    async def activities(self) -> dict[str, dict]:
+        """Unknown on old servers or malformed observations."""
+        try:
+            body = await self._get("/containers/activity")
+        except CatalogError:
+            return {}
+        if not isinstance(body, list):
+            return {}
+        out = {}
+        seen = set()
+        for entry in body:
+            if not isinstance(entry, dict):
+                continue
+            workspace_id = entry.get("workspace_id")
+            if not isinstance(workspace_id, str) or not workspace_id:
+                continue
+            if workspace_id in seen:
+                out.pop(workspace_id, None)
+                continue
+            seen.add(workspace_id)
+            clean = parse_activity(entry)
+            if clean is not None:
+                out[workspace_id] = clean
+        return out
 
     async def inspect(self, workspace_id: str) -> dict:
         return await self._get(f"/workspaces/{workspace_id}/inspect")
@@ -188,3 +216,39 @@ class CatalogClient:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+
+ACTIVITY_REASONS = {
+    "tmux": "tmux", "cursor": "Cursor connected", "vscode": "VS Code connected",
+    "terminal": "terminal", "agent": "agent",
+}
+
+
+def parse_activity(entry: object) -> dict | None:
+    """Only render bounded numeric values and known labels from the wire."""
+    if not isinstance(entry, dict) or entry.get("observation_only") is not True:
+        return None
+    state = entry.get("state")
+    if not isinstance(state, str) or state not in {"active", "idle", "always-on", "unknown", "stopped"}:
+        return None
+    reasons = entry.get("reasons")
+    if not isinstance(reasons, list) or any(
+        not isinstance(r, str) or r not in ACTIVITY_REASONS for r in reasons
+    ):
+        return None
+    clean = {"state": state, "reasons": list(dict.fromkeys(reasons)), "observation_only": True}
+    for field in ("observed_at", "idle_since", "idle_seconds", "remaining_seconds", "timeout_seconds"):
+        value = entry.get(field, 3600 if field == "timeout_seconds" else None)
+        limit = 253402300799 if field.endswith("_at") or field == "idle_since" else 10**12
+        if value is not None and (type(value) not in (int, float) or not 0 <= value <= limit):
+            return None
+        if field.endswith("seconds") and value is not None and type(value) is not int:
+            return None
+        clean[field] = value
+    if clean["timeout_seconds"] is None or clean["timeout_seconds"] <= 0:
+        return None
+    if state == "idle" and any(clean[k] is None for k in ("observed_at", "idle_since", "idle_seconds", "remaining_seconds")):
+        return None
+    if state == "active" and not reasons:
+        return None
+    return clean

@@ -62,6 +62,8 @@ class Workspace(BaseModel):
     repo: str
     branch: str
     ide: str = "ssh"
+    always_on: bool = False
+    idle_timeout_minutes: int = Field(default=60, ge=1, le=10080, strict=True)
     provider: str = Field(default_factory=_default_provider)
     # Defaults are None (not auto-stamped) so loading a hand-edited/partial
     # legacy entry round-trips faithfully without jumping to the top of MRU.
@@ -120,6 +122,8 @@ class WorkspacePatch(BaseModel):
     """All optional — only provided fields are updated."""
 
     model_config = ConfigDict(extra="forbid")
+    always_on: bool = False
+    idle_timeout_minutes: int = Field(default=60, ge=1, le=10080, strict=True)
     repo: str | None = None
     branch: str | None = None
     ide: str | None = None

@@ -492,3 +492,16 @@ Bash logic is covered by bats (`tests/bats/`, including wizard seed/probe and TU
 - [`catalog-service/README.md`](catalog-service/README.md) — the `dvw-catalog` service (deploy, API)
 - [`tmux/README.md`](tmux/README.md) — host-side tmux config installation
 - [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — current quirks log
+
+### Activity observation
+
+The workspace TUI now shows coding activity alongside running state: tmux,
+Cursor/VS Code connected, terminal, agent, always-on, or activity unknown.
+When all supported coding signals are absent, it shows `idle 23m · would stop
+in 37m`. The inspect pane includes the last observation, idle start and timeout.
+This is **observation only**: no containers are automatically stopped.
+
+The catalogue samples independently of the TUI, so clients share a countdown.
+The default is 60 minutes, configurable per workspace through the catalogue's
+`idle_timeout_minutes` and `always_on` PATCH fields. See
+[catalogue activity setup and detection limits](catalog-service/README.md#workspace-activity-observation-only).
