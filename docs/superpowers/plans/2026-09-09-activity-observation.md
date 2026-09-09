@@ -23,7 +23,7 @@
 - [x] Probe: extend `bin/dvw-probe` in the blueprint worktree with nullable counts `activity.{tmux_sessions,terminals,cursor_connections,vscode_connections}`. Test absent vs failed tmux, connected vs residual IDE processes, terminal lifetime, inaccessible metadata, bounded scans. Run blueprint bats suite.
 - [x] Catalogue: add validated probe extension, read-only `DockerInspector.activity_many(ids)` collection, `ActivityObserver` state machine and periodic lifecycle task, `/containers/activity` cached API, and workspace `always_on`/`idle_timeout_minutes` settings. Test unknown/partial/missing probes, duplicates, container identity/start changes, monotonic countdown, interrupted observations, overrides, expiry, background lifecycle and API validation.
 - [x] TUI: fetch cached activity, tolerate old services, render parent-row summaries and inspect details without changing tmux routing. Test client parsing, all states and details; run full TUI suite.
-- [ ] Integration: run catalogue/TUI/bats checks, review both worktrees, document rollout and limitations, commit and open dependent PRs. Do not merge or deploy.
+- [x] Integration: run catalogue/TUI/bats checks, review both worktrees, document rollout and limitations, commit and open dependent PRs. Do not merge or deploy.
 
 ## Interface
 
@@ -36,3 +36,5 @@ Probe -> catalogue: additive nullable counts, all absence decisions require comp
 Review: independent whole-feature review identified slow-batch sample freshness; fixed by carrying batch-start monotonic time and rejecting aged samples. Scoped re-review found no blockers. Regressions cover both delayed-sample rejection and expiry from collection time. Probe commit: 23662bcd254104f31c515b6bd9a72fba25fe5316.
 
 Validation: catalogue full suite 298 passed, then 22 focused activity tests passed with the additional delayed-expiry regression; TUI full suite 235 passed; dvw bats 587 passed. Blueprint full suite 875 cases, seven environment skips, exit 0. An unrelated orphan push-watch test sleep was cleaned up and filed as DVW-17.
+
+Delivery: dvw PR #76 and aiCodingBaseSetup PR #157 are open. Local real-probe output validates against the catalogue schema (tmux=1, terminals=4, no IDE connections, complete). Both worktrees retained; nothing merged or deployed.
