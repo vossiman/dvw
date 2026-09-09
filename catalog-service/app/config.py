@@ -64,6 +64,16 @@ class Settings(BaseSettings):
     devpod_agent_workspaces_dir: Path = Path(
         "~/.devpod/agent/contexts/default/workspaces")
 
+    # git credential helper for the source pull. The service account has no
+    # GitHub login of its own, so a private repo's `git pull` would sit on a
+    # username prompt (in a daemon: "could not read Username ... No such
+    # device or address"). This is the same helper the deploy scripts use: it
+    # answers from the shared secrets store, so the token never reaches a
+    # command line, git config, or a log. Set to a path that is not
+    # executable to disable, in which case pulls stay anonymous.
+    git_credential_helper: Path = (
+        Path(__file__).resolve().parent.parent / "deploy" / "gh-token-helper")
+
     @property
     def catalog_path(self) -> Path:
         return self.data_dir / self.catalog_filename
