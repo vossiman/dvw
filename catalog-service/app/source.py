@@ -88,6 +88,10 @@ def pull_source(ws_id: str, path: Path) -> WorkspaceSource:
                  "refusing to pull over them")
     r = _git(path, "pull", "--ff-only")
     if r.returncode != 0:
-        raise SourcePullError(
-            502, f"git pull --ff-only failed: {r.stderr.strip()[:500]}")
+        err = r.stderr.strip()[:500]
+        if "Read-only file system" in err:
+            err += (" -- the service's systemd sandbox does not grant write "
+                    f"access to {path}; check ReadWritePaths= in "
+                    "dvw-catalog.service")
+        raise SourcePullError(502, f"git pull --ff-only failed: {err}")
     return read_source(ws_id, path)

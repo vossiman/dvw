@@ -64,6 +64,7 @@ RUN_GROUP="$(id -gn)"
 render_unit() {  # $1 = unit file; renders User/Group and SocketUser/SocketGroup
   sed -e "s/^User=vossi$/User=$USER/" -e "s/^Group=vossi$/Group=$RUN_GROUP/" \
       -e "s/^SocketUser=vossi$/SocketUser=$USER/" -e "s/^SocketGroup=vossi$/SocketGroup=$RUN_GROUP/" \
+      -e "s|^ReadWritePaths=-/home/vossi/|ReadWritePaths=-$HOME/|" \
       "$SVC_DIR/deploy/$1"
 }
 changed=0

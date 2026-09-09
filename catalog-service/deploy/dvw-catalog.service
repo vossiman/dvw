@@ -43,10 +43,16 @@ ProtectHome=read-only
 ReadWritePaths=/var/lib/dvw-catalog
 # The source-pull endpoint (POST /v1/workspaces/{id}/source/pull) fast-forwards
 # devpod source clones under ~/.devpod/agent, writing both .git and the
-# working tree; without this, ProtectHome=read-only fails it. The "-" prefix
-# tolerates the dir being absent. A customized
+# working tree; without this, ProtectHome=read-only fails it. A customized
 # CATALOG_DEVPOD_AGENT_WORKSPACES_DIR needs a matching ReadWritePaths entry.
-ReadWritePaths=-%h/.devpod/agent
+#
+# NOT %h: in a SYSTEM unit that specifier is the service manager's home,
+# i.e. /root, and User= does not change it. Combined with the "-" prefix
+# (which tolerates an absent dir) it granted /root/.devpod/agent and failed
+# silently, so every pull died on "cannot open '.git/FETCH_HEAD':
+# Read-only file system". The installers rewrite this line for the running
+# user the same way they rewrite User=.
+ReadWritePaths=-/home/vossi/.devpod/agent
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
