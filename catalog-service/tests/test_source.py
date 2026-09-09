@@ -116,3 +116,51 @@ def test_pull_surfaces_git_stderr(clone, tmp_path):
     with pytest.raises(SourcePullError) as e:
         source.pull_source("ws", clone)
     assert e.value.status == 502
+
+
+def test_credential_args_needs_an_executable_helper(tmp_path):
+    assert source._credential_args(None) == []
+    missing = tmp_path / "nope"
+    assert source._credential_args(missing) == []
+    plain = tmp_path / "not-exec"
+    plain.write_text("#!/bin/sh\n")
+    assert source._credential_args(plain) == []
+    helper = tmp_path / "helper"
+    helper.write_text("#!/bin/sh\n")
+    helper.chmod(0o755)
+    args = source._credential_args(helper)
+    # The empty entry first, so the host user's own git config cannot decide
+    # how the service authenticates.
+    assert args == ["-c", "credential.helper=",
+                    "-c", f"credential.helper={helper}"]
+
+
+def test_pull_passes_the_helper_to_git(clone, tmp_path, monkeypatch):
+    helper = tmp_path / "helper"
+    helper.write_text("#!/bin/sh\n")
+    helper.chmod(0o755)
+    seen = {}
+    real = source._git
+
+    def spy(path, *args):
+        if "pull" in args:
+            seen["args"] = args
+        return real(path, *args)
+
+    monkeypatch.setattr(source, "_git", spy)
+    source.pull_source("ws", clone, helper)
+    assert seen["args"][:4] == ("-c", "credential.helper=",
+                                "-c", f"credential.helper={helper}")
+
+
+def test_git_never_prompts_for_credentials(clone, monkeypatch):
+    seen = {}
+
+    def spy_run(cmd, **kw):
+        seen.update(kw.get("env") or {})
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(source.subprocess, "run", spy_run)
+    source._git(clone, "status")
+    # A daemon has no tty: a prompt is a hang, not a message.
+    assert seen["GIT_TERMINAL_PROMPT"] == "0"

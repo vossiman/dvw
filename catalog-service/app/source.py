@@ -8,6 +8,7 @@ holds, the same ones devpod's own clone used.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -25,8 +26,21 @@ class SourcePullError(Exception):
 
 
 def _git(path: Path, *args: str) -> subprocess.CompletedProcess:
+    # Never prompt: this runs in a daemon with no tty, where a credential
+    # prompt is not an error message but a 60s hang ending in a confusing
+    # "could not read Username".
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     return subprocess.run(["git", "-C", str(path), *args],
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True, timeout=60, env=env)
+
+
+def _credential_args(helper: Path | None) -> list[str]:
+    """`git -c` flags putting the helper in charge, or nothing."""
+    if helper is None or not os.access(helper, os.X_OK):
+        return []
+    # The empty first entry clears helpers configured elsewhere, so the
+    # service's auth does not depend on the host user's git config.
+    return ["-c", "credential.helper=", "-c", f"credential.helper={helper}"]
 
 
 def _pin_from_devcontainer(path: Path) -> str | None:
@@ -75,7 +89,8 @@ def read_source(ws_id: str, path: Path) -> WorkspaceSource:
     return src
 
 
-def pull_source(ws_id: str, path: Path) -> WorkspaceSource:
+def pull_source(ws_id: str, path: Path,
+                credential_helper: Path | None = None) -> WorkspaceSource:
     src = read_source(ws_id, path)
     if not src.present:
         raise SourcePullError(404, f"no source clone at {path}")
@@ -86,10 +101,15 @@ def pull_source(ws_id: str, path: Path) -> WorkspaceSource:
         raise SourcePullError(
             409, "source clone has uncommitted changes to tracked files; "
                  "refusing to pull over them")
-    r = _git(path, "pull", "--ff-only")
+    r = _git(path, *_credential_args(credential_helper), "pull", "--ff-only")
     if r.returncode != 0:
         err = r.stderr.strip()[:500]
-        if "Read-only file system" in err:
+        if "could not read Username" in err or "Authentication failed" in err:
+            err += (" -- the service has no GitHub credentials for this "
+                    "private repo; check that the credential helper at "
+                    f"{credential_helper} is executable and that the secrets "
+                    "store it reads holds GH_TOKEN")
+        elif "Read-only file system" in err:
             err += (" -- the service's systemd sandbox does not grant write "
                     f"access to {path}; check ReadWritePaths= in "
                     "dvw-catalog.service")

@@ -123,7 +123,8 @@ async def workspace_source_pull(
         raise HTTPException(status_code=400, detail=f"invalid workspace id: {ws_id}")
     try:
         return await run_in_threadpool(
-            source_mod.pull_source, ws_id, source_path)
+            source_mod.pull_source, ws_id, source_path,
+            settings.git_credential_helper)
     except SourcePullError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail)
 
