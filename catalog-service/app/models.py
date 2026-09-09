@@ -305,7 +305,10 @@ class WorkspaceSource(BaseModel):
     present: bool = False
     branch: str | None = None
     head: str | None = None
+    # dirty: anything git reports, untracked included (display).
+    # dirty_tracked: only what actually blocks a fast-forward (the pull gate).
     dirty: bool = False
+    dirty_tracked: bool = False
     detached: bool = False
     remote: str | None = None
     committed_pin: str | None = None

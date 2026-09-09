@@ -122,7 +122,7 @@ _dvw_pin_rebuild_one() {
 
   # 1. Build branch = the source clone's live HEAD; that is literally what
   #    `devpod up --recreate` reads. Catalog branch only as a warned fallback.
-  local src branch tree_pin
+  local src branch tree_pin src_dirty=0
   if src=$(_dvw_catalog_source_get "$id" 2>/dev/null); then
     [[ $(jq -r '.present' <<<"$src") == "true" ]] || {
       ui_error "$id: no source clone on the provider; has devpod ever built it?"
@@ -130,6 +130,7 @@ _dvw_pin_rebuild_one() {
     [[ $(jq -r '.detached' <<<"$src") == "true" ]] && {
       ui_error "$id: source clone is on a detached HEAD; check out a branch first"
       return 1; }
+    [[ $(jq -r '.dirty_tracked' <<<"$src") == "true" ]] && src_dirty=1
     branch=$(jq -r '.branch // empty' <<<"$src")
     tree_pin=$(jq -r '.committed_pin // empty' <<<"$src")
   else
@@ -158,6 +159,15 @@ _dvw_pin_rebuild_one() {
     [[ "$tree_pin" != "$bp" ]] && need_pr=1
   fi
   [[ "$tree_pin" != "$bp" ]] && need_pull=1
+
+  # Preflight the pull's own precondition BEFORE opening a PR and sitting on
+  # the merge gate. The clone's dirty state is already in the step-1 read, so
+  # discovering it at step 5 only means the wait was wasted.
+  if (( need_pull && src_dirty )); then
+    ui_error "$id: the source clone has uncommitted changes to tracked files; the pull would refuse"
+    ui_info "  devpod builds from that working tree; commit or stash inside the workspace (/workspaces/$id), then re-run: dvw pin-rebuild $id"
+    return 1
+  fi
 
   local pr_url=""
   if (( need_pr )); then

@@ -162,6 +162,38 @@ setup() {
   [[ "$output" == *"uncommitted"* ]]
 }
 
+@test "dirty clone is refused before any PR is opened" {
+  _dvw_catalog_source_get() {
+    jq -n --arg p "$OLD_IMAGE" \
+      '{present:true, detached:false, dirty:true, dirty_tracked:true,
+        branch:"main", committed_pin:$p}'
+  }
+  _dvw_pin_open_pr() { echo "PR-OPENED"; }
+  _dvw_pin_main_pr() { echo "MAIN-PR-OPENED"; }
+  run cmd_pin_rebuild demo
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"uncommitted changes"* ]]
+  [[ "$output" != *"PR-OPENED"* ]]
+  [[ "$output" != *"MAIN-PR-OPENED"* ]]
+}
+
+@test "untracked-only dirt does not block the flow" {
+  _dvw_catalog_source_get() {
+    jq -n --arg p "$OLD_IMAGE" \
+      '{present:true, detached:false, dirty:true, dirty_tracked:false,
+        branch:"main", committed_pin:$p}'
+  }
+  _dvw_pin_open_pr() { echo "https://github.com/vossiman/demo/pull/9"; }
+  _dvw_pin_main_pr() { :; }
+  gh() { echo "MERGED"; }
+  _dvw_catalog_source_pull() {
+    jq -n --arg p "$BP_IMAGE" \
+      '{present:true, detached:false, branch:"main", committed_pin:$p}'
+  }
+  run cmd_pin_rebuild demo
+  [ "$status" -eq 0 ]
+}
+
 @test "detached clone is a hard stop" {
   _dvw_catalog_source_get() {
     jq -n '{present:true, detached:true, branch:null, committed_pin:null}'

@@ -49,13 +49,22 @@ def test_source_reads_clone(client, settings):
     assert body["present"] is True and body["branch"] == "main"
 
 
-def test_pull_dirty_409(client, settings):
+def test_pull_dirty_tracked_409(client, settings):
     _create(client)
     path = _seed_clone(settings)
-    (path / "dirt").write_text("d")
+    (path / "f").write_text("edited")
     r = client.post("/v1/workspaces/proj/source/pull")
     assert r.status_code == 409
     assert "uncommitted" in r.text
+
+
+def test_pull_ignores_untracked(client, settings):
+    _create(client)
+    path = _seed_clone(settings)
+    (path / "dirt").write_text("d")
+    assert client.post("/v1/workspaces/proj/source/pull").status_code == 200
+    body = client.get("/v1/workspaces/proj/source").json()
+    assert body["dirty"] is True and body["dirty_tracked"] is False
 
 
 def test_pull_ok(client, settings):
