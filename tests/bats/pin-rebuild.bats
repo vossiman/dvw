@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 #
 # `dvw pin-rebuild`, the one-stop loop. Everything external is stubbed:
-# catalog service, gh, devpod (via cmd_recreate). Follows pin-sync.bats.
+# catalog service, gh, devpod (via cmd_recreate). Follows pin.bats.
 
 setup() {
   source "$DVW_ROOT/dvw"
@@ -241,4 +241,33 @@ setup() {
   run cmd_pin_rebuild demo
   [ "$status" -eq 1 ]
   [[ "$output" == *"blueprint is"* ]]
+}
+
+@test "no ids: runs the whole catalog, one workspace at a time" {
+  catalog_workspace_ids() { printf 'alpha\nbeta\n'; }
+  _dvw_pin_rebuild_one() { echo "ONE:$1"; }
+  run cmd_pin_rebuild
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ONE:alpha"* ]]
+  [[ "$output" == *"ONE:beta"* ]]
+}
+
+@test "several failing workspaces collapse to rc 1, one propagates its own code" {
+  catalog_workspace_ids() { printf 'alpha\nbeta\n'; }
+  _dvw_pin_rebuild_one() { return 2; }
+  run cmd_pin_rebuild
+  [ "$status" -eq 1 ]
+  run cmd_pin_rebuild alpha
+  [ "$status" -eq 2 ]
+}
+
+@test "--pr-only stops at the PR: no pull, no rebuild" {
+  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
+  _dvw_pin_open_pr() { printf 'https://github.com/%s/pull/9\n' "$1"; }
+  _dvw_catalog_source_pull() { echo "PULL SHOULD NOT RUN" >&2; return 1; }
+  cmd_recreate() { echo "RECREATE SHOULD NOT RUN" >&2; return 1; }
+  run cmd_pin_rebuild --pr-only demo
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"/pull/9"* ]]
+  [[ "$output" != *"SHOULD NOT RUN"* ]]
 }

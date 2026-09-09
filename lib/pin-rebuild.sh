@@ -56,31 +56,57 @@ _dvw_pin_main_pr() {
   return 0
 }
 
+DVW_PIN_REBUILD_USAGE="usage: dvw pin-rebuild [<workspace-id>...] [--pr-only] [--no-wait] [--timeout <s>]"
+
+# cmd_pin_rebuild [<workspace-id>...] — no ids = every catalog workspace.
+# --pr-only stops after the PRs (the fleet sweep); the default runs the whole
+# chain per workspace: PR, wait for the merge, pull the source clone, rebuild,
+# assert the running image.
 cmd_pin_rebuild() {
-  local id="" timeout=1800 no_wait=0
+  local timeout=1800 no_wait=0 pr_only=0 ids=()
   while (($#)); do
     case "$1" in
+      --pr-only) pr_only=1 ;;
       --no-wait) no_wait=1 ;;
       --timeout)
         shift
-        [[ "${1:-}" =~ ^[0-9]+$ ]] || {
-          ui_error "usage: dvw pin-rebuild <workspace-id> [--no-wait] [--timeout <s>]"
-          return 1
-        }
+        [[ "${1:-}" =~ ^[0-9]+$ ]] || { ui_error "$DVW_PIN_REBUILD_USAGE"; return 1; }
         timeout="$1" ;;
       -*) ui_error "unknown flag: $1"; return 1 ;;
-      *)
-        if [[ -n "$id" ]]; then
-          ui_error "usage: dvw pin-rebuild <workspace-id> [--no-wait] [--timeout <s>]"
-          return 1
-        fi
-        id="$1" ;;
+      *) ids+=("$1") ;;
     esac
     shift
   done
-  [[ -n "$id" ]] || {
-    ui_error "usage: dvw pin-rebuild <workspace-id> [--no-wait] [--timeout <s>]"
-    return 1; }
+
+  local ids_raw
+  ids_raw=$(_dvw_pin_resolve_ids ${ids[@]+"${ids[@]}"}) || {
+    ui_error "couldn't list catalog workspaces — pin-rebuild cannot know what to rebuild"
+    return 1
+  }
+  mapfile -t ids <<<"$ids_raw"
+
+  if (( pr_only )); then
+    _dvw_pin_pr_only "${ids[@]}"
+    return $?
+  fi
+
+  # A single workspace propagates its exact code (2 = PR closed unmerged, which
+  # callers distinguish); several failing collapse to 1, since one number
+  # cannot carry two verdicts.
+  local id rc=0 one_rc
+  for id in "${ids[@]}"; do
+    [[ -n "$id" ]] || continue
+    one_rc=0
+    _dvw_pin_rebuild_one "$id" "$timeout" "$no_wait" || one_rc=$?
+    (( one_rc == 0 )) && continue
+    if (( rc == 0 )); then rc="$one_rc"; else rc=1; fi
+  done
+  return $rc
+}
+
+# The whole chain for one workspace.
+_dvw_pin_rebuild_one() {
+  local id="$1" timeout="$2" no_wait="$3"
   command -v gh >/dev/null 2>&1 || {
     ui_error "pin-rebuild needs the gh CLI (it opens and watches the PR)"
     return 1; }

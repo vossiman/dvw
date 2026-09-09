@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# dvw pin-sync — reconcile each workspace repo's committed devcontainer image
-# pin against the aiCodingBaseSetup blueprint, via a PR per repo.
+# Pin helpers: reconcile each workspace repo's committed devcontainer image
+# pin against the aiCodingBaseSetup blueprint, via a PR per repo. The PR-only
+# sweep here is `dvw pin-rebuild --pr-only`; the full chain (wait for the
+# merge, pull the source clone, rebuild, verify) lives in pin-rebuild.sh.
 #
 # Why this exists: `aicoding-sync` rewrites .devcontainer/devcontainer.json in
 # the *container working tree* on every boot but deliberately never commits it
@@ -194,14 +196,14 @@ _dvw_pin_open_pr() {
 
   url=$(gh pr create -R "$slug" -B "$base" -H "$branch" \
     -t "chore(image): pin devbox-base $(_dvw_pin_short "$image")" \
-    -b "Opened by \`dvw pin-sync\`. Moves the committed devcontainer image pin to the blueprint's current digest so \`dvw rebuild\` stops recreating this workspace from a stale image." 2>/dev/null) || return 1
+    -b "Opened by \`dvw pin-rebuild\`. Moves the committed devcontainer image pin to the blueprint's current digest so \`dvw rebuild\` stops recreating this workspace from a stale image." 2>/dev/null) || return 1
   printf '%s\n' "$url"
 }
 
 # _dvw_pin_state <id> [<blueprint-pin>] — prints
 # "<state>\t<slug>\t<branch>\t<current>" where state is ok | stale | none |
 # unknown. Never fails the caller. Passing the blueprint pin skips a redundant
-# fetch per workspace (cmd_pin_sync already resolved it once).
+# fetch per workspace (the caller already resolved it once).
 _dvw_pin_state() {
   local id="$1" bp_arg="${2:-}" ws repo branch slug cur bp
   ws=$(catalog_workspace_get "$id" 2>/dev/null) || { printf 'unknown\t\t\t\n'; return 0; }
@@ -233,10 +235,27 @@ _dvw_pin_state() {
   fi
 }
 
-# cmd_pin_sync [<workspace-id>...] — no args = every catalog workspace.
-cmd_pin_sync() {
+# _dvw_pin_resolve_ids [<workspace-id>...] — the given ids, or every catalog
+# workspace when none are given. Prints one id per line.
+#
+# Not `mapfile < <(...)` at the call site: a failing catalog in the process
+# substitution fed mapfile nothing and the run "succeeded" with 0/0/0 (review
+# 2026-08-21). Discovery failure must fail the caller.
+_dvw_pin_resolve_ids() {
+  if (($# > 0)); then
+    printf '%s\n' "$@"
+    return 0
+  fi
+  catalog_workspace_ids
+}
+
+# _dvw_pin_pr_only <workspace-id>... — open a pin PR per stale workspace and
+# stop there: no merge wait, no source-clone pull, no rebuild. This is
+# `dvw pin-rebuild --pr-only`, for sweeping the fleet or for a workspace whose
+# provider is unreachable from here.
+_dvw_pin_pr_only() {
   if ! command -v gh >/dev/null 2>&1; then
-    ui_error "pin-sync needs the gh CLI (it opens the PRs)"
+    ui_error "--pr-only needs the gh CLI (it opens the PRs)"
     return 1
   fi
   local bp
@@ -245,22 +264,9 @@ cmd_pin_sync() {
     return 1
   fi
 
-  local ids=()
-  if (($# > 0)); then
-    ids=("$@")
-  else
-    # Not `mapfile < <(...)`: a failing catalog in the process substitution
-    # fed mapfile nothing and the run "succeeded" with 0/0/0 (review
-    # 2026-08-21). Discovery failure must fail the command.
-    local ids_raw
-    ids_raw=$(catalog_workspace_ids) || {
-      ui_error "couldn't list catalog workspaces — pin-sync cannot know what to sync"
-      return 1
-    }
-    mapfile -t ids <<<"$ids_raw"
-  fi
+  local ids=("$@")
 
-  ui_banner "dvw pin-sync" "blueprint: $(_dvw_pin_short "$bp")"
+  ui_banner "dvw pin-rebuild --pr-only" "blueprint: $(_dvw_pin_short "$bp")"
 
   local id line state slug branch cur url n_stale=0 n_ok=0 n_skip=0 n_fail=0
   for id in "${ids[@]}"; do
@@ -291,17 +297,19 @@ cmd_pin_sync() {
 
   printf '\n'
   ui_info "$n_ok current · $n_stale stale · $n_skip skipped"
-  [[ $n_stale -gt 0 ]] && ui_info "merge the PRs, then: dvw rebuild <id>"
+  [[ $n_stale -gt 0 ]] && ui_info "merge the PRs, then: dvw pin-rebuild <id>"
   # Automation reads the exit status: every PR failing while the command
   # returns 0 made unattended runs look healthy (review 2026-08-21).
   (( n_fail > 0 )) && return 1
   return 0
 }
 
-# Pre-flight for cmd_recreate: if the workspace's committed pin is stale,
-# say so and OFFER pin-sync before we recreate from the old image. Declining
-# proceeds with the rebuild — this never blocks. Entirely fail-open: no gh,
-# no network, non-GitHub remote → silent pass-through.
+# Pre-flight for cmd_recreate: if the workspace's committed pin is stale, say
+# so and point at pin-rebuild before we recreate from the old image. A bare
+# recreate cannot fix this itself — it never pulls the source clone devpod
+# builds from — so the offer has to be the whole chain, not just the PR.
+# Declining proceeds with the rebuild — this never blocks. Entirely fail-open:
+# no gh, no network, non-GitHub remote → silent pass-through.
 _dvw_pin_preflight() {
   local id="$1" line state slug branch cur
   command -v gh >/dev/null 2>&1 || return 0
@@ -310,9 +318,10 @@ _dvw_pin_preflight() {
   [[ "$state" == "stale" ]] || return 0
 
   ui_status_warn "$slug@$branch is pinned to $(_dvw_pin_short "$cur") — rebuilding now reinstalls that image"
-  if ui_confirm "open a pin-sync PR first?"; then
-    cmd_pin_sync "$id"
-    ui_info "merge the PR, then: dvw pin-rebuild $id (pulls the source clone and verifies the image)"
+  if ui_confirm "run pin-rebuild instead (PR, merge, pull, rebuild, verify)?"; then
+    # 1 = handed over and it finished the job; 2 = handed over and it failed.
+    # The caller must tell those apart, or a failed rebuild reports success.
+    cmd_pin_rebuild "$id" || return 2
     return 1
   fi
   return 0

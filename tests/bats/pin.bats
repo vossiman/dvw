@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 #
-# `dvw pin-sync` and the rebuild pre-flight.
+# Pin helpers: `dvw pin-rebuild --pr-only` and the rebuild pre-flight.
 #
 # Context: aicoding-sync rewrites .devcontainer/devcontainer.json in the
 # container working tree but never commits it, so repo copies drift and
@@ -82,19 +82,19 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
-@test "pin-sync: a stale workspace gets a PR opened" {
+@test "pr-only: a stale workspace gets a PR opened" {
   _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
   _dvw_pin_open_pr() { printf 'https://github.com/%s/pull/1\n' "$1"; }
-  run cmd_pin_sync demo
+  run _dvw_pin_pr_only demo
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "stale"
   echo "$output" | grep -q "https://github.com/vossiman/demo/pull/1"
 }
 
-@test "pin-sync: a current workspace opens nothing" {
+@test "pr-only: a current workspace opens nothing" {
   _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
   _dvw_pin_open_pr() { echo "SHOULD NOT RUN"; return 1; }
-  run cmd_pin_sync demo
+  run _dvw_pin_pr_only demo
   [ "$status" -eq 0 ]
   ! echo "$output" | grep -q "SHOULD NOT RUN"
   echo "$output" | grep -q "already at"
@@ -102,18 +102,25 @@ setup() {
 
 # review 2026-08-21: every PR failing still returned 0, so automation saw a
 # healthy run while nothing was synced.
-@test "pin-sync: a failed PR open fails the command" {
+@test "pr-only: a failed PR open fails the command" {
   _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
   _dvw_pin_open_pr() { return 1; }
-  run cmd_pin_sync demo
+  run _dvw_pin_pr_only demo
   [ "$status" -ne 0 ]
   echo "$output" | grep -q "couldn't open the PR"
 }
 
-@test "pin-sync: catalog discovery failure is not a silent success" {
+@test "id resolution: catalog discovery failure is not a silent success" {
   catalog_workspace_ids() { return 1; }
-  run cmd_pin_sync
+  run cmd_pin_rebuild --pr-only
   [ "$status" -ne 0 ]
+}
+
+@test "id resolution: explicit ids are used verbatim, catalog untouched" {
+  catalog_workspace_ids() { echo "SHOULD NOT RUN"; return 1; }
+  run _dvw_pin_resolve_ids alpha beta
+  [ "$status" -eq 0 ]
+  [ "$output" = $'alpha\nbeta' ]
 }
 
 _install_pin_pr_gh_stub() {
@@ -227,20 +234,39 @@ _stub_recreate_deps() {
   ! grep -q "reconciled:demo" "$BATS_TEST_TMPDIR/calls"
 }
 
-@test "rebuild pre-flight: a stale pin OFFERS pin-sync and aborts when accepted" {
+# The offer has to be the whole chain: pin-sync's PR alone left the source
+# clone stale, so the recreate right after it rebuilt the old image anyway
+# (hit live 2026-09-09 on devmachine).
+@test "rebuild pre-flight: a stale pin hands over to pin-rebuild when accepted" {
   _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
   ui_confirm() { return 0; }          # user says yes
-  cmd_pin_sync() { echo "PIN SYNC RAN"; }
+  cmd_pin_rebuild() { echo "PIN REBUILD RAN:$*"; }
   run _dvw_pin_preflight demo
   [ "$status" -eq 1 ]                 # non-zero = cmd_recreate skips the rebuild
-  echo "$output" | grep -q "PIN SYNC RAN"
-  echo "$output" | grep -qF "dvw pin-rebuild demo"
+  echo "$output" | grep -q "PIN REBUILD RAN:demo"
+}
+
+# Astra review of PR #79: the handoff swallowed pin-rebuild's status, so a
+# failed pull/rebuild/verify still let `dvw recreate` exit 0.
+@test "rebuild pre-flight: a failing hand-over is rc 2, and fails the recreate" {
+  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
+  ui_confirm() { return 0; }
+  cmd_pin_rebuild() { return 1; }
+  run _dvw_pin_preflight demo
+  [ "$status" -eq 2 ]
+
+  _stub_recreate_deps
+  unset -f _dvw_pin_preflight
+  _dvw_pin_preflight() { return 2; }
+  run cmd_recreate demo
+  [ "$status" -ne 0 ]
+  ! grep -q "ran:devpod up" "$BATS_TEST_TMPDIR/calls" 2>/dev/null
 }
 
 @test "rebuild pre-flight: declining the offer proceeds with the rebuild" {
   _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
   ui_confirm() { return 1; }          # user says no
-  cmd_pin_sync() { echo "SHOULD NOT RUN"; }
+  cmd_pin_rebuild() { echo "SHOULD NOT RUN"; }
   run _dvw_pin_preflight demo
   [ "$status" -eq 0 ]                 # zero = cmd_recreate goes ahead
   ! echo "$output" | grep -q "SHOULD NOT RUN"
@@ -255,11 +281,16 @@ _stub_recreate_deps() {
   ! echo "$output" | grep -q "SHOULD NOT ASK"
 }
 
-@test "dispatch: dvw pin-sync reaches cmd_pin_sync with its args" {
-  cmd_pin_sync() { printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/argv"; }
-  run main pin-sync demo
+@test "dispatch: dvw pin-rebuild reaches cmd_pin_rebuild with its args" {
+  cmd_pin_rebuild() { printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/argv"; }
+  run main pin-rebuild --pr-only demo
   [ "$status" -eq 0 ]
-  [ "$(cat "$BATS_TEST_TMPDIR/argv")" = "demo" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/argv")" = $'--pr-only\ndemo' ]
+}
+
+@test "dispatch: pin-sync is gone, not silently accepted" {
+  run main pin-sync demo
+  [ "$status" -ne 0 ]
 }
 
 @test "pin state: prefers the source clone's live branch over the catalog" {
