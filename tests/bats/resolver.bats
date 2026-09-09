@@ -9,6 +9,8 @@
 # just sources the catalog from GET /v1/catalog now instead of a local file, so
 # those tests serve the catalog body via the transport stub.
 
+bats_require_minimum_version 1.5.0
+
 setup() {
   TMPDIR=$(mktemp -d)
   export HOME="$TMPDIR"
