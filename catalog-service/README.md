@@ -222,3 +222,43 @@ All env vars are prefixed `CATALOG_` (see `deploy/catalog.env.example`):
 `CATALOG_DATA_DIR`, `CATALOG_DOCKER_HOST`, `CATALOG_TOKEN`,
 `CATALOG_RESOLVE_CACHE_TTL`. Clients use `DVW_CATALOG_HOST` / `DVW_CATALOG_SOCK`
 / `DVW_CATALOG_TOKEN`.
+
+## Workspace activity (observation only)
+
+`GET /v1/containers/activity` returns the catalogue's shared activity snapshot.
+A background task samples catalogued workspaces every 30 seconds, even with no
+TUI open. Each row reports `state`, `reasons`, `signals`, `observed_at`,
+`idle_since`, `idle_seconds`, `remaining_seconds`, `timeout_seconds`, and
+`observation_only: true`. No automatic stop operation exists in this feature.
+
+The default timeout is 60 minutes. Configure a workspace through the existing
+`PATCH /v1/workspaces/{id}` API with `{"idle_timeout_minutes":30}` or
+`{"always_on":true}`. The timeout accepts whole minutes from 1 to 10080;
+`always_on` defaults to false. Overrides persist in the catalogue. Observation
+history is deliberately in memory: service restarts begin a new observation
+period. Policy changes also reset idle credit.
+
+A live tmux session (including detached), recognized Cursor/VS Code connection,
+interactive terminal, or coding agent gives positive activity evidence. Idle
+requires every signal to be measured and zero, a complete probe, and a single
+running container with a known start time. Missing/old probes, failed scans,
+duplicate running siblings and observations older than 90 seconds report
+unknown. A gap longer than 90 seconds or a container restart resets idle time.
+Slow batches cannot refresh the age of an earlier sample. An expired countdown
+only says **would stop now**; it never stops anything.
+
+The matching `aiCodingBaseSetup` probe extension is required for idle detection.
+Older schema-1 probes remain compatible but cannot establish idle. Install/sync
+the new blueprint probe in workspaces, redeploy the catalogue service, and update
+the TUI client to see this feature end to end. No Docker proxy permissions change.
+Validate the observation against real Cursor connect/disconnect and detached
+agent sessions before considering a separate automatic-shutdown feature.
+
+Detection currently covers the workspace user, default tmux socket (other tmux
+servers prevent an absence conclusion), and DevPod TCP connections to recognized
+`.cursor-server`/`.vscode-server` executables. Residual IDE processes alone do not
+count as connected; unsupported connected IDE transports report unknown when
+recognized. Processes hidden from the probe or alternate IDE installation paths
+are not universally detectable. Always-on is appropriate for workspaces hosting
+services you want available even when no coding session is open. General service
+traffic is not treated as coding activity.

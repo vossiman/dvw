@@ -6,7 +6,7 @@ import time
 
 from rich.text import Text
 
-from .client import WindowInfo
+from .client import WindowInfo, ACTIVITY_REASONS, parse_activity
 from .glyphs import glyph
 from .palette import TOKYO
 
@@ -145,3 +145,34 @@ def window_label(w: WindowInfo, now: int) -> Text:
     if w.waiting_since is not None:
         text.append(f"  {glyph('⏸', f'waiting {age(w.waiting_since, now)}')}", style=f"bold {ACCENT}")
     return text
+
+
+def activity_cell(activity: dict | None) -> Text:
+    activity = parse_activity(activity)
+    if activity is None or activity["state"] == "unknown":
+        return Text("activity unknown", style=SUBTLE)
+    state = activity["state"]
+    if state == "active":
+        return Text(", ".join(ACTIVITY_REASONS[r] for r in activity["reasons"]), style=GREEN)
+    if state == "idle":
+        remaining = activity["remaining_seconds"]
+        countdown = f"would stop in {(remaining + 59) // 60}m" if remaining else "would stop now"
+        return Text(f"idle {activity['idle_seconds'] // 60}m · {countdown}", style=YELLOW)
+    return Text(state, style=SUBTLE)
+
+
+def activity_lines(activity: dict | None) -> list[tuple[str, str]]:
+    from datetime import datetime, timezone
+
+    clean = parse_activity(activity)
+    pairs = [("activity", activity_cell(clean).plain),
+             ("mode", "observation-only; no automatic stops")]
+    if clean is None:
+        return pairs
+    pairs.append(("reasons", ", ".join(ACTIVITY_REASONS[r] for r in clean["reasons"]) or "none"))
+    for label, field in (("idle since", "idle_since"), ("observed", "observed_at")):
+        value = clean[field]
+        stamp = datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC") if value is not None else "—"
+        pairs.append((label, stamp))
+    pairs.append(("timeout", f"{(clean['timeout_seconds'] + 59) // 60}m"))
+    return pairs

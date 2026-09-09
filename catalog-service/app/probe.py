@@ -82,6 +82,14 @@ class ProbeCgroup(BaseModel):
     nr_procs: NonNeg | None = None
 
 
+class ProbeActivity(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    tmux_sessions: Annotated[int, Field(ge=0, le=100000, strict=True)] | None = None
+    terminals: Annotated[int, Field(ge=0, le=100000, strict=True)] | None = None
+    cursor_connections: Annotated[int, Field(ge=0, le=100000, strict=True)] | None = None
+    vscode_connections: Annotated[int, Field(ge=0, le=100000, strict=True)] | None = None
+
+
 class ProbeReport(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
     schema_: int = Field(alias="schema")
@@ -89,6 +97,7 @@ class ProbeReport(BaseModel):
     partial: bool = False
     tmux: ProbeTmux | None = None
     agents: list[ProbeAgent] | None = Field(default=None, max_length=64)
+    activity: ProbeActivity | None = None
     git: ProbeGit | None = None
     cgroup: ProbeCgroup | None = None
 

@@ -3,7 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 from starlette.concurrency import run_in_threadpool
 
-from ..deps import BlueprintImageDep, InspectorDep, StoreDep, run_inspect
+from ..activity import WorkspaceActivity
+from ..deps import ActivityDep, BlueprintImageDep, InspectorDep, StoreDep, run_inspect
 from ..models import Orphan, WaitingWindow, WorkspaceStatus, WorkspaceWindows
 
 router = APIRouter(prefix="/containers", tags=["containers"])
@@ -45,3 +46,9 @@ async def windows(inspector: InspectorDep) -> list[WorkspaceWindows]:
     """Per-workspace tmux window snapshot (tree view). One exec per
     running container; failures degrade to an empty window list."""
     return await run_inspect(inspector.windows_many)
+
+
+@router.get("/activity", response_model=list[WorkspaceActivity])
+async def activity(store: StoreDep, observer: ActivityDep) -> list[WorkspaceActivity]:
+    """Cached observation-only countdowns; no Docker exec and no stop action."""
+    return observer.views(store.list_workspaces())

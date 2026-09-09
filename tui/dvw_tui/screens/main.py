@@ -31,6 +31,8 @@ from ..render import (
     RED,
     SUBTLE,
     inspect_lines,
+    activity_cell,
+    activity_lines,
     state_cell,
     window_label,
 )
@@ -161,6 +163,8 @@ class MainScreen(Screen):
             # Fail closed: don't leave stale waiting badges visible (or
             # attachable via `a`) once the workspace fetch itself failed.
             self._windows = {}
+            for workspace in self._workspaces:
+                workspace.activity = None
             self._update_header(connected=False)
             self._render_tree()
             self.data_ready = True
@@ -188,6 +192,9 @@ class MainScreen(Screen):
         text.append(f"  {w.short_repo}@{w.branch}", style=SUBTLE)
         text.append("  ")
         text.append_text(state_cell(w.liveness, w.attached, w.image_current))
+        if w.liveness not in ("stopped", "absent"):
+            text.append(" · ", style=SUBTLE)
+            text.append_text(activity_cell(w.activity))
         return text
 
     def _render_tree(self) -> None:
@@ -341,6 +348,7 @@ class MainScreen(Screen):
             text.append(" attached  ", style=SUBTLE)
             text.append(f"{attached} clients\n" if attached != 1 else "1 client\n")
         text.append("\n")
+        self._append_activity(text, ws_id)
         text.append(" loading…", style=SUBTLE)
         self.query_one("#inspect-body", Static).update(text)
 
@@ -357,10 +365,22 @@ class MainScreen(Screen):
             text.append(" attached  ", style=SUBTLE)
             text.append(f"{attached} clients\n" if attached != 1 else "1 client\n")
         text.append("\n")
+        self._append_activity(text, ws_id)
         for label, value in inspect_lines(data):
             text.append(f" {label:<10}", style=SUBTLE)
             text.append(f"{value}\n")
         self.query_one("#inspect-body", Static).update(text)
+
+    def _append_activity(self, text: Text, ws_id: str) -> None:
+        # Inspect responses are cached separately. Always use the latest
+        # central observation from the workspace refresh, never that cache.
+        workspace = next((w for w in self._workspaces if w.id == ws_id), None)
+        if workspace is None or workspace.liveness in ("stopped", "absent"):
+            return
+        for label, value in activity_lines(workspace.activity):
+            text.append(f" {label:<11}", style=SUBTLE)
+            text.append(f"{value}\n")
+        text.append("\n")
 
     @work(exclusive=True, group="inspect")
     async def _fetch_inspect(self, ws_id: str) -> None:
