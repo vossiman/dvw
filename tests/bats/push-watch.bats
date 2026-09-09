@@ -245,7 +245,9 @@ EOF
   cat > "$STUB_BIN/dvw" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$$" >> "$HOME/dvw-pids"
-sleep 300 & wait
+# Keep the sleeper at the recorded PID so stop/teardown cannot orphan a
+# child holding Bats' output descriptor open.
+exec sleep 300
 STUB
   chmod +x "$STUB_BIN/dvw"
   DVW_ROOT="$STUB_BIN"
