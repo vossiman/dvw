@@ -72,11 +72,24 @@ def test_pull_fast_forwards(clone, tmp_path):
     assert src.committed_pin == NEW_PIN
 
 
-def test_pull_refuses_dirty(clone):
-    (clone / "y").write_text("y")
+def test_pull_refuses_dirty_tracked(clone):
+    f = clone / ".devcontainer" / "devcontainer.json"
+    f.write_text(f.read_text() + "\n")
     with pytest.raises(SourcePullError) as e:
         source.pull_source("ws", clone)
     assert e.value.status == 409
+
+
+def test_untracked_files_do_not_block_the_pull(clone, tmp_path):
+    (clone / "stray-note.md").write_text("y")
+    src = source.read_source("ws", clone)
+    assert src.dirty is True and src.dirty_tracked is False
+    seed = tmp_path / "seed"
+    f = seed / ".devcontainer" / "devcontainer.json"
+    f.write_text(f.read_text().replace(PIN, NEW_PIN))
+    _git(seed, "commit", "-aqm", "bump")
+    _git(seed, "push", "-q", "origin", "HEAD:refs/heads/main")
+    assert source.pull_source("ws", clone).committed_pin == NEW_PIN
 
 
 def test_pull_refuses_detached(clone):

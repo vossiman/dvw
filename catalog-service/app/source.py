@@ -62,6 +62,12 @@ def read_source(ws_id: str, path: Path) -> WorkspaceSource:
         src.detached = True
     r = _git(path, "status", "--porcelain")
     src.dirty = r.returncode == 0 and bool(r.stdout.strip())
+    # Only tracked-file changes can block a fast-forward. Untracked files ride
+    # along fine, and git itself refuses the merge if one would be overwritten,
+    # so gating the pull on `dirty` sent people hunting for edits they never
+    # made (a stray docs/ note was enough).
+    r = _git(path, "status", "--porcelain", "--untracked-files=no")
+    src.dirty_tracked = r.returncode == 0 and bool(r.stdout.strip())
     r = _git(path, "remote", "get-url", "origin")
     if r.returncode == 0:
         src.remote = r.stdout.strip() or None
@@ -76,9 +82,10 @@ def pull_source(ws_id: str, path: Path) -> WorkspaceSource:
     if src.detached:
         raise SourcePullError(
             409, "source clone is on a detached HEAD; check out a branch first")
-    if src.dirty:
+    if src.dirty_tracked:
         raise SourcePullError(
-            409, "source clone has uncommitted changes; refusing to pull over them")
+            409, "source clone has uncommitted changes to tracked files; "
+                 "refusing to pull over them")
     r = _git(path, "pull", "--ff-only")
     if r.returncode != 0:
         raise SourcePullError(
