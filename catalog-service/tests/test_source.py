@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -164,3 +165,35 @@ def test_git_never_prompts_for_credentials(clone, monkeypatch):
     source._git(clone, "status")
     # A daemon has no tty: a prompt is a hang, not a message.
     assert seen["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_git_child_gets_a_normal_umask(clone, monkeypatch):
+    seen = {}
+
+    def spy_run(cmd, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(source.subprocess, "run", spy_run)
+    source._git(clone, "status")
+    # The unit's UMask=0117 is for its socket; inherited by git it creates
+    # object dirs with no execute bit and the next write into one fails.
+    assert seen["umask"] == 0o022
+
+
+def test_pull_creates_usable_object_dirs_under_a_restrictive_umask(
+        clone, tmp_path):
+    seed = tmp_path / "seed"
+    (seed / "new-file").write_text("x" * 100)
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-qm", "adds an object")
+    _git(seed, "push", "-q", "origin", "HEAD:refs/heads/main")
+    old = os.umask(0o117)
+    try:
+        source.pull_source("ws", clone)
+    finally:
+        os.umask(old)
+    assert (clone / "new-file").is_file()
+    for d in (clone / ".git" / "objects").iterdir():
+        if d.is_dir():
+            assert d.stat().st_mode & 0o111, f"{d.name} has no execute bit"

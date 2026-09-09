@@ -30,8 +30,15 @@ def _git(path: Path, *args: str) -> subprocess.CompletedProcess:
     # prompt is not an error message but a 60s hang ending in a confusing
     # "could not read Username".
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    # The unit sets UMask=0117 so its listen socket comes out 0660. That is a
+    # process-wide setting, and it leaked into git: new object DIRECTORIES
+    # were created 0660, with no execute bit, and the next write into one
+    # failed with "insufficient permission for adding an object to repository
+    # database". Give the child a normal umask; only the socket needs the
+    # restrictive one.
     return subprocess.run(["git", "-C", str(path), *args],
-                          capture_output=True, text=True, timeout=60, env=env)
+                          capture_output=True, text=True, timeout=60,
+                          env=env, umask=0o022)
 
 
 def _credential_args(helper: Path | None) -> list[str]:
