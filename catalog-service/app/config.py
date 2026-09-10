@@ -16,6 +16,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CATALOG_", extra="ignore")
 
+    # Root log level. uvicorn configures only its own loggers, so without a
+    # root handler every app-level record below WARNING is dropped by
+    # logging.lastResort.
+    log_level: str = "info"
+
     # Where the single JSON catalog lives. Plain, deliberately simple JSON so
     # the file stays hand-editable and trivial to copy between hosts.
     data_dir: Path = Path("/var/lib/dvw-catalog")

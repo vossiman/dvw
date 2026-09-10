@@ -170,3 +170,44 @@ def test_delayed_sample_expires_from_collection_not_batch_completion():
     r = tick(o, 50, [sample(sampled_at=1)])
     assert r.state == 'idle' and r.observed_at == 10001
     assert o.views([ws()], now=92)[0].state == 'unknown'
+
+
+def test_state_change_is_logged_once_and_names_the_reason(caplog):
+    o = ActivityObserver()
+    with caplog.at_level('INFO', logger='app.activity'):
+        tick(o, 0)
+        tick(o, 30)
+        tick(o, 60, samples=[sample(signals=dict(tmux_sessions=0, terminals=1,
+                                                 cursor_connections=0,
+                                                 vscode_connections=0, agents=0))])
+    lines = [r.getMessage() for r in caplog.records]
+    assert len(lines) == 2, lines
+    assert lines[0].startswith('activity w: new -> idle')
+    assert 'idle -> active (terminal)' in lines[1]
+    assert 'terminals=1' in lines[1]
+
+
+def test_discard_reason_is_logged_and_clears_the_countdown(caplog):
+    o = ActivityObserver()
+    tick(o, 0)
+    tick(o, 30)
+    with caplog.at_level('INFO', logger='app.activity'):
+        tick(o, 60, samples=[sample(complete=False, note='partial probe report')])
+        result = tick(o, 90)
+    lines = [r.getMessage() for r in caplog.records]
+    assert 'idle -> unknown' in lines[0] and 'partial probe report' in lines[0]
+    assert 'unknown -> idle' in lines[1]
+    assert result.idle_seconds == 0
+
+
+def test_silent_countdown_reset_is_logged_even_though_the_state_is_unchanged(caplog):
+    """A restarted container stays 'idle' but loses its accumulated time."""
+    o = ActivityObserver()
+    tick(o, 0)
+    tick(o, 30)
+    with caplog.at_level('INFO', logger='app.activity'):
+        result = tick(o, 60, samples=[sample(started_at='restarted')])
+    lines = [r.getMessage() for r in caplog.records]
+    assert lines == ['activity w: idle countdown reset [agents=0, cursor_connections=0, '
+                     'terminals=0, tmux_sessions=0, vscode_connections=0]']
+    assert result.state == 'idle' and result.idle_seconds == 0

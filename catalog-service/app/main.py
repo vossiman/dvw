@@ -41,6 +41,10 @@ async def lifespan(app: FastAPI):
 
     settings = get_settings()
     app.state.settings = settings
+    logging.basicConfig(
+        level=logging.getLevelNamesMapping().get(settings.log_level.upper(), logging.INFO),
+        format="%(levelname)s %(name)s %(message)s",
+    )
 
     # The atomic-write safety relies on a single writer process. Enforce it
     # (don't just document it): an exclusive, non-blocking flock means a second
