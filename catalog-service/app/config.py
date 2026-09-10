@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     # logging.lastResort.
     log_level: str = "info"
 
+    # Durable record of activity state changes, read back via
+    # GET /containers/activity/history. Empty disables recording.
+    activity_history_filename: str = "activity-history.jsonl"
+    activity_history_max_bytes: int = 2 * 1024 * 1024
+
     # Where the single JSON catalog lives. Plain, deliberately simple JSON so
     # the file stays hand-editable and trivial to copy between hosts.
     data_dir: Path = Path("/var/lib/dvw-catalog")
@@ -78,6 +83,12 @@ class Settings(BaseSettings):
     # executable to disable, in which case pulls stay anonymous.
     git_credential_helper: Path = (
         Path(__file__).resolve().parent.parent / "deploy" / "gh-token-helper")
+
+    @property
+    def activity_history_path(self) -> Path | None:
+        if not self.activity_history_filename:
+            return None
+        return self.data_dir / self.activity_history_filename
 
     @property
     def catalog_path(self) -> Path:

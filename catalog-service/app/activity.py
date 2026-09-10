@@ -10,6 +10,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from .activity_history import ActivityEvent, ActivityHistory
+
 log = logging.getLogger(__name__)
 SIGNALS = {'tmux_sessions': 'tmux', 'cursor_connections': 'cursor',
            'vscode_connections': 'vscode', 'terminals': 'terminal', 'agents': 'agent'}
@@ -51,8 +53,9 @@ class _Record:
 
 class ActivityObserver:
     """Single event-loop owner. Unobserved time is never credited as idle."""
-    def __init__(self, max_gap: float = 90):
+    def __init__(self, max_gap: float = 90, history: ActivityHistory | None = None):
         self.max_gap = max_gap
+        self.history = history
         self._records: dict[str, _Record] = {}
 
     def update(self, workspaces, samples, *, now=None, wall=None):
@@ -94,13 +97,12 @@ class ActivityObserver:
                 view.idle_since = old.view.idle_since if continuous else observed_wall
                 view.idle_seconds = max(0, int(observed - start))
                 view.remaining_seconds = max(0, view.timeout_seconds - view.idle_seconds)
-            self._log_change(old, view, s, continuous=continuous)
+            self._record_change(old, view, s, observed_wall, continuous=continuous)
             records[w.id] = _Record(view, observed, identity, policy, start)
         self._records = records
 
-    @staticmethod
-    def _log_change(old, view, sample, *, continuous):
-        """One line per state or reason change, so a reset is diagnosable later.
+    def _record_change(self, old, view, sample, at, *, continuous):
+        """One entry per state or reason change, so a reset is diagnosable later.
 
         Counts and ids only; the same values the API already serves.
         """
@@ -109,12 +111,21 @@ class ActivityObserver:
         if was == (view.state, tuple(view.reasons)):
             # A silent restart of an already-idle countdown: container identity
             # or policy changed, or the gap between samples was too long.
-            if view.state == 'idle' and not continuous:
-                log.info('activity %s: idle countdown reset [%s]', view.workspace_id, detail)
-            return
-        log.info('activity %s: %s -> %s%s [%s]', view.workspace_id,
-                 was[0] if was else 'new', view.state,
-                 ' (' + ','.join(view.reasons) + ')' if view.reasons else '', detail)
+            if view.state != 'idle' or continuous:
+                return
+            event = 'reset'
+            log.info('activity %s: idle countdown reset [%s]', view.workspace_id, detail)
+        else:
+            event = 'change'
+            log.info('activity %s: %s -> %s%s [%s]', view.workspace_id,
+                     was[0] if was else 'new', view.state,
+                     ' (' + ','.join(view.reasons) + ')' if view.reasons else '', detail)
+        if self.history is not None:
+            self.history.append(ActivityEvent(
+                at=at, workspace_id=view.workspace_id, event=event, state=view.state,
+                previous_state=was[0] if was else None, reasons=list(view.reasons),
+                signals=dict(view.signals), idle_seconds=view.idle_seconds,
+                note=sample.note))
 
     def views(self, workspaces, *, now=None):
         now = time.monotonic() if now is None else now
