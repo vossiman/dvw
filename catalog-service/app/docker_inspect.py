@@ -544,6 +544,7 @@ class DockerInspector:
                 sample.running = False
                 continue
             if len(candidates) != 1:
+                sample.note = f"{len(candidates)} running containers"
                 continue
             c = candidates[0]
             sample.container_id = c.id
@@ -552,13 +553,22 @@ class DockerInspector:
             try:
                 report = self._snapshot(c).report
             except Exception:
+                sample.note = "probe unavailable"
                 continue
             # Container timestamps share the host clock. Stale, future or old
             # reports cannot establish absence, even if otherwise well formed.
-            if report is None or not -5 <= time.time() - report.ts <= 90:
+            if report is None:
+                sample.note = "no probe report"
+                continue
+            if not -5 <= time.time() - report.ts <= 90:
+                sample.note = "probe report out of time window"
                 continue
             sample.complete = not report.partial
-            if report.activity is not None:
+            if report.partial:
+                sample.note = "partial probe report"
+            if report.activity is None:
+                sample.note = sample.note or "probe reports no activity block"
+            else:
                 sample.signals = report.activity.model_dump()
             # Older probes can still establish positive tmux/agent evidence.
             if report.tmux and report.tmux.sessions:

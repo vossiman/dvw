@@ -48,3 +48,20 @@ def test_stopped_and_absent(monkeypatch):
 def test_hostile_counts_rejected(monkeypatch):
     c = container(activity=dict(tmux_sessions=-1))
     assert _inspector([c], monkeypatch).activity_many(['w'])[0].signals == {}
+
+
+@pytest.mark.parametrize('changes, note', [
+    ({'partial': True}, 'partial probe report'),
+    ({'activity': None}, 'probe reports no activity block'),
+    ({'ts': 1}, 'probe report out of time window'),
+])
+def test_discarded_evidence_names_its_reason(monkeypatch, changes, note):
+    s, = _inspector([container(**changes)], monkeypatch).activity_many(['w'])
+    assert s.note == note
+
+
+def test_duplicate_running_containers_name_the_reason(monkeypatch):
+    c, d = container(), container()
+    d.id = 'd'
+    s, = _inspector([c, d], monkeypatch).activity_many(['w'])
+    assert s.note == '2 running containers'

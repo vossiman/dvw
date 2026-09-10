@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from . import __version__
 from .activity import ActivityObserver
+from .activity_history import ActivityHistory
 from .blueprint_store import BlueprintStore
 from .blueprint_image import BlueprintImageCache
 from .config import get_settings
@@ -41,6 +42,10 @@ async def lifespan(app: FastAPI):
 
     settings = get_settings()
     app.state.settings = settings
+    logging.basicConfig(
+        level=logging.getLevelNamesMapping().get(settings.log_level.upper(), logging.INFO),
+        format="%(levelname)s %(name)s %(message)s",
+    )
 
     # The atomic-write safety relies on a single writer process. Enforce it
     # (don't just document it): an exclusive, non-blocking flock means a second
@@ -73,7 +78,12 @@ async def lifespan(app: FastAPI):
         settings.catalog_path,
         settings.docker_host or "<local socket>",
     )
-    app.state.activity_observer = ActivityObserver()
+    history_path = settings.activity_history_path
+    app.state.activity_history = (
+        ActivityHistory(history_path, settings.activity_history_max_bytes)
+        if history_path else None
+    )
+    app.state.activity_observer = ActivityObserver(history=app.state.activity_history)
     activity_task = asyncio.create_task(app.state.activity_observer.run(
         app.state.store, app.state.inspector))
     try:

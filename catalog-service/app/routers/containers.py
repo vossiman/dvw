@@ -4,6 +4,7 @@ from fastapi import APIRouter, Query
 from starlette.concurrency import run_in_threadpool
 
 from ..activity import WorkspaceActivity
+from ..activity_history import ActivityEvent
 from ..deps import ActivityDep, BlueprintImageDep, InspectorDep, StoreDep, run_inspect
 from ..models import Orphan, WaitingWindow, WorkspaceStatus, WorkspaceWindows
 
@@ -52,3 +53,20 @@ async def windows(inspector: InspectorDep) -> list[WorkspaceWindows]:
 async def activity(store: StoreDep, observer: ActivityDep) -> list[WorkspaceActivity]:
     """Cached observation-only countdowns; no Docker exec and no stop action."""
     return observer.views(store.list_workspaces())
+
+
+@router.get("/activity/history", response_model=list[ActivityEvent])
+async def activity_history(
+    observer: ActivityDep,
+    workspace_id: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+) -> list[ActivityEvent]:
+    """State changes and countdown resets, oldest first.
+
+    The observer's own records are in memory; this is the durable copy, so a
+    reset can be explained after it scrolls out of the journal or the service
+    restarts. Empty when recording is disabled.
+    """
+    if observer.history is None:
+        return []
+    return await run_in_threadpool(observer.history.tail, limit, workspace_id)

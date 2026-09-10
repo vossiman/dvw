@@ -10,6 +10,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from .activity_history import ActivityEvent, ActivityHistory
+
 log = logging.getLogger(__name__)
 SIGNALS = {'tmux_sessions': 'tmux', 'cursor_connections': 'cursor',
            'vscode_connections': 'vscode', 'terminals': 'terminal', 'agents': 'agent'}
@@ -24,6 +26,7 @@ class ActivitySample:
     signals: dict[str, int | None] = field(default_factory=dict)
     complete: bool = True
     sampled_at: float | None = None
+    note: str | None = None
 
 
 class WorkspaceActivity(BaseModel):
@@ -50,8 +53,9 @@ class _Record:
 
 class ActivityObserver:
     """Single event-loop owner. Unobserved time is never credited as idle."""
-    def __init__(self, max_gap: float = 90):
+    def __init__(self, max_gap: float = 90, history: ActivityHistory | None = None):
         self.max_gap = max_gap
+        self.history = history
         self._records: dict[str, _Record] = {}
 
     def update(self, workspaces, samples, *, now=None, wall=None):
@@ -75,6 +79,7 @@ class ActivityObserver:
             reasons = [reason for key, reason in SIGNALS.items()
                        if isinstance(s.signals.get(key), int) and s.signals[key] > 0]
             start = None
+            continuous = False
             if s.running is False:
                 view.state = 'stopped'
             elif w.always_on:
@@ -85,14 +90,42 @@ class ActivityObserver:
             elif (s.running is True and s.container_id and s.started_at and s.complete
                   and all(type(s.signals.get(k)) is int and s.signals[k] == 0 for k in SIGNALS)):
                 view.state = 'idle'
-                continuous = (old and old.view.state == 'idle' and old.identity == identity
-                              and old.policy == policy and 0 <= observed - old.observed <= self.max_gap)
+                continuous = bool(old and old.view.state == 'idle' and old.identity == identity
+                                  and old.policy == policy
+                                  and 0 <= observed - old.observed <= self.max_gap)
                 start = old.idle_start if continuous else observed
                 view.idle_since = old.view.idle_since if continuous else observed_wall
                 view.idle_seconds = max(0, int(observed - start))
                 view.remaining_seconds = max(0, view.timeout_seconds - view.idle_seconds)
+            self._record_change(old, view, s, observed_wall, continuous=continuous)
             records[w.id] = _Record(view, observed, identity, policy, start)
         self._records = records
+
+    def _record_change(self, old, view, sample, at, *, continuous):
+        """One entry per state or reason change, so a reset is diagnosable later.
+
+        Counts and ids only; the same values the API already serves.
+        """
+        was = (old.view.state, tuple(old.view.reasons)) if old else None
+        detail = sample.note or ', '.join(f'{k}={v}' for k, v in sorted(view.signals.items()))
+        if was == (view.state, tuple(view.reasons)):
+            # A silent restart of an already-idle countdown: container identity
+            # or policy changed, or the gap between samples was too long.
+            if view.state != 'idle' or continuous:
+                return
+            event = 'reset'
+            log.info('activity %s: idle countdown reset [%s]', view.workspace_id, detail)
+        else:
+            event = 'change'
+            log.info('activity %s: %s -> %s%s [%s]', view.workspace_id,
+                     was[0] if was else 'new', view.state,
+                     ' (' + ','.join(view.reasons) + ')' if view.reasons else '', detail)
+        if self.history is not None:
+            self.history.append(ActivityEvent(
+                at=at, workspace_id=view.workspace_id, event=event, state=view.state,
+                previous_state=was[0] if was else None, reasons=list(view.reasons),
+                signals=dict(view.signals), idle_seconds=view.idle_seconds,
+                note=sample.note))
 
     def views(self, workspaces, *, now=None):
         now = time.monotonic() if now is None else now
