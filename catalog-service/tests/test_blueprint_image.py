@@ -8,7 +8,8 @@ PIN = "ghcr.io/x/y@sha256:" + "c" * 64
 def _cache(monkeypatch, results, ttl=900.0):
     """results: list of str payloads or Exceptions, consumed per fetch."""
     cache = BlueprintImageCache(
-        "https://example.invalid/1234567890abcdef1234567890abcdef12345678/devcontainer.json",
+        "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
+        "1234567890abcdef1234567890abcdef12345678/devcontainer.json",
         ttl,
     )
     calls = {"n": 0}
@@ -121,6 +122,41 @@ def test_configured_blueprint_source_must_be_immutable(monkeypatch):
     )
 
     assert cache.get() is None
+    assert fetched == []
+
+
+def test_configured_main_url_cannot_be_disguised_by_sha_query(monkeypatch):
+    fetched = []
+    monkeypatch.setattr(
+        "app.blueprint_image._fetch",
+        lambda url, timeout: fetched.append(url) or '{"image": "%s"}' % PIN,
+    )
+    sha = "1234567890abcdef1234567890abcdef12345678"
+    cache = BlueprintImageCache(
+        "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
+        f"main/devcontainer.json?sha={sha}",
+        900.0,
+    )
+
+    assert cache.get() is None
+    assert fetched == []
+
+
+def test_configured_sha_url_rejects_query_and_wrong_path(monkeypatch):
+    fetched = []
+    monkeypatch.setattr(
+        "app.blueprint_image._fetch",
+        lambda url, timeout: fetched.append(url) or '{"image": "%s"}' % PIN,
+    )
+    sha = "1234567890abcdef1234567890abcdef12345678"
+    prefix = "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
+
+    assert BlueprintImageCache(
+        f"{prefix}{sha}/devcontainer.json?raw=1", 900.0
+    ).get() is None
+    assert BlueprintImageCache(
+        f"{prefix}{sha}/other.json", 900.0
+    ).get() is None
     assert fetched == []
 
 

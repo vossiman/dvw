@@ -22,9 +22,11 @@ _FETCH_TIMEOUT = 3.0
 # client's ten-second catalog request budget.
 _SELECT_TIMEOUT = 6.0
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-_SHA_IN_URL_RE = re.compile(r"(?:^|[^0-9a-f])([0-9a-f]{40})(?:[^0-9a-f]|$)")
 _AICODING_RAW_PREFIX = (
     "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
+)
+_AICODING_RAW_URL_RE = re.compile(
+    re.escape(_AICODING_RAW_PREFIX) + r"[0-9a-f]{40}/devcontainer\.json"
 )
 
 
@@ -52,7 +54,7 @@ def _select_sha() -> str | None:
 
 def _blueprint_url(configured_url: str) -> str | None:
     if configured_url:
-        return configured_url if _SHA_IN_URL_RE.search(configured_url) else None
+        return configured_url if _AICODING_RAW_URL_RE.fullmatch(configured_url) else None
     sha = _select_sha()
     if sha is None:
         return None
