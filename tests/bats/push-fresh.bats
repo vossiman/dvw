@@ -36,6 +36,20 @@ _load_private() {
   [ "$output" = "$TMPDIR/$UUID_B.jpg" ]
 }
 
+@test "picking the first upload drains later producer output without SIGPIPE" {
+  _load_private
+  _dvw_push_list_fresh() {
+    printf '%s\n' "$TMPDIR/$UUID_B.jpg"
+    sleep 0.1
+    printf '%s\n' "$TMPDIR/$UUID_A.png"
+    : > "$TMPDIR/producer-finished"
+  }
+  run _dvw_push_pick_fresh
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TMPDIR/$UUID_B.jpg" ]
+  [ -e "$TMPDIR/producer-finished" ]
+}
+
 @test "ignores non-UUID names" {
   _load_private
   printf x > "$TMPDIR/notes.png"
