@@ -143,6 +143,39 @@ EOF
   grep -Fxq "CATALOG_BLUEPRINT_DEVCONTAINER_URL=$url" "$SVC_DIR/catalog.env"
 }
 
+@test "exported blueprint preserves an existing catalog env mode" {
+  printf 'CATALOG_DOCKER_HOST=fixture\n' > "$SVC_DIR/catalog.env"
+  chmod 0600 "$SVC_DIR/catalog.env"
+  export CATALOG_BLUEPRINT_DEVCONTAINER_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/abcdefabcdefabcdefabcdefabcdefabcdefabcd/devcontainer.json"
+
+  run_install
+
+  [ "$status" -eq 0 ]
+  [ "$(stat -c %a "$SVC_DIR/catalog.env")" = 600 ]
+}
+
+@test "failed catalog env rewrite preserves the original and removes its temp" {
+  printf 'CATALOG_DOCKER_HOST=fixture\n' > "$SVC_DIR/catalog.env"
+  cp "$SVC_DIR/catalog.env" "$WORK/catalog.env.before"
+  cat > "$HOME/stubs/chmod" <<'EOF'
+#!/bin/sh
+last=""
+for arg in "$@"; do last="$arg"; done
+case "$last" in
+  */.catalog.env.*) exit 42 ;;
+  *) exec /bin/chmod "$@" ;;
+esac
+EOF
+  chmod +x "$HOME/stubs/chmod"
+  export CATALOG_BLUEPRINT_DEVCONTAINER_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/abcdefabcdefabcdefabcdefabcdefabcdefabcd/devcontainer.json"
+
+  run_install
+
+  [ "$status" -eq 42 ]
+  cmp -s "$WORK/catalog.env.before" "$SVC_DIR/catalog.env"
+  [ -z "$(find "$SVC_DIR" -maxdepth 1 -name '.catalog.env.*' -print -quit)" ]
+}
+
 @test "installer rejects an invalid configured blueprint before mutation" {
   export CATALOG_BLUEPRINT_DEVCONTAINER_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json"
   : > "$CALLS"

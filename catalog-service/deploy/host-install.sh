@@ -182,13 +182,20 @@ echo "==> 5/8 env file (once)"
 [ -f "$SVC_DIR/catalog.env" ] || \
   install -m 0640 "$SVC_DIR/deploy/catalog.env.example" "$SVC_DIR/catalog.env"
 if [ "$catalog_blueprint_url_from_env" -eq 1 ]; then
+  catalog_env_tmp=""
+  cleanup_catalog_env_tmp() {
+    [ -z "$catalog_env_tmp" ] || rm -f -- "$catalog_env_tmp"
+  }
+  trap cleanup_catalog_env_tmp EXIT
   catalog_env_tmp=$(mktemp "$SVC_DIR/.catalog.env.XXXXXX")
   awk '!/^CATALOG_BLUEPRINT_DEVCONTAINER_URL=/' \
     "$SVC_DIR/catalog.env" > "$catalog_env_tmp"
   printf 'CATALOG_BLUEPRINT_DEVCONTAINER_URL=%s\n' \
     "$catalog_blueprint_url" >> "$catalog_env_tmp"
-  chmod 0640 "$catalog_env_tmp"
+  chmod --reference="$SVC_DIR/catalog.env" "$catalog_env_tmp"
   mv "$catalog_env_tmp" "$SVC_DIR/catalog.env"
+  catalog_env_tmp=""
+  trap - EXIT
 fi
 "$SVC_DIR/deploy/configure-backup-remote.sh" "$DATA_DIR" "$SVC_DIR/catalog.env" "$GH_HELPER"
 
