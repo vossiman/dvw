@@ -37,6 +37,15 @@ APP_LINK="/opt/dvw-catalog"          # stable path the systemd unit references
 DATA_DIR="/var/lib/dvw-catalog"
 SOCK="/run/dvw-catalog/catalog.sock"
 
+# Must run as the normal user, not root. The venv/checkout are owned by $USER
+# and the service runs as User=vossi; a root-owned install breaks it, and the
+# sudoers drop-in below is keyed to your login. The script sudo's where needed.
+if [ "$(id -u)" -eq 0 ]; then
+  echo "error: run this as your normal user, not root/sudo." >&2
+  echo "       it will invoke sudo itself for the steps that need it." >&2
+  exit 1
+fi
+
 # The deployed unit includes the common updater's user-local tools. Use the
 # same path for this preflight even when the current login shell is stale.
 export PATH="$HOME/.local/bin:$PATH"
@@ -72,15 +81,6 @@ else
     echo "       install the minimal common updater before deploying, or configure an exact immutable blueprint URL" >&2
     exit 1
   fi
-fi
-
-# Must run as the normal user, not root. The venv/checkout are owned by $USER
-# and the service runs as User=vossi; a root-owned install breaks it, and the
-# sudoers drop-in below is keyed to your login. The script sudo's where needed.
-if [ "$(id -u)" -eq 0 ]; then
-  echo "error: run this as your normal user, not root/sudo." >&2
-  echo "       it will invoke sudo itself for the steps that need it." >&2
-  exit 1
 fi
 # Prime sudo up front: fail fast now if you lack sudo rights, and avoid a
 # password prompt stalling the install halfway through.

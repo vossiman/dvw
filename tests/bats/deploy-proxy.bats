@@ -100,6 +100,26 @@ SUDOEOF
   ! grep -qE '^(sudo|git) ' "$CALLS"
 }
 
+@test "installer reports root invocation before selector prerequisites" {
+  cat > "$HOME/stubs/id" <<'EOF'
+#!/bin/sh
+case "$1" in
+  -u) echo 0 ;;
+  *) /usr/bin/id "$@" ;;
+esac
+EOF
+  chmod +x "$HOME/stubs/id"
+  rm -f "$HOME/stubs/aicoding-select"
+  : > "$CALLS"
+
+  run_install
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"run this as your normal user, not root/sudo"* ]]
+  [[ "$output" != *"missing catalog blueprint prerequisite"* ]]
+  ! grep -qE '^(sudo|git) ' "$CALLS"
+}
+
 @test "immutable configured blueprint lets installer bypass selector enrollment" {
   rm -f "$HOME/stubs/aicoding-select"
   printf '%s\n' \

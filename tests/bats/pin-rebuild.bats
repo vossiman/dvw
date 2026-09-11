@@ -4,6 +4,8 @@
 # catalog service, gh, devpod (via cmd_recreate). Follows pin.bats.
 
 setup() {
+  export HOME="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$HOME"
   source "$DVW_ROOT/dvw"
   export DVW_BLUEPRINT_DEVCONTAINER_URL="file://$BATS_TEST_TMPDIR/blueprint.json"
   ui_progress() { shift; "$@"; }
@@ -39,12 +41,26 @@ setup() {
 }
 
 @test "pin-rebuild diagnoses a missing CI selector before catalog mutation" {
+  local surrounding_home="$BATS_TEST_TMPDIR/enrolled-home"
+  mkdir -p "$surrounding_home/.local/bin"
+  cat > "$surrounding_home/.local/bin/aicoding-select" <<'EOF'
+#!/bin/sh
+touch "$INHERITED_SELECTOR_CALLED"
+printf '%040d\n' 1
+EOF
+  chmod +x "$surrounding_home/.local/bin/aicoding-select"
+  export HOME="$surrounding_home"
+  export INHERITED_SELECTOR_CALLED="$BATS_TEST_TMPDIR/inherited-selector-called"
+
   unset DVW_BLUEPRINT_DEVCONTAINER_URL
   source "$DVW_ROOT/lib/pin.sh"
   command() {
     [[ "$1" == -v && "$2" == aicoding-select ]] && return 1
     builtin command "$@"
   }
+  [ "$(_dvw_blueprint_selector_path)" = "$surrounding_home/.local/bin/aicoding-select" ]
+  export HOME="$BATS_TEST_TMPDIR/test-home"
+  mkdir -p "$HOME"
   catalog_workspace_get() { echo "CATALOG SHOULD NOT RUN" >&2; return 1; }
 
   run cmd_pin_rebuild demo
@@ -53,6 +69,7 @@ setup() {
   [[ "$output" == *"aicoding-select is unavailable"* ]]
   [[ "$output" == *"minimal common updater"* ]]
   [[ "$output" != *"CATALOG SHOULD NOT RUN"* ]]
+  [ ! -e "$INHERITED_SELECTOR_CALLED" ]
 }
 
 @test "current pin: skips PR and pull, rebuilds anyway" {
