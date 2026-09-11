@@ -63,8 +63,8 @@ LockPersonality=true
 # AF_UNIX: the service's own listen socket and the dvw-docker-proxy socket.
 # AF_INET/AF_INET6: two consumers still need outbound TCP. app/blueprint_image.py
 # does urllib urlopen(raw.githubusercontent.com) for the pin-staleness check
-# (silently negative-caches on failure, no journal entry, so this would
-# degrade to "unknown" with nothing to explain why). app/source.py runs
+# (it logs refresh failures and serves the last qualified cached value, or
+# degrades to "unknown" until one is available). app/source.py runs
 # `git pull` as a child process for POST /source/pull, which inherits this
 # seccomp filter.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

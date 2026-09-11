@@ -78,6 +78,8 @@ cmd_pin_rebuild() {
     shift
   done
 
+  _dvw_blueprint_source_preflight || return 1
+
   local ids_raw
   ids_raw=$(_dvw_pin_resolve_ids ${ids[@]+"${ids[@]}"}) || {
     ui_error "couldn't list catalog workspaces — pin-rebuild cannot know what to rebuild"

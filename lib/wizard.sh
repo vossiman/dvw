@@ -90,6 +90,24 @@ _fetch_remote_branches() {
 # Resolve the canonical aiCodingBaseSetup devcontainer.json at an exact commit
 # whose main CI passed. An explicit URL remains the development/test escape
 # hatch; the default path deliberately has no raw-main fallback.
+_dvw_blueprint_selector_path() {
+  if command -v aicoding-select >/dev/null 2>&1; then
+    command -v aicoding-select
+  elif [[ -x "$HOME/.local/bin/aicoding-select" ]]; then
+    printf '%s\n' "$HOME/.local/bin/aicoding-select"
+  else
+    return 1
+  fi
+}
+
+_dvw_blueprint_source_preflight() {
+  [[ -n "${DVW_BLUEPRINT_DEVCONTAINER_URL:-}" ]] && return 0
+  if ! _dvw_blueprint_selector_path >/dev/null; then
+    echo "dvw: aicoding-select is unavailable; install the minimal common updater before using CI-selected blueprints" >&2
+    return 1
+  fi
+}
+
 _dvw_blueprint_devcontainer_url() {
   if [[ -n "${DVW_BLUEPRINT_DEVCONTAINER_URL:-}" ]]; then
     if [[ "$DVW_BLUEPRINT_DEVCONTAINER_URL" != file://* \
@@ -99,10 +117,17 @@ _dvw_blueprint_devcontainer_url() {
     printf '%s\n' "$DVW_BLUEPRINT_DEVCONTAINER_URL"
     return 0
   fi
-  command -v aicoding-select >/dev/null 2>&1 || return 1
-  local sha
-  sha=$(aicoding-select aicoding 2>/dev/null) || return 1
-  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+  _dvw_blueprint_source_preflight || return 1
+  local sha selector
+  selector=$(_dvw_blueprint_selector_path) || return 1
+  if ! sha=$("$selector" aicoding); then
+    echo "dvw: aicoding-select could not resolve a CI-qualified aicoding commit; retry after GitHub CI/API access recovers" >&2
+    return 1
+  fi
+  if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "dvw: aicoding-select returned an invalid commit instead of a full CI-qualified SHA" >&2
+    return 1
+  fi
   printf 'https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/%s/devcontainer.json\n' "$sha"
 }
 
@@ -319,6 +344,10 @@ cmd_new() {
     if (( init_empty )); then branch="main"; else
       ui_error "dvw new: --branch is required (or --init-empty for a fresh repo)"; _new_usage; return 1
     fi
+  fi
+
+  if (( init_empty || seed_devc )); then
+    _dvw_blueprint_source_preflight || return 1
   fi
 
   # Canonicalize: the workspace URL is always the HTTPS github form (SSH

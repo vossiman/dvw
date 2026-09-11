@@ -5,6 +5,7 @@
 
 setup() {
   source "$DVW_ROOT/dvw"
+  export DVW_BLUEPRINT_DEVCONTAINER_URL="file://$BATS_TEST_TMPDIR/blueprint.json"
   ui_progress() { shift; "$@"; }
   dvw_update_refresh_if_stale() { :; }
   dvw_update_maybe_nudge() { :; }
@@ -35,6 +36,23 @@ setup() {
     jq -n --arg d "sha256:$(printf 'a%.0s' {1..64})" '{image_digest:$d}'
   }
   DVW_PIN_REBUILD_POLL_SECS=0
+}
+
+@test "pin-rebuild diagnoses a missing CI selector before catalog mutation" {
+  unset DVW_BLUEPRINT_DEVCONTAINER_URL
+  source "$DVW_ROOT/lib/pin.sh"
+  command() {
+    [[ "$1" == -v && "$2" == aicoding-select ]] && return 1
+    builtin command "$@"
+  }
+  catalog_workspace_get() { echo "CATALOG SHOULD NOT RUN" >&2; return 1; }
+
+  run cmd_pin_rebuild demo
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"aicoding-select is unavailable"* ]]
+  [[ "$output" == *"minimal common updater"* ]]
+  [[ "$output" != *"CATALOG SHOULD NOT RUN"* ]]
 }
 
 @test "current pin: skips PR and pull, rebuilds anyway" {

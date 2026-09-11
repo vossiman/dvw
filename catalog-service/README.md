@@ -116,15 +116,18 @@ and smoke-tests `/v1/health`.
 
 Blueprint image comparison resolves `aiCodingBaseSetup` through
 `aicoding-select aicoding`; install the minimal common updater (including
-`aicoding-select`, `gh`, `jq`, and `timeout`) in the service user's
-`~/.local/bin` before deployment. The rendered systemd unit includes that
+`aicoding-select`, `jq`, `timeout`, and either `gh` or `curl`) in the service
+user's `~/.local/bin` before deployment. `host-install.sh` checks these before
+sudo or checkout changes, and the rendered systemd unit includes that
 directory in `PATH`. As an explicit alternative, set
 `CATALOG_BLUEPRINT_DEVCONTAINER_URL` in `catalog.env` to the exact supported
 raw GitHub form:
 `https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/<40-character-sha>/devcontainer.json`.
 Moving refs, other paths, queries, and fragments are rejected, and selection
-failures degrade image comparison to unknown within the catalog client's
-request timeout with a warning in the service journal. The selector makes
+failures are logged in the service journal and preserve the last qualified
+cached image (or report comparison as unknown until one exists). Refresh runs
+once in the background, so a slow selector does not delay status requests.
+The selector makes
 read-only GitHub API calls and writes only a temporary response beneath
 `PrivateTmp`; it does not need a writable home, state, or cache directory.
 

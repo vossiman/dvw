@@ -35,6 +35,23 @@ EOF
   [ "$output" = "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/$sha/devcontainer.json" ]
 }
 
+@test "blueprint source: finds selector in ~/.local/bin when PATH is stale" {
+  unset DVW_BLUEPRINT_DEVCONTAINER_URL
+  export HOME="$BATS_TEST_TMPDIR/home"
+  local sha="abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+  mkdir -p "$HOME/.local/bin"
+  cat > "$HOME/.local/bin/aicoding-select" <<EOF
+#!/bin/sh
+printf '%s\\n' '$sha'
+EOF
+  chmod +x "$HOME/.local/bin/aicoding-select"
+
+  PATH="/usr/bin:/bin" run _dvw_blueprint_devcontainer_url
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/$sha/devcontainer.json" ]
+}
+
 @test "blueprint source: explicit developer URL bypasses CI selection" {
   export DVW_BLUEPRINT_DEVCONTAINER_URL="file://$BATS_TEST_TMPDIR/development.json"
   aicoding-select() { echo "SELECTOR SHOULD NOT RUN"; return 1; }

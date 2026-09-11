@@ -56,6 +56,20 @@ EOF
   [[ "$output" != *"SHOULD NOT RUN"* ]]
 }
 
+@test "managed update finds the common runner in ~/.local/bin when PATH is stale" {
+  mkdir -p "$HOME/.local/bin"
+  cat > "$HOME/.local/bin/aicoding-auto-update" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$AUTO_UPDATE_CALL"
+EOF
+  chmod +x "$HOME/.local/bin/aicoding-auto-update"
+  export AUTO_UPDATE_CALL="$BATS_TEST_TMPDIR/auto-update-local-bin-call"
+
+  PATH="$HOME/bin:/usr/bin:/bin" run cmd_update
+  [ "$status" -eq 0 ]
+  [ "$(cat "$AUTO_UPDATE_CALL")" = "--once" ]
+}
+
 @test "installed managed dvw update bypasses catalog SSH WSL and devpod preflights" {
   cp "$REAL_ROOT/dvw" "$MANAGED_ROOT/dvw"
   cp -a "$REAL_ROOT/lib/." "$MANAGED_ROOT/lib/"

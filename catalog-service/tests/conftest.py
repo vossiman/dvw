@@ -73,7 +73,7 @@ class FakeBlueprintImage:
 
     value: str | None = None
 
-    def get(self) -> str | None:
+    def get_cached(self) -> str | None:
         return self.value
 
 

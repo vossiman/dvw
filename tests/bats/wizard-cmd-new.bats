@@ -73,6 +73,23 @@ setup() {
   echo "$output" | grep -q "usage: dvw new"
 }
 
+@test "cmd_new: seeding fails before remote mutation when CI selector is unavailable" {
+  unset DVW_BLUEPRINT_DEVCONTAINER_URL
+  command() {
+    [[ "$1" == -v && "$2" == aicoding-select ]] && return 1
+    builtin command "$@"
+  }
+  _new_resolve_branches() { echo "REMOTE SHOULD NOT BE READ" >&2; return 2; }
+
+  run cmd_new --repo "$REMOTE" --branch main --name wsx --seed-devcontainer --yes
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"aicoding-select is unavailable"* ]]
+  [[ "$output" == *"minimal common updater"* ]]
+  [[ "$output" != *"REMOTE SHOULD NOT BE READ"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
 # The workspace URL stays canonical HTTPS even when this host can only probe
 # github over SSH. Stub _fetch_remote_branches to fail for the HTTPS URL and
 # answer for its SSH equivalent (exactly what _github_https_to_ssh produces):

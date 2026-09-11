@@ -135,7 +135,7 @@ EOF
   [ "$after" = "$before" ]
   grep -q '^args=run --frozen --project ' "$TUI_LAUNCH_RECORD"
   grep -Fq "env=$AICODING_DATA_DIR/runtime/dvw-tui/$sha/" "$TUI_LAUNCH_RECORD"
-  grep -Fq "cache=$AICODING_DATA_DIR/runtime/dvw-tui/$sha/" "$TUI_LAUNCH_RECORD"
+  grep -Fxq "cache=$AICODING_DATA_DIR/runtime/uv-cache" "$TUI_LAUNCH_RECORD"
   grep -Fq "pycache=$AICODING_DATA_DIR/runtime/dvw-tui/$sha/" "$TUI_LAUNCH_RECORD"
   [ ! -e "$DVW_ROOT/tui/.venv" ]
   [ ! -e "$DVW_ROOT/tui/__pycache__" ]

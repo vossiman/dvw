@@ -81,7 +81,7 @@ dvw_tui_launch() {
       DVW_TUI_SOCKET="$sock" \
       DVW_BIN="$DVW_ROOT/dvw" \
       UV_PROJECT_ENVIRONMENT="$runtime/venv" \
-      UV_CACHE_DIR="$runtime/cache" \
+      UV_CACHE_DIR="${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}/runtime/uv-cache" \
       PYTHONPYCACHEPREFIX="$runtime/pycache" \
         uv run --frozen --project "$DVW_ROOT/tui" dvw-tui
       return $?

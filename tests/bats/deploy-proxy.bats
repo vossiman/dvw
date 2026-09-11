@@ -36,7 +36,7 @@ setup() {
   # --- stubs ---
   # git/uv: no-op success, so the checkout-refresh and venv-sync steps never
   # touch the network or need a real project.
-  for b in git uv; do
+  for b in git uv aicoding-select; do
     printf '#!/bin/sh\necho "%s $*" >> "$HOME/calls"\nexit 0\n' "$b" > "$HOME/stubs/$b"
   done
   # docker: no containers, so the tecnativa-retirement branch is exercised
@@ -87,6 +87,39 @@ SUDOEOF
   export CHECKOUT BRANCH=main
   export CALLS="$HOME/calls"
   : > "$CALLS"
+}
+
+@test "installer refuses a missing selector before sudo or checkout mutation" {
+  rm -f "$HOME/stubs/aicoding-select"
+  : > "$CALLS"
+
+  run_install
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"missing catalog blueprint prerequisite: aicoding-select"* ]]
+  ! grep -qE '^(sudo|git) ' "$CALLS"
+}
+
+@test "immutable configured blueprint lets installer bypass selector enrollment" {
+  rm -f "$HOME/stubs/aicoding-select"
+  printf '%s\n' \
+    'CATALOG_BLUEPRINT_DEVCONTAINER_URL=https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/1234567890abcdef1234567890abcdef12345678/devcontainer.json' \
+    > "$SVC_DIR/catalog.env"
+
+  run_install
+
+  [ "$status" -eq 0 ]
+}
+
+@test "installer rejects an invalid configured blueprint before mutation" {
+  export CATALOG_BLUEPRINT_DEVCONTAINER_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json"
+  : > "$CALLS"
+
+  run_install
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"must be an exact supported immutable URL"* ]]
+  ! grep -qE '^(sudo|git) ' "$CALLS"
 }
 
 teardown() {

@@ -16,13 +16,14 @@ import urllib.request
 _IMAGE_RE = re.compile(r'"image"\s*:\s*"([^"]+)"')
 log = logging.getLogger(__name__)
 
-# Must stay well under the catalog clients' 10s request budget (see
-# tui/dvw_tui/client.py) so a dead blueprint host degrades to unknown
-# instead of failing the whole /containers/status call.
+# The fetch runs in a single background refresh. Status requests use the last
+# qualified value immediately, so these remain bounded network-worker budgets
+# rather than part of the catalog client's request budget.
 _FETCH_TIMEOUT = 3.0
-# Leave room for the existing three-second blueprint fetch inside the TUI
-# client's ten-second catalog request budget.
-_SELECT_TIMEOUT = 5.0
+# aicoding-select can make several individually bounded GitHub API calls while
+# walking main history. Give it enough aggregate time to finish, with a hard
+# outer limit so a wedged child cannot retain the refresh slot indefinitely.
+_SELECT_TIMEOUT = 60.0
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _AICODING_RAW_PREFIX = (
     "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
@@ -53,9 +54,21 @@ def _select_sha() -> str | None:
     except subprocess.SubprocessError as exc:
         raise RuntimeError("aicoding-select process timed out") from exc
     sha = result.stdout.strip()
+    if result.returncode == 0:
+        if _SHA_RE.fullmatch(sha):
+            return sha
+        raise RuntimeError("aicoding-select returned an invalid full SHA")
+    if result.returncode == 1:
+        raise RuntimeError("aicoding-select found no CI-qualified commit (exit 1)")
+    if result.returncode == 2:
+        raise RuntimeError(
+            "aicoding-select could not access or validate CI metadata (exit 2)"
+        )
+    if result.returncode == 124:
+        raise RuntimeError("aicoding-select timed out (exit 124)")
     if result.returncode == 127:
-        raise RuntimeError("aicoding-select command is unavailable")
-    return sha if result.returncode == 0 and _SHA_RE.fullmatch(sha) else None
+        raise RuntimeError("aicoding-select command is unavailable (exit 127)")
+    raise RuntimeError(f"aicoding-select failed (exit {result.returncode})")
 
 
 def _blueprint_url(configured_url: str) -> str:
@@ -92,29 +105,77 @@ class BlueprintImageCache:
         self._url = url
         self._ttl = ttl
         self._lock = threading.Lock()
+        self._refresh_lock = threading.Lock()
         self._value: str | None = None
         self._fetched_at: float | None = None
         self._last_fetch_ok = False
+        self._refreshing = False
+
+    def _fresh_locked(self, now: float) -> bool:
+        if self._fetched_at is None:
+            return False
+        ttl = self._ttl if self._last_fetch_ok else min(
+            self._ttl, self._FAILURE_TTL_CAP
+        )
+        return now - self._fetched_at < ttl
 
     def get(self) -> str | None:
-        """Blocking; call via run_in_threadpool from async code."""
-        with self._lock:
+        """Refresh synchronously, preserving the last qualified value."""
+        with self._refresh_lock:
             now = time.monotonic()
-            if self._fetched_at is not None:
-                ttl = self._ttl if self._last_fetch_ok else min(
-                    self._ttl, self._FAILURE_TTL_CAP)
-                if now - self._fetched_at < ttl:
+            with self._lock:
+                if self._fresh_locked(now):
                     return self._value
             try:
                 url = _blueprint_url(self._url)
                 image = _parse_image(_fetch(url, timeout=_FETCH_TIMEOUT))
             except Exception as exc:
                 log.warning("Blueprint image refresh failed: %s", exc)
-                self._fetched_at = now      # negative-cache the failure
-                self._last_fetch_ok = False
-                return self._value          # stale (or None) beats nothing
-            self._fetched_at = now
-            self._last_fetch_ok = True
-            if image is not None:
-                self._value = image
-            return self._value
+                completed_at = time.monotonic()
+                with self._lock:
+                    self._fetched_at = completed_at  # negative TTL starts now
+                    self._last_fetch_ok = False
+                    return self._value      # stale (or None) beats nothing
+            completed_at = time.monotonic()
+            with self._lock:
+                self._fetched_at = completed_at
+                self._last_fetch_ok = True
+                if image is not None:
+                    self._value = image
+                return self._value
+
+    def _background_refresh(self) -> None:
+        try:
+            self.get()
+        finally:
+            with self._lock:
+                self._refreshing = False
+
+    def get_cached(self) -> str | None:
+        """Return immediately and start at most one refresh when stale."""
+        start_refresh = False
+        with self._lock:
+            if self._fresh_locked(time.monotonic()):
+                return self._value
+            value = self._value
+            if not self._refreshing:
+                self._refreshing = True
+                start_refresh = True
+        if start_refresh:
+            worker = threading.Thread(
+                target=self._background_refresh,
+                name="dvw-blueprint-image-refresh",
+                daemon=True,
+            )
+            try:
+                worker.start()
+            except Exception:
+                with self._lock:
+                    self._refreshing = False
+                log.warning("Blueprint image refresh worker could not start")
+        return value
+
+    @property
+    def refresh_in_progress(self) -> bool:
+        with self._lock:
+            return self._refreshing

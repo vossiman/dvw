@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from app.models import (
     CanonicalContainer,
     Orphan,
@@ -7,6 +9,8 @@ from app.models import (
     WorkspaceStatus,
     WorkspaceWindows,
 )
+from app.blueprint_image import BlueprintImageCache
+from app.deps import get_blueprint_image_cache
 
 
 def test_health(client, inspector):
@@ -22,6 +26,43 @@ def test_health(client, inspector):
 def test_health_reports_docker_down(client, inspector):
     inspector.alive = False
     assert client.get("/v1/health").json()["docker"] is False
+
+
+def test_status_does_not_wait_for_slow_blueprint_selector(client, monkeypatch):
+    cache = BlueprintImageCache("", 900.0)
+    started = threading.Event()
+    release = threading.Event()
+    fetched = threading.Event()
+
+    def slow_url(configured_url):
+        started.set()
+        assert release.wait(2.0)
+        return (
+            "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
+            "1234567890abcdef1234567890abcdef12345678/devcontainer.json"
+        )
+
+    monkeypatch.setattr("app.blueprint_image._blueprint_url", slow_url)
+    def fake_fetch(url, timeout):
+        fetched.set()
+        return '{"image": null}'
+
+    monkeypatch.setattr("app.blueprint_image._fetch", fake_fetch)
+    client.app.dependency_overrides[get_blueprint_image_cache] = lambda: cache
+    result = {}
+    request = threading.Thread(
+        target=lambda: result.setdefault("response", client.get("/v1/containers/status"))
+    )
+    request.start()
+    try:
+        assert started.wait(1.0)
+        request.join(0.2)
+        assert not request.is_alive(), "status waited for the selector refresh"
+        assert result["response"].status_code == 200
+    finally:
+        release.set()
+        assert fetched.wait(1.0)
+        request.join(2.0)
 
 
 def test_defaults_get_update(client):

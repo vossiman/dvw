@@ -82,12 +82,17 @@ cmd_stop() {
 cmd_update() {
   . "$DVW_ROOT/lib/version.sh"
   if command -v dvw_is_managed_install >/dev/null 2>&1 && dvw_is_managed_install; then
-    command -v aicoding-auto-update >/dev/null 2>&1 || {
+    local managed_updater=""
+    if command -v aicoding-auto-update >/dev/null 2>&1; then
+      managed_updater=$(command -v aicoding-auto-update)
+    elif [[ -x "$HOME/.local/bin/aicoding-auto-update" ]]; then
+      managed_updater="$HOME/.local/bin/aicoding-auto-update"
+    else
       ui_error "aicoding-auto-update is unavailable for this managed dvw install"
       return 1
-    }
+    fi
     ui_info "updating managed dvw through the common updater"
-    aicoding-auto-update --once </dev/null
+    "$managed_updater" --once </dev/null
     return $?
   fi
   local super

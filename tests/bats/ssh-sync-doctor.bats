@@ -41,3 +41,16 @@ teardown() { rm -rf "$TMPDIR"; }
   [[ "$output" == *"service://catalog-host/v1/blueprint)"* ]]
   [[ "$output" != *"managed defaults v"* ]]
 }
+
+@test "managed doctor remediation names an installer source that exists" {
+  rm -f "$DVW_SSH_LOCAL"
+  printf 'Host example\n' > "$DVW_SSH_CONFIG"
+  dvw_is_managed_install() { return 0; }
+  _catalog_req() { printf '%s\n' '{"content":"legacy","version":1}'; }
+
+  run ssh_sync_doctor
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"install-bastion.sh from a dvw checkout"* ]]
+  [[ "$output" != *"run dvw-install.sh"* ]]
+}

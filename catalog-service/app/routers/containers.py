@@ -25,7 +25,7 @@ async def status(
     """
     if ids is None:
         ids = [w.id for w in store.list_workspaces()]
-    bp = await run_in_threadpool(blueprint.get)
+    bp = blueprint.get_cached()
     return await run_inspect(inspector.status_many, ids, bp)
 
 

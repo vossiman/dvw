@@ -37,6 +37,43 @@ APP_LINK="/opt/dvw-catalog"          # stable path the systemd unit references
 DATA_DIR="/var/lib/dvw-catalog"
 SOCK="/run/dvw-catalog/catalog.sock"
 
+# The deployed unit includes the common updater's user-local tools. Use the
+# same path for this preflight even when the current login shell is stale.
+export PATH="$HOME/.local/bin:$PATH"
+
+catalog_blueprint_url="${CATALOG_BLUEPRINT_DEVCONTAINER_URL:-}"
+if [ -z "$catalog_blueprint_url" ] && [ -r "$SVC_DIR/catalog.env" ]; then
+  catalog_blueprint_url=$(awk -F= '
+    $1 == "CATALOG_BLUEPRINT_DEVCONTAINER_URL" {
+      sub(/^[^=]*=/, ""); print; exit
+    }
+  ' "$SVC_DIR/catalog.env")
+  case "$catalog_blueprint_url" in
+    \"*\") catalog_blueprint_url=${catalog_blueprint_url#\"}; catalog_blueprint_url=${catalog_blueprint_url%\"} ;;
+    \'*\') catalog_blueprint_url=${catalog_blueprint_url#\'}; catalog_blueprint_url=${catalog_blueprint_url%\'} ;;
+  esac
+fi
+
+if [ -n "$catalog_blueprint_url" ]; then
+  if [[ ! "$catalog_blueprint_url" =~ ^https://raw\.githubusercontent\.com/vossiman/aiCodingBaseSetup/[0-9a-f]{40}/devcontainer\.json$ ]]; then
+    echo "error: CATALOG_BLUEPRINT_DEVCONTAINER_URL must be an exact supported immutable URL" >&2
+    exit 1
+  fi
+else
+  missing_blueprint_tools=""
+  for tool in aicoding-select jq timeout; do
+    command -v "$tool" >/dev/null 2>&1 || missing_blueprint_tools="$missing_blueprint_tools $tool"
+  done
+  if ! command -v gh >/dev/null 2>&1 && ! command -v curl >/dev/null 2>&1; then
+    missing_blueprint_tools="$missing_blueprint_tools gh-or-curl"
+  fi
+  if [ -n "$missing_blueprint_tools" ]; then
+    echo "error: missing catalog blueprint prerequisite:$missing_blueprint_tools" >&2
+    echo "       install the minimal common updater before deploying, or configure an exact immutable blueprint URL" >&2
+    exit 1
+  fi
+fi
+
 # Must run as the normal user, not root. The venv/checkout are owned by $USER
 # and the service runs as User=vossi; a root-owned install breaks it, and the
 # sudoers drop-in below is keyed to your login. The script sudo's where needed.
@@ -137,7 +174,6 @@ fi
 
 echo "==> 4/8 venv (uv sync --frozen)"
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
 ( cd "$SVC_DIR" && uv sync --frozen --no-dev )
 
 echo "==> 5/8 env file (once)"

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import subprocess
+import threading
+import time
 
 from app.blueprint_image import (
     _FETCH_TIMEOUT,
@@ -72,11 +74,38 @@ def test_failed_fetch_negative_caches_within_failure_ttl(monkeypatch):
 def test_failed_fetch_retries_after_failure_ttl(monkeypatch):
     cache, calls = _cache(
         monkeypatch, [OSError("down"), '{"image": "%s"}' % PIN], ttl=900.0)
-    times = iter([0.0, 61.0])
+    times = iter([0.0, 0.0, 61.0, 61.0])
     monkeypatch.setattr("app.blueprint_image.time.monotonic", lambda: next(times))
     assert cache.get() is None
     assert calls["n"] == 1
     assert cache.get() == PIN
+    assert calls["n"] == 2
+
+
+def test_failure_ttl_starts_after_a_slow_refresh_finishes(monkeypatch):
+    clock = {"now": 0.0}
+    calls = {"n": 0}
+
+    def slow_failure(url, timeout):
+        calls["n"] += 1
+        clock["now"] += 59.0
+        raise OSError("down")
+
+    monkeypatch.setattr("app.blueprint_image.time.monotonic", lambda: clock["now"])
+    monkeypatch.setattr("app.blueprint_image._fetch", slow_failure)
+    cache = BlueprintImageCache(
+        "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
+        "1234567890abcdef1234567890abcdef12345678/devcontainer.json",
+        900.0,
+    )
+
+    assert cache.get() is None
+    clock["now"] = 118.0
+    assert cache.get() is None
+    assert calls["n"] == 1
+
+    clock["now"] = 120.0
+    assert cache.get() is None
     assert calls["n"] == 2
 
 
@@ -128,6 +157,26 @@ def test_missing_selector_command_is_diagnosed(monkeypatch, caplog):
     assert "aicoding-select command is unavailable" in caplog.text
 
 
+def test_selector_return_codes_remain_distinct_without_logging_stderr(monkeypatch, caplog):
+    expected = {
+        1: "found no CI-qualified commit (exit 1)",
+        2: "could not access or validate CI metadata (exit 2)",
+        124: "timed out (exit 124)",
+        9: "failed (exit 9)",
+    }
+    for returncode, diagnostic in expected.items():
+        caplog.clear()
+        monkeypatch.setattr(
+            "app.blueprint_image.subprocess.run",
+            lambda *args, _rc=returncode, **kwargs: subprocess.CompletedProcess(
+                args[0], _rc, "", "credential-looking stderr must stay private"
+            ),
+        )
+        assert BlueprintImageCache("", 900.0).get() is None
+        assert diagnostic in caplog.text
+        assert "credential-looking" not in caplog.text
+
+
 def test_configured_blueprint_source_must_be_immutable(monkeypatch, caplog):
     fetched = []
     monkeypatch.setattr(
@@ -144,9 +193,9 @@ def test_configured_blueprint_source_must_be_immutable(monkeypatch, caplog):
     assert "configured blueprint URL is not an immutable supported URL" in caplog.text
 
 
-def test_selector_and_fetch_fit_inside_catalog_client_budget():
-    # subprocess.run allows one second beyond the inner timeout wrapper.
-    assert _SELECT_TIMEOUT + 1.0 + _FETCH_TIMEOUT < 10.0
+def test_selector_and_fetch_have_bounded_background_budgets():
+    assert 1.0 <= _SELECT_TIMEOUT <= 300.0
+    assert 0.0 < _FETCH_TIMEOUT <= 10.0
 
 
 def test_configured_main_url_cannot_be_disguised_by_sha_query(monkeypatch):
@@ -213,3 +262,41 @@ def test_configured_immutable_blueprint_source_bypasses_selector(monkeypatch):
     )
 
     assert BlueprintImageCache(url, 900.0).get() == PIN
+
+
+def test_cached_read_returns_stale_immediately_during_one_slow_refresh(monkeypatch):
+    cache, _ = _cache(monkeypatch, ['{"image": "%s"}' % PIN], ttl=0.0)
+    assert cache.get() == PIN
+
+    started = threading.Event()
+    release = threading.Event()
+    calls = {"n": 0}
+
+    def slow_url(configured_url):
+        calls["n"] += 1
+        started.set()
+        assert release.wait(2.0)
+        return configured_url
+
+    monkeypatch.setattr("app.blueprint_image._blueprint_url", slow_url)
+    assert cache.get_cached() == PIN
+    assert started.wait(1.0)
+
+    results = []
+    readers = [
+        threading.Thread(target=lambda: results.append(cache.get_cached()))
+        for _ in range(12)
+    ]
+    for reader in readers:
+        reader.start()
+    for reader in readers:
+        reader.join(0.2)
+    assert all(not reader.is_alive() for reader in readers)
+    assert results == [PIN] * len(readers)
+    assert calls["n"] == 1
+
+    release.set()
+    deadline = time.monotonic() + 1.0
+    while cache.refresh_in_progress and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not cache.refresh_in_progress
