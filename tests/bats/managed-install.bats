@@ -28,6 +28,14 @@ EOF
   done
 }
 
+assert_active_one() {
+  [ "$(readlink "$AICODING_DATA_DIR/current/dvw")" = "$AICODING_DATA_DIR/versions/dvw/$SHA1" ]
+  [ "$(cat "$DVW_STATE_DIR/version")" = "$SHA1" ]
+  run "$HOME/.local/bin/dvw"
+  [ "$status" -eq 0 ]
+  [ "$output" = one ]
+}
+
 @test "managed install stages an immutable release and launches it" {
   local source="$BATS_TEST_TMPDIR/source"
   make_source "$source" "$SHA1" one
@@ -193,6 +201,103 @@ EOF
   [ ! -e "$AICODING_DATA_DIR/current/dvw" ]
 }
 
+@test "failed release publication cannot activate or report success" {
+  local one="$BATS_TEST_TMPDIR/one" two="$BATS_TEST_TMPDIR/two"
+  make_source "$one" "$SHA1" one
+  make_source "$two" "$SHA2" two
+  dvw_managed_install "$one" "$SHA1"
+  _dvw_managed_publish_release() { return 1; }
+
+  run dvw_managed_install "$two" "$SHA2"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"release publication failed"* ]]
+  [ ! -e "$AICODING_DATA_DIR/versions/dvw/$SHA2" ]
+  assert_active_one
+}
+
+@test "published release is revalidated before activation" {
+  local source="$BATS_TEST_TMPDIR/source"
+  make_source "$source" "$SHA1" one
+  _dvw_managed_publish_release() {
+    mv "$1" "$2"
+    rm "$2/lib/version.sh"
+  }
+
+  run dvw_managed_install "$source" "$SHA1"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"published release validation failed"* ]]
+  [ ! -e "$AICODING_DATA_DIR/versions/dvw/$SHA1" ]
+  [ ! -e "$AICODING_DATA_DIR/current/dvw" ]
+  [ ! -e "$DVW_STATE_DIR/version" ]
+  [ ! -e "$HOME/.local/bin/dvw" ]
+}
+
+@test "lock acquisition failure preserves the active install" {
+  local one="$BATS_TEST_TMPDIR/one" two="$BATS_TEST_TMPDIR/two"
+  make_source "$one" "$SHA1" one
+  make_source "$two" "$SHA2" two
+  dvw_managed_install "$one" "$SHA1"
+  _dvw_managed_acquire_lock() { return 1; }
+
+  run dvw_managed_install "$two" "$SHA2"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not acquire install lock"* ]]
+  [ ! -e "$AICODING_DATA_DIR/versions/dvw/$SHA2" ]
+  assert_active_one
+}
+
+@test "launcher write failure preserves the active install" {
+  local one="$BATS_TEST_TMPDIR/one" two="$BATS_TEST_TMPDIR/two"
+  make_source "$one" "$SHA1" one
+  make_source "$two" "$SHA2" two
+  dvw_managed_install "$one" "$SHA1"
+  _dvw_managed_write_launcher() { return 1; }
+
+  run dvw_managed_install "$two" "$SHA2"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"launcher staging failed"* ]]
+  assert_active_one
+}
+
+@test "launcher chmod failure preserves the active install" {
+  local one="$BATS_TEST_TMPDIR/one" two="$BATS_TEST_TMPDIR/two"
+  make_source "$one" "$SHA1" one
+  make_source "$two" "$SHA2" two
+  dvw_managed_install "$one" "$SHA1"
+  _dvw_managed_chmod_launcher() { return 1; }
+
+  run dvw_managed_install "$two" "$SHA2"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"launcher staging failed"* ]]
+  assert_active_one
+}
+
+@test "marker directory failure preserves the active install" {
+  local one="$BATS_TEST_TMPDIR/one" two="$BATS_TEST_TMPDIR/two"
+  make_source "$one" "$SHA1" one
+  make_source "$two" "$SHA2" two
+  dvw_managed_install "$one" "$SHA1"
+  _dvw_managed_prepare_marker_dir() { return 1; }
+
+  run dvw_managed_install "$two" "$SHA2"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"marker staging failed"* ]]
+  assert_active_one
+}
+
+@test "marker write failure preserves the active install" {
+  local one="$BATS_TEST_TMPDIR/one" two="$BATS_TEST_TMPDIR/two"
+  make_source "$one" "$SHA1" one
+  make_source "$two" "$SHA2" two
+  dvw_managed_install "$one" "$SHA1"
+  _dvw_managed_write_marker() { return 1; }
+
+  run dvw_managed_install "$two" "$SHA2"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"marker staging failed"* ]]
+  assert_active_one
+}
+
 @test "launcher backup failure aborts before activation and preserves untouched state" {
   local one="$BATS_TEST_TMPDIR/one" two="$BATS_TEST_TMPDIR/two"
   local launcher_before marker_before current_before previous_before
@@ -313,6 +418,88 @@ EOF
   [ "$(cat "$recovery")" = "$SHA1" ]
   [ "$(cat "$DVW_STATE_DIR/version")" = "$SHA2" ]
   [ "$(readlink "$AICODING_DATA_DIR/current/dvw")" = "$AICODING_DATA_DIR/versions/dvw/$SHA1" ]
+}
+
+@test "initial enrollment keeps a legacy launcher usable until the pointer is ready" {
+  local source="$BATS_TEST_TMPDIR/source"
+  make_source "$source" "$SHA1" one
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/bin/sh\nprintf "legacy\\n"\n' > "$HOME/.local/bin/dvw"
+  chmod +x "$HOME/.local/bin/dvw"
+  _dvw_managed_commit_marker() {
+    "$HOME/.local/bin/dvw" > "$BATS_TEST_TMPDIR/during-enrollment"
+    mv -f "$1" "$2"
+  }
+
+  run dvw_managed_install "$source" "$SHA1"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/during-enrollment")" = legacy ]
+  run "$HOME/.local/bin/dvw"
+  [ "$output" = one ]
+}
+
+@test "initial launcher failure rolls marker and pointer back to the legacy command" {
+  local source="$BATS_TEST_TMPDIR/source" legacy_hash
+  make_source "$source" "$SHA1" one
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/bin/sh\nprintf "legacy\\n"\n' > "$HOME/.local/bin/dvw"
+  chmod +x "$HOME/.local/bin/dvw"
+  legacy_hash=$(sha256sum "$HOME/.local/bin/dvw")
+  _dvw_managed_commit_launcher() {
+    [ "$(readlink "$AICODING_DATA_DIR/current/dvw")" = "$AICODING_DATA_DIR/versions/dvw/$SHA1" ] ||
+      return 88
+    [ "$(cat "$DVW_STATE_DIR/version")" = "$SHA1" ] || return 89
+    return 1
+  }
+
+  run dvw_managed_install "$source" "$SHA1"
+  [ "$status" -ne 0 ]
+  [ "$(sha256sum "$HOME/.local/bin/dvw")" = "$legacy_hash" ]
+  [ ! -e "$AICODING_DATA_DIR/current/dvw" ]
+  [ ! -e "$DVW_STATE_DIR/version" ]
+  run "$HOME/.local/bin/dvw"
+  [ "$output" = legacy ]
+}
+
+@test "interrupted initial enrollment restores legacy launcher marker and pointer" {
+  local source="$BATS_TEST_TMPDIR/source" legacy_hash
+  make_source "$source" "$SHA1" one
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/bin/sh\nprintf "legacy\\n"\n' > "$HOME/.local/bin/dvw"
+  chmod +x "$HOME/.local/bin/dvw"
+  legacy_hash=$(sha256sum "$HOME/.local/bin/dvw")
+  _dvw_managed_commit_launcher() {
+    [ -L "$AICODING_DATA_DIR/current/dvw" ] || return 88
+    [ "$(cat "$DVW_STATE_DIR/version")" = "$SHA1" ] || return 89
+    : > "$BATS_TEST_TMPDIR/saw-staged-enrollment"
+    kill -TERM "$BASHPID"
+  }
+
+  run dvw_managed_install "$source" "$SHA1"
+  [ "$status" -eq 143 ]
+  [[ "$output" == *"interrupted by TERM"* ]]
+  [ -e "$BATS_TEST_TMPDIR/saw-staged-enrollment" ]
+  [ "$(sha256sum "$HOME/.local/bin/dvw")" = "$legacy_hash" ]
+  [ ! -e "$AICODING_DATA_DIR/current/dvw" ]
+  [ ! -e "$DVW_STATE_DIR/version" ]
+  run "$HOME/.local/bin/dvw"
+  [ "$output" = legacy ]
+}
+
+@test "fresh enrollment launcher failure removes prepared marker and pointer" {
+  local source="$BATS_TEST_TMPDIR/source"
+  make_source "$source" "$SHA1" one
+  _dvw_managed_commit_launcher() {
+    [ -L "$AICODING_DATA_DIR/current/dvw" ] || return 88
+    [ "$(cat "$DVW_STATE_DIR/version")" = "$SHA1" ] || return 89
+    return 1
+  }
+
+  run dvw_managed_install "$source" "$SHA1"
+  [ "$status" -ne 0 ]
+  [ ! -e "$HOME/.local/bin/dvw" ]
+  [ ! -e "$AICODING_DATA_DIR/current/dvw" ]
+  [ ! -e "$DVW_STATE_DIR/version" ]
 }
 
 @test "dvw-install unattended path performs only the managed client install" {

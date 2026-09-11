@@ -84,20 +84,42 @@ _dvw_managed_stage_source() {
   fi
 }
 
-_dvw_managed_stage_launcher() {
-  local data_dir="$1" bin_dir="$HOME/.local/bin" tmp
-  mkdir -p "$bin_dir"
-  tmp=$(mktemp "$bin_dir/.dvw.XXXXXX") || return 1
+_dvw_managed_write_launcher() {
+  local tmp="$1" data_dir="$2"
   {
-    printf '#!/usr/bin/env bash\nset -euo pipefail\n'
-    printf 'data_dir=%q\n' "$data_dir"
-    printf 'release=$(readlink -f "$data_dir/current/dvw")\n'
-    printf '[[ -n "$release" && -x "$release/dvw" ]] || { echo "dvw: managed installation is unavailable" >&2; exit 1; }\n'
+    printf '#!/usr/bin/env bash\nset -euo pipefail\n' &&
+    printf 'data_dir=%q\n' "$data_dir" &&
+    printf 'release=$(readlink -f "$data_dir/current/dvw")\n' &&
+    printf '[[ -n "$release" && -x "$release/dvw" ]] || { echo "dvw: managed installation is unavailable" >&2; exit 1; }\n' &&
     printf 'exec "$release/dvw" "$@"\n'
   } > "$tmp"
-  chmod 0755 "$tmp"
-  printf '%s\n' "$tmp"
 }
+
+_dvw_managed_chmod_launcher() {
+  chmod 0755 "$1"
+}
+
+_dvw_managed_stage_launcher() {
+  local data_dir="$1" bin_dir="$HOME/.local/bin" tmp
+  mkdir -p "$bin_dir" || return 1
+  tmp=$(mktemp "$bin_dir/.dvw.XXXXXX") || return 1
+  if ! _dvw_managed_write_launcher "$tmp" "$data_dir" ||
+      ! _dvw_managed_chmod_launcher "$tmp"; then
+    rm -f "$tmp" || true
+    return 1
+  fi
+  if ! printf '%s\n' "$tmp"; then
+    rm -f "$tmp" || true
+    return 1
+  fi
+}
+
+_dvw_managed_prepare_marker_dir() { mkdir -p "$1"; }
+_dvw_managed_write_marker() { printf '%s\n' "$2" > "$1"; }
+_dvw_managed_write_version() { printf '%s\n' "$2" > "$1"; }
+_dvw_managed_publish_release() { mv "$1" "$2"; }
+_dvw_managed_open_lock() { exec 9>"$1"; }
+_dvw_managed_acquire_lock() { flock 9; }
 
 _dvw_managed_commit_launcher() {
   mv -f "$1" "$2"
@@ -109,7 +131,7 @@ _dvw_managed_commit_marker() {
 
 _dvw_managed_switch_link() {
   local directory="$1" name="$2" target="$3" tmp
-  mkdir -p "$directory"
+  mkdir -p "$directory" || return 1
   tmp="$directory/.${name}.new.$$"
   ln -s "$target" "$tmp" || return 1
   if ! mv -Tf "$tmp" "$directory/$name"; then
@@ -140,10 +162,10 @@ _dvw_managed_restore_file() {
 
 dvw_managed_install() (
   local source="${1:-}" version="${2:-}" source_version data_dir versions release
-  local stage="" old_current old_previous marker marker_tmp="" lock_fd path
+  local stage="" old_current old_previous marker marker_tmp="" path
   local launcher launcher_tmp="" launcher_backup="" marker_backup="" rc=0 rollback_rc=0
   local launcher_existed=0 marker_existed=0 launcher_touched=0 marker_touched=0
-  local current_touched=0 previous_touched=0 recovery=""
+  local current_touched=0 previous_touched=0 initial_enrollment=0 recovery=""
   [[ "$version" =~ ^[0-9a-f]{40}$ ]] || {
     echo "dvw managed install: full SHA required" >&2
     return 1
@@ -164,13 +186,22 @@ dvw_managed_install() (
   data_dir="${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}"
   versions="$data_dir/versions/dvw"
   release="$versions/$version"
-  mkdir -p "$versions" "$data_dir/current" "$data_dir/previous"
+  if ! mkdir -p "$versions" "$data_dir/current" "$data_dir/previous"; then
+    echo "dvw managed install: runtime directory preparation failed" >&2
+    return 1
+  fi
   command -v flock >/dev/null 2>&1 || {
     echo "dvw managed install: flock is required" >&2
     return 1
   }
-  exec {lock_fd}>"$data_dir/.dvw-install.lock"
-  flock "$lock_fd"
+  if ! _dvw_managed_open_lock "$data_dir/.dvw-install.lock"; then
+    echo "dvw managed install: could not open install lock" >&2
+    return 1
+  fi
+  if ! _dvw_managed_acquire_lock; then
+    echo "dvw managed install: could not acquire install lock" >&2
+    return 1
+  fi
 
   if [[ -e "$release" ]]; then
     _dvw_managed_validate_release "$release" "$version" || {
@@ -184,24 +215,59 @@ dvw_managed_install() (
       echo "dvw managed install: source staging failed" >&2
       return 1
     }
-    printf '%s\n' "$version" > "$stage/.aicoding-version"
+    if ! _dvw_managed_write_version "$stage/.aicoding-version" "$version"; then
+      rm -rf "$stage"
+      echo "dvw managed install: staged version write failed" >&2
+      return 1
+    fi
     if ! _dvw_managed_validate_release "$stage" "$version"; then
       rm -rf "$stage"
       echo "dvw managed install: staged client validation failed" >&2
       return 1
     fi
-    mv "$stage" "$release"
+    if ! _dvw_managed_publish_release "$stage" "$release"; then
+      rm -rf "$stage"
+      echo "dvw managed install: release publication failed" >&2
+      return 1
+    fi
     stage=""
+    if ! _dvw_managed_validate_release "$release" "$version"; then
+      rm -rf "$release"
+      echo "dvw managed install: published release validation failed" >&2
+      return 1
+    fi
   fi
 
-  old_current=$(readlink -f "$data_dir/current/dvw" 2>/dev/null || true)
-  old_previous=$(readlink -f "$data_dir/previous/dvw" 2>/dev/null || true)
+  old_current=""
+  old_previous=""
+  if [[ -L "$data_dir/current/dvw" ]]; then
+    old_current=$(readlink -f "$data_dir/current/dvw" 2>/dev/null || true)
+  fi
+  if [[ -L "$data_dir/previous/dvw" ]]; then
+    old_previous=$(readlink -f "$data_dir/previous/dvw" 2>/dev/null || true)
+  fi
   launcher="$HOME/.local/bin/dvw"
-  launcher_tmp=$(_dvw_managed_stage_launcher "$data_dir") || return 1
+  launcher_tmp=$(_dvw_managed_stage_launcher "$data_dir") || {
+    echo "dvw managed install: launcher staging failed" >&2
+    return 1
+  }
   marker="${DVW_STATE_DIR:-$HOME/.local/state/dvw}/version"
-  mkdir -p "$(dirname "$marker")"
-  marker_tmp=$(mktemp "${marker}.XXXXXX") || { rm -f "$launcher_tmp"; return 1; }
-  printf '%s\n' "$version" > "$marker_tmp"
+  if ! _dvw_managed_prepare_marker_dir "$(dirname "$marker")"; then
+    rm -f "$launcher_tmp" || true
+    echo "dvw managed install: marker staging failed" >&2
+    return 1
+  fi
+  marker_tmp=$(mktemp "${marker}.XXXXXX") || {
+    rm -f "$launcher_tmp" || true
+    echo "dvw managed install: marker staging failed" >&2
+    return 1
+  }
+  if ! _dvw_managed_write_marker "$marker_tmp" "$version" ||
+      [[ "$(tr -d '[:space:]' < "$marker_tmp" 2>/dev/null)" != "$version" ]]; then
+    rm -f "$launcher_tmp" "$marker_tmp" || true
+    echo "dvw managed install: marker staging failed" >&2
+    return 1
+  fi
 
   if [[ -e "$launcher" || -L "$launcher" ]]; then
     launcher_backup="${launcher}.backup.$$"
@@ -227,37 +293,8 @@ dvw_managed_install() (
     return 1
   fi
 
-  if [[ -n "$old_current" && "$old_current" != "$release" ]]; then
-    if _dvw_managed_switch_link "$data_dir/previous" dvw "$old_current"; then
-      previous_touched=1
-    else
-      rc=1
-    fi
-  fi
-  if (( rc == 0 )); then
-    launcher_touched=1
-    _dvw_managed_commit_launcher "$launcher_tmp" "$launcher" || rc=1
-  fi
-  if (( rc == 0 )); then
-    marker_touched=1
-    _dvw_managed_commit_marker "$marker_tmp" "$marker" || rc=1
-  fi
-  # The behavior-changing pointer is the final fallible activation step.
-  if (( rc == 0 )); then
-    if _dvw_managed_switch_link "$data_dir/current" dvw "$release"; then
-      current_touched=1
-    else
-      rc=1
-    fi
-  fi
-
-  if (( rc != 0 )); then
-    if (( current_touched )); then
-      _dvw_managed_restore_link "$data_dir/current" dvw "$old_current" || rollback_rc=1
-    fi
-    if (( previous_touched )); then
-      _dvw_managed_restore_link "$data_dir/previous" dvw "$old_previous" || rollback_rc=1
-    fi
+  _dvw_managed_rollback_activation() {
+    rollback_rc=0
     if (( launcher_touched )); then
       if _dvw_managed_restore_file "$launcher" "$launcher_backup" "$launcher_existed"; then
         launcher_backup=""
@@ -274,18 +311,95 @@ dvw_managed_install() (
         [[ -z "$marker_backup" ]] || recovery+=" $marker_backup"
       fi
     fi
+    if (( current_touched )); then
+      _dvw_managed_restore_link "$data_dir/current" dvw "$old_current" || rollback_rc=1
+    fi
+    if (( previous_touched )); then
+      _dvw_managed_restore_link "$data_dir/previous" dvw "$old_previous" || rollback_rc=1
+    fi
     for path in "$launcher_tmp" "$marker_tmp"; do
-      [[ -z "$path" ]] || rm -f "$path"
+      [[ -z "$path" ]] || rm -f "$path" || rollback_rc=1
     done
     (( launcher_touched )) || { rm -f "$launcher_backup" || true; launcher_backup=""; }
     (( marker_touched )) || { rm -f "$marker_backup" || true; marker_backup=""; }
+    return "$rollback_rc"
+  }
+
+  _dvw_managed_report_rollback() {
     if (( rollback_rc == 0 )); then
-      echo "dvw managed install: activation failed; previous release restored" >&2
+      if [[ -n "$old_current" ]]; then
+        echo "dvw managed install: activation failed; previous release restored" >&2
+      else
+        echo "dvw managed install: activation failed; prior state restored" >&2
+      fi
     else
       echo "dvw managed install: activation failed; rollback incomplete" >&2
       [[ -z "$recovery" ]] || echo "dvw managed install: recovery backup retained:${recovery}" >&2
       [[ -z "$old_current" ]] || echo "dvw managed install: old release retained: $old_current" >&2
     fi
+  }
+
+  _dvw_managed_handle_signal() {
+    local signal="$1" code="$2"
+    trap - TERM INT HUP
+    _dvw_managed_rollback_activation || true
+    echo "dvw managed install: interrupted by $signal" >&2
+    _dvw_managed_report_rollback
+    exit "$code"
+  }
+
+  [[ -z "$old_current" ]] && initial_enrollment=1
+  trap '_dvw_managed_handle_signal TERM 143' TERM
+  trap '_dvw_managed_handle_signal INT 130' INT
+  trap '_dvw_managed_handle_signal HUP 129' HUP
+
+  if (( initial_enrollment )); then
+    # Keep any legacy launcher usable until marker and pointer are ready. The
+    # launcher rename is the final behavior-changing step during enrollment.
+    marker_touched=1
+    _dvw_managed_commit_marker "$marker_tmp" "$marker" || rc=1
+    if (( rc == 0 )); then
+      if _dvw_managed_switch_link "$data_dir/current" dvw "$release"; then
+        current_touched=1
+      else
+        rc=1
+      fi
+    fi
+    if (( rc == 0 )); then
+      launcher_touched=1
+      _dvw_managed_commit_launcher "$launcher_tmp" "$launcher" || rc=1
+    fi
+  else
+    if [[ "$old_current" != "$release" ]]; then
+      if _dvw_managed_switch_link "$data_dir/previous" dvw "$old_current"; then
+        previous_touched=1
+      else
+        rc=1
+      fi
+    fi
+    if (( rc == 0 )); then
+      launcher_touched=1
+      _dvw_managed_commit_launcher "$launcher_tmp" "$launcher" || rc=1
+    fi
+    if (( rc == 0 )); then
+      marker_touched=1
+      _dvw_managed_commit_marker "$marker_tmp" "$marker" || rc=1
+    fi
+    # Existing managed launchers continue following the old pointer until this
+    # final fallible activation step succeeds.
+    if (( rc == 0 )); then
+      if _dvw_managed_switch_link "$data_dir/current" dvw "$release"; then
+        current_touched=1
+      else
+        rc=1
+      fi
+    fi
+  fi
+
+  trap - TERM INT HUP
+  if (( rc != 0 )); then
+    _dvw_managed_rollback_activation || true
+    _dvw_managed_report_rollback
     return 1
   fi
 
