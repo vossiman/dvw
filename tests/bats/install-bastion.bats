@@ -3,6 +3,7 @@ setup() {
   DVW_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
   SCRIPT="$DVW_ROOT/install-bastion.sh"
   TMPDIR=$(mktemp -d); export HOME="$TMPDIR"
+  export XDG_CONFIG_HOME="$HOME/.config" DVW_CONFIG="$HOME/.config/dvw/config"
   mkdir -p "$HOME/stubs" "$HOME/.local/bin"
   for b in ssh curl; do
     printf '#!/bin/sh\necho "%s $*" >> "$HOME/calls"\n' "$b" > "$HOME/stubs/$b"

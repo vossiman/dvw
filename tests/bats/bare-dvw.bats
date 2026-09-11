@@ -62,6 +62,9 @@ setup() {
 
 @test "dvw new (no args, TUI available) launches the TUI with DVW_TUI_START=new" {
   export DVW_TUI_FORCE=1
+  printf '#!/bin/sh\nexit 0\n' > "$STUB_DIR/uv"
+  chmod +x "$STUB_DIR/uv"
+  export PATH="$STUB_DIR:$PATH"
   dvw_tui_launch() { echo "launched start=${DVW_TUI_START:-}"; }
   run main new
   [ "$status" -eq 0 ]

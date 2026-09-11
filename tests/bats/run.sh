@@ -3,4 +3,4 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 export DVW_ROOT="$PWD"
-exec bats tests/bats/*.bats
+exec bats --print-output-on-failure tests/bats/*.bats
