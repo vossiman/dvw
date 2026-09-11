@@ -92,6 +92,10 @@ _fetch_remote_branches() {
 # hatch; the default path deliberately has no raw-main fallback.
 _dvw_blueprint_devcontainer_url() {
   if [[ -n "${DVW_BLUEPRINT_DEVCONTAINER_URL:-}" ]]; then
+    if [[ "$DVW_BLUEPRINT_DEVCONTAINER_URL" != file://* \
+        && ! "$DVW_BLUEPRINT_DEVCONTAINER_URL" =~ ^https://raw\.githubusercontent\.com/vossiman/aiCodingBaseSetup/[0-9a-f]{40}/devcontainer\.json$ ]]; then
+      echo "WARN: DVW_BLUEPRINT_DEVCONTAINER_URL bypasses CI-selected immutable blueprint policy (development override)" >&2
+    fi
     printf '%s\n' "$DVW_BLUEPRINT_DEVCONTAINER_URL"
     return 0
   fi

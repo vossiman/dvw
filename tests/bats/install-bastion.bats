@@ -155,3 +155,12 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"--source PATH --version SHA"* ]]
 }
+
+@test "unattended Pi enrollment diagnoses truncated source and version options" {
+  local flag
+  for flag in --source --version; do
+    run bash "$SCRIPT" --unattended "$flag"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"usage: install-bastion.sh --unattended --source PATH --version SHA"* ]]
+  done
+}

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 #
 # Tests for lib/wizard.sh's standalone helpers (the interactive flow itself
 # is the native Textual TUI wizard, covered by tui/tests/*). Background:
@@ -40,6 +41,15 @@ EOF
   run _dvw_blueprint_devcontainer_url
   [ "$status" -eq 0 ]
   [ "$output" = "$DVW_BLUEPRINT_DEVCONTAINER_URL" ]
+}
+
+@test "blueprint source: moving developer URL remains usable with a policy warning" {
+  export DVW_BLUEPRINT_DEVCONTAINER_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json"
+  aicoding-select() { echo "SELECTOR SHOULD NOT RUN"; return 1; }
+  run --separate-stderr _dvw_blueprint_devcontainer_url
+  [ "$status" -eq 0 ]
+  [ "$output" = "$DVW_BLUEPRINT_DEVCONTAINER_URL" ]
+  [[ "$stderr" == *"bypasses CI-selected immutable blueprint policy"* ]]
 }
 
 @test "blueprint source: selector failure and malformed SHA fail closed" {

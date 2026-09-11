@@ -6,6 +6,7 @@ stdlib urllib on purpose: no runtime dependency for one GET."""
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import threading
@@ -13,6 +14,7 @@ import time
 import urllib.request
 
 _IMAGE_RE = re.compile(r'"image"\s*:\s*"([^"]+)"')
+log = logging.getLogger(__name__)
 
 # Must stay well under the catalog clients' 10s request budget (see
 # tui/dvw_tui/client.py) so a dead blueprint host degrades to unknown
@@ -20,7 +22,7 @@ _IMAGE_RE = re.compile(r'"image"\s*:\s*"([^"]+)"')
 _FETCH_TIMEOUT = 3.0
 # Leave room for the existing three-second blueprint fetch inside the TUI
 # client's ten-second catalog request budget.
-_SELECT_TIMEOUT = 6.0
+_SELECT_TIMEOUT = 5.0
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _AICODING_RAW_PREFIX = (
     "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
@@ -46,18 +48,26 @@ def _select_sha() -> str | None:
             timeout=_SELECT_TIMEOUT + 1.0,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
+    except OSError as exc:
+        raise RuntimeError("aicoding-select process could not start") from exc
+    except subprocess.SubprocessError as exc:
+        raise RuntimeError("aicoding-select process timed out") from exc
     sha = result.stdout.strip()
+    if result.returncode == 127:
+        raise RuntimeError("aicoding-select command is unavailable")
     return sha if result.returncode == 0 and _SHA_RE.fullmatch(sha) else None
 
 
-def _blueprint_url(configured_url: str) -> str | None:
+def _blueprint_url(configured_url: str) -> str:
     if configured_url:
-        return configured_url if _AICODING_RAW_URL_RE.fullmatch(configured_url) else None
+        if not _AICODING_RAW_URL_RE.fullmatch(configured_url):
+            raise ValueError(
+                "configured blueprint URL is not an immutable supported URL"
+            )
+        return configured_url
     sha = _select_sha()
     if sha is None:
-        return None
+        raise RuntimeError("aicoding-select did not return a CI-qualified SHA")
     return f"{_AICODING_RAW_PREFIX}{sha}/devcontainer.json"
 
 
@@ -97,10 +107,9 @@ class BlueprintImageCache:
                     return self._value
             try:
                 url = _blueprint_url(self._url)
-                if url is None:
-                    raise ValueError("no CI-qualified blueprint source")
                 image = _parse_image(_fetch(url, timeout=_FETCH_TIMEOUT))
-            except Exception:
+            except Exception as exc:
+                log.warning("Blueprint image refresh failed: %s", exc)
                 self._fetched_at = now      # negative-cache the failure
                 self._last_fetch_ok = False
                 return self._value          # stale (or None) beats nothing

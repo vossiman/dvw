@@ -50,6 +50,17 @@ assert_active_one() {
   [ "$(cat "$DVW_STATE_DIR/version")" = "$SHA1" ]
 }
 
+@test "managed launcher diagnoses a missing current directory" {
+  local source="$BATS_TEST_TMPDIR/source"
+  make_source "$source" "$SHA1" one
+  dvw_managed_install "$source" "$SHA1"
+  rm -rf "$AICODING_DATA_DIR/current"
+
+  run "$HOME/.local/bin/dvw"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"dvw: managed installation is unavailable"* ]]
+}
+
 @test "managed activation preserves previous and launcher follows current" {
   local one="$BATS_TEST_TMPDIR/one" two="$BATS_TEST_TMPDIR/two"
   make_source "$one" "$SHA1" one

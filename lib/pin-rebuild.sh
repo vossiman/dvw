@@ -121,7 +121,8 @@ _dvw_pin_rebuild_one() {
     return 1; }
 
   # 1. Build branch = the source clone's live HEAD; that is literally what
-  #    `devpod up --recreate` reads. Catalog branch only as a warned fallback.
+  #    `devpod up --recreate` reads. The source API is required so a stale
+  #    catalog branch can never select a different branch for the rebuild.
   local src branch tree_pin src_dirty=0
   if src=$(_dvw_catalog_source_get "$id" 2>/dev/null); then
     [[ $(jq -r '.present' <<<"$src") == "true" ]] || {

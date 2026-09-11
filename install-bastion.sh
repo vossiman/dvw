@@ -15,8 +15,18 @@ while (($#)); do
   case "$1" in
     --check) CHECK_ONLY=1; shift ;;
     --unattended) UNATTENDED=1; shift ;;
-    --source) MANAGED_SOURCE="${2:-}"; shift 2 ;;
-    --version) MANAGED_VERSION="${2:-}"; shift 2 ;;
+    --source)
+      (( $# >= 2 )) || {
+        echo "usage: install-bastion.sh --unattended --source PATH --version SHA" >&2
+        exit 2
+      }
+      MANAGED_SOURCE="$2"; shift 2 ;;
+    --version)
+      (( $# >= 2 )) || {
+        echo "usage: install-bastion.sh --unattended --source PATH --version SHA" >&2
+        exit 2
+      }
+      MANAGED_VERSION="$2"; shift 2 ;;
     *) echo "usage: install-bastion.sh [--check] [--unattended --source PATH --version SHA]" >&2; exit 2 ;;
   esac
 done

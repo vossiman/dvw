@@ -124,7 +124,9 @@ raw GitHub form:
 `https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/<40-character-sha>/devcontainer.json`.
 Moving refs, other paths, queries, and fragments are rejected, and selection
 failures degrade image comparison to unknown within the catalog client's
-request timeout.
+request timeout with a warning in the service journal. The selector makes
+read-only GitHub API calls and writes only a temporary response beneath
+`PrivateTmp`; it does not need a writable home, state, or cache directory.
 
 **Backup (DVW-14, DVW-15)** — `dvw-catalog-backup.timer` commits and pushes
 the data dir nightly to `CATALOG_BACKUP_REMOTE` from `/opt/dvw-catalog/catalog.env`

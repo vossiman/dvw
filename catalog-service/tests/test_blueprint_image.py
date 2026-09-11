@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from app.blueprint_image import BlueprintImageCache
+import subprocess
+
+from app.blueprint_image import (
+    _FETCH_TIMEOUT,
+    _SELECT_TIMEOUT,
+    BlueprintImageCache,
+)
 
 PIN = "ghcr.io/x/y@sha256:" + "c" * 64
 
@@ -97,7 +103,7 @@ def test_default_source_fetches_ci_selected_sha(monkeypatch):
     ]
 
 
-def test_selector_failure_does_not_fall_back_to_main(monkeypatch):
+def test_selector_failure_does_not_fall_back_to_main(monkeypatch, caplog):
     fetched = []
     monkeypatch.setattr("app.blueprint_image._select_sha", lambda: None)
     monkeypatch.setattr(
@@ -108,9 +114,21 @@ def test_selector_failure_does_not_fall_back_to_main(monkeypatch):
 
     assert cache.get() is None
     assert fetched == []
+    assert "aicoding-select did not return a CI-qualified SHA" in caplog.text
 
 
-def test_configured_blueprint_source_must_be_immutable(monkeypatch):
+def test_missing_selector_command_is_diagnosed(monkeypatch, caplog):
+    def missing(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 127, "", "")
+
+    monkeypatch.setattr("app.blueprint_image.subprocess.run", missing)
+    cache = BlueprintImageCache("", 900.0)
+
+    assert cache.get() is None
+    assert "aicoding-select command is unavailable" in caplog.text
+
+
+def test_configured_blueprint_source_must_be_immutable(monkeypatch, caplog):
     fetched = []
     monkeypatch.setattr(
         "app.blueprint_image._fetch",
@@ -123,6 +141,12 @@ def test_configured_blueprint_source_must_be_immutable(monkeypatch):
 
     assert cache.get() is None
     assert fetched == []
+    assert "configured blueprint URL is not an immutable supported URL" in caplog.text
+
+
+def test_selector_and_fetch_fit_inside_catalog_client_budget():
+    # subprocess.run allows one second beyond the inner timeout wrapper.
+    assert _SELECT_TIMEOUT + 1.0 + _FETCH_TIMEOUT < 10.0
 
 
 def test_configured_main_url_cannot_be_disguised_by_sha_query(monkeypatch):

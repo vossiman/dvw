@@ -89,7 +89,7 @@ _dvw_managed_write_launcher() {
   {
     printf '#!/usr/bin/env bash\nset -euo pipefail\n' &&
     printf 'data_dir=%q\n' "$data_dir" &&
-    printf 'release=$(readlink -f "$data_dir/current/dvw")\n' &&
+    printf 'release=$(readlink -f "$data_dir/current/dvw" || true)\n' &&
     printf '[[ -n "$release" && -x "$release/dvw" ]] || { echo "dvw: managed installation is unavailable" >&2; exit 1; }\n' &&
     printf 'exec "$release/dvw" "$@"\n'
   } > "$tmp"

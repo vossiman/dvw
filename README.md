@@ -103,6 +103,13 @@ dvw config set DVW_PROVIDER     myhost     # devpod provider name for new worksp
 # also honored: DVW_CATALOG_SOCK, DVW_CATALOG_TOKEN
 ```
 
+For local blueprint development, the explicit
+`DVW_BLUEPRINT_DEVCONTAINER_URL` environment override bypasses the
+CI-selected immutable source. `file://` fixtures and exact
+`raw.githubusercontent.com/.../<40-character-sha>/devcontainer.json` URLs are
+quiet; other URLs, including moving refs such as `main`, remain usable but
+print a policy warning. Avoid persisting a moving override for normal use.
+
 **Server** — `host-install.sh` runs as your normal user and rewrites the systemd
 units' `User=`/`Group=` to whoever installs, so the service isn't tied to `vossi`.
 The default devpod-provider name stamped on entries is `CATALOG_DEFAULT_PROVIDER`
@@ -117,17 +124,20 @@ workspace, drop the canonical file into its `.devcontainer/`, then commit + push
 so any future `dvw new` from that repo picks it up:
 
 ```bash
+(
+set -e
 # 1. create the host state dirs the mounts bind to (once per host)
 mkdir -p ~/devpod/{aicodingsetup,claude,opencode,codex,cursor}
 
 # 2. pull the canonical devcontainer.json into the repo
 mkdir -p .devcontainer
-blueprint_sha=$(aicoding-select aicoding) || exit
+blueprint_sha=$(aicoding-select aicoding)
 curl -fsSL "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/$blueprint_sha/devcontainer.json" \
   -o .devcontainer/devcontainer.json
 
 # 3. commit + push so `dvw new` builds from it
 git add .devcontainer && git commit -m 'add devcontainer' && git push
+)
 ```
 
 The mounts resolve `${localEnv:HOME}` on the **host** at provision time, so the
