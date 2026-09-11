@@ -131,6 +131,18 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "first deploy persists an exported immutable blueprint for the service" {
+  rm -f "$HOME/stubs/aicoding-select" "$SVC_DIR/catalog.env"
+  local url="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/abcdefabcdefabcdefabcdefabcdefabcdefabcd/devcontainer.json"
+  export CATALOG_BLUEPRINT_DEVCONTAINER_URL="$url"
+
+  run_install
+
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^CATALOG_BLUEPRINT_DEVCONTAINER_URL=' "$SVC_DIR/catalog.env")" -eq 1 ]
+  grep -Fxq "CATALOG_BLUEPRINT_DEVCONTAINER_URL=$url" "$SVC_DIR/catalog.env"
+}
+
 @test "installer rejects an invalid configured blueprint before mutation" {
   export CATALOG_BLUEPRINT_DEVCONTAINER_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json"
   : > "$CALLS"

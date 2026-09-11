@@ -51,6 +51,8 @@ fi
 export PATH="$HOME/.local/bin:$PATH"
 
 catalog_blueprint_url="${CATALOG_BLUEPRINT_DEVCONTAINER_URL:-}"
+catalog_blueprint_url_from_env=0
+[ -z "$catalog_blueprint_url" ] || catalog_blueprint_url_from_env=1
 if [ -z "$catalog_blueprint_url" ] && [ -r "$SVC_DIR/catalog.env" ]; then
   catalog_blueprint_url=$(awk -F= '
     $1 == "CATALOG_BLUEPRINT_DEVCONTAINER_URL" {
@@ -179,6 +181,15 @@ command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 echo "==> 5/8 env file (once)"
 [ -f "$SVC_DIR/catalog.env" ] || \
   install -m 0640 "$SVC_DIR/deploy/catalog.env.example" "$SVC_DIR/catalog.env"
+if [ "$catalog_blueprint_url_from_env" -eq 1 ]; then
+  catalog_env_tmp=$(mktemp "$SVC_DIR/.catalog.env.XXXXXX")
+  awk '!/^CATALOG_BLUEPRINT_DEVCONTAINER_URL=/' \
+    "$SVC_DIR/catalog.env" > "$catalog_env_tmp"
+  printf 'CATALOG_BLUEPRINT_DEVCONTAINER_URL=%s\n' \
+    "$catalog_blueprint_url" >> "$catalog_env_tmp"
+  chmod 0640 "$catalog_env_tmp"
+  mv "$catalog_env_tmp" "$SVC_DIR/catalog.env"
+fi
 "$SVC_DIR/deploy/configure-backup-remote.sh" "$DATA_DIR" "$SVC_DIR/catalog.env" "$GH_HELPER"
 
 # The unit no longer has SupplementaryGroups=docker, so dvw-docker-proxy is

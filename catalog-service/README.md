@@ -119,9 +119,17 @@ Blueprint image comparison resolves `aiCodingBaseSetup` through
 `aicoding-select`, `jq`, `timeout`, and either `gh` or `curl`) in the service
 user's `~/.local/bin` before deployment. `host-install.sh` checks these before
 sudo or checkout changes, and the rendered systemd unit includes that
-directory in `PATH`. As an explicit alternative, set
-`CATALOG_BLUEPRINT_DEVCONTAINER_URL` in `catalog.env` to the exact supported
-raw GitHub form:
+directory in `PATH`. As an explicit alternative on the first deployment,
+export an exact immutable URL for the installer; it validates the URL and
+persists it into the service's newly created `catalog.env`:
+
+```bash
+CATALOG_BLUEPRINT_DEVCONTAINER_URL='https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/<40-character-sha>/devcontainer.json' \
+  /opt/dvw/catalog-service/deploy/host-install.sh
+```
+
+On later runs, the same variable updates the persisted setting, or it can be
+edited directly in `catalog.env`. The only supported raw GitHub form is:
 `https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/<40-character-sha>/devcontainer.json`.
 Moving refs, other paths, queries, and fragments are rejected, and selection
 failures are logged in the service journal and preserve the last qualified
