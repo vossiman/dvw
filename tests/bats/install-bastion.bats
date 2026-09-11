@@ -96,3 +96,41 @@ EOF
   run bash "$SCRIPT"
   grep -q "dvw-install-sees-devpod: $HOME/.local/bin/devpod" "$HOME/calls"
 }
+
+@test "unattended Pi enrollment delegates the selected source without installing a harness" {
+  printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/devpod"; chmod +x "$HOME/.local/bin/devpod"
+  local sha="1234567890abcdef1234567890abcdef12345678"
+  cat > "$HOME/stubs/dvw-install.sh" <<'EOF'
+#!/bin/sh
+printf 'dvw-install %s\n' "$*" >> "$HOME/calls"
+EOF
+  chmod +x "$HOME/stubs/dvw-install.sh"
+  cat > "$HOME/stubs/aicoding-auto-update" <<'EOF'
+#!/bin/sh
+printf 'aicoding-auto-update %s\n' "$*" >> "$HOME/calls"
+EOF
+  chmod +x "$HOME/stubs/aicoding-auto-update"
+
+  run bash "$SCRIPT" --unattended --source /tmp/selected-dvw --version "$sha"
+  [ "$status" -eq 0 ]
+  grep -qx "dvw-install --unattended --source /tmp/selected-dvw --version $sha" "$HOME/calls"
+  grep -qx "aicoding-auto-update --ensure" "$HOME/calls"
+  ! grep -Eq 'claude|aicoding-install' "$HOME/calls"
+}
+
+@test "unattended Pi enrollment requires the common runtime before changing dvw" {
+  printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/devpod"; chmod +x "$HOME/.local/bin/devpod"
+  local sha="1234567890abcdef1234567890abcdef12345678"
+
+  run bash "$SCRIPT" --unattended --source /tmp/selected-dvw --version "$sha"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"minimal common updater missing"* ]]
+  ! grep -q 'dvw-install' "$HOME/calls"
+}
+
+@test "unattended Pi enrollment requires a full source/version pair" {
+  printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/devpod"; chmod +x "$HOME/.local/bin/devpod"
+  run bash "$SCRIPT" --unattended --source /tmp/selected-dvw
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--source PATH --version SHA"* ]]
+}

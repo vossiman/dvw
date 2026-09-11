@@ -260,7 +260,7 @@ _dvw_pin_pr_only() {
   fi
   local bp
   if ! bp=$(_dvw_blueprint_pin); then
-    ui_error "couldn't read the blueprint pin from $DVW_BLUEPRINT_DEVCONTAINER_URL"
+    ui_error "couldn't read the selected blueprint pin"
     return 1
   fi
 

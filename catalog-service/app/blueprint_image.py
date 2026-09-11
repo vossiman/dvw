@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import threading
 import time
 import urllib.request
@@ -17,11 +18,45 @@ _IMAGE_RE = re.compile(r'"image"\s*:\s*"([^"]+)"')
 # tui/dvw_tui/client.py) so a dead blueprint host degrades to unknown
 # instead of failing the whole /containers/status call.
 _FETCH_TIMEOUT = 3.0
+# Leave room for the existing three-second blueprint fetch inside the TUI
+# client's ten-second catalog request budget.
+_SELECT_TIMEOUT = 6.0
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_SHA_IN_URL_RE = re.compile(r"(?:^|[^0-9a-f])([0-9a-f]{40})(?:[^0-9a-f]|$)")
+_AICODING_RAW_PREFIX = (
+    "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
+)
 
 
 def _fetch(url: str, timeout: float) -> str:
     with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
         return resp.read().decode("utf-8", "replace")
+
+
+def _select_sha() -> str | None:
+    try:
+        result = subprocess.run(  # noqa: S603
+            ["timeout", str(_SELECT_TIMEOUT), "aicoding-select", "aicoding"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=_SELECT_TIMEOUT + 1.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    sha = result.stdout.strip()
+    return sha if result.returncode == 0 and _SHA_RE.fullmatch(sha) else None
+
+
+def _blueprint_url(configured_url: str) -> str | None:
+    if configured_url:
+        return configured_url if _SHA_IN_URL_RE.search(configured_url) else None
+    sha = _select_sha()
+    if sha is None:
+        return None
+    return f"{_AICODING_RAW_PREFIX}{sha}/devcontainer.json"
 
 
 def _parse_image(text: str) -> str | None:
@@ -59,7 +94,10 @@ class BlueprintImageCache:
                 if now - self._fetched_at < ttl:
                     return self._value
             try:
-                image = _parse_image(_fetch(self._url, timeout=_FETCH_TIMEOUT))
+                url = _blueprint_url(self._url)
+                if url is None:
+                    raise ValueError("no CI-qualified blueprint source")
+                image = _parse_image(_fetch(url, timeout=_FETCH_TIMEOUT))
             except Exception:
                 self._fetched_at = now      # negative-cache the failure
                 self._last_fetch_ok = False

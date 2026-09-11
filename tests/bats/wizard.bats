@@ -19,6 +19,62 @@ setup() {
   export DVW_BLUEPRINT_DEVCONTAINER_URL="file://$BATS_TEST_TMPDIR/absent-devcontainer.json"
 }
 
+@test "blueprint source: default resolves the CI-selected aicoding SHA" {
+  unset DVW_BLUEPRINT_DEVCONTAINER_URL
+  local sha="1234567890abcdef1234567890abcdef12345678"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat > "$BATS_TEST_TMPDIR/bin/aicoding-select" <<EOF
+#!/bin/sh
+[ "\$1" = aicoding ] || exit 9
+printf '%s\\n' '$sha'
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/aicoding-select"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run _dvw_blueprint_devcontainer_url
+  [ "$status" -eq 0 ]
+  [ "$output" = "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/$sha/devcontainer.json" ]
+}
+
+@test "blueprint source: explicit developer URL bypasses CI selection" {
+  export DVW_BLUEPRINT_DEVCONTAINER_URL="file://$BATS_TEST_TMPDIR/development.json"
+  aicoding-select() { echo "SELECTOR SHOULD NOT RUN"; return 1; }
+  run _dvw_blueprint_devcontainer_url
+  [ "$status" -eq 0 ]
+  [ "$output" = "$DVW_BLUEPRINT_DEVCONTAINER_URL" ]
+}
+
+@test "blueprint source: selector failure and malformed SHA fail closed" {
+  unset DVW_BLUEPRINT_DEVCONTAINER_URL
+  aicoding-select() { return 1; }
+  run _dvw_blueprint_devcontainer_url
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"/main/"* ]]
+
+  aicoding-select() { printf 'not-a-sha\n'; }
+  run _dvw_blueprint_devcontainer_url
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"/main/"* ]]
+}
+
+@test "_fetch_blueprint_devcontainer: fetches the exact CI-selected URL" {
+  unset DVW_BLUEPRINT_DEVCONTAINER_URL
+  local sha="abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat > "$BATS_TEST_TMPDIR/bin/aicoding-select" <<EOF
+#!/bin/sh
+printf '%s\\n' '$sha'
+EOF
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$4" > "$REQUESTED_URL"
+printf '{"image":"ghcr.io/example/image@sha256:%064d"}\n' 0 > "$6"
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/aicoding-select" "$BATS_TEST_TMPDIR/bin/curl"
+  export REQUESTED_URL="$BATS_TEST_TMPDIR/requested-url"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run _fetch_blueprint_devcontainer "$BATS_TEST_TMPDIR/fetched.json"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/requested-url")" = "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/$sha/devcontainer.json" ]
+}
+
 # Write a minimal valid devcontainer.json fixture and point the fetch URL at
 # it. Sets DVW_TEST_FIXTURE to the fixture path. (Must NOT be called in a
 # $(...) substitution — the URL export would die with the subshell.)

@@ -5,7 +5,42 @@
 # docs/superpowers/specs/2026-08-09-agent-waiting-phone-notify-design.md
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHECK_ONLY=0; [[ "${1:-}" == "--check" ]] && CHECK_ONLY=1
+# shellcheck source=lib/managed-install.sh
+. "$HERE/lib/managed-install.sh"
+CHECK_ONLY=0
+UNATTENDED=0
+MANAGED_SOURCE=""
+MANAGED_VERSION=""
+while (($#)); do
+  case "$1" in
+    --check) CHECK_ONLY=1; shift ;;
+    --unattended) UNATTENDED=1; shift ;;
+    --source) MANAGED_SOURCE="${2:-}"; shift 2 ;;
+    --version) MANAGED_VERSION="${2:-}"; shift 2 ;;
+    *) echo "usage: install-bastion.sh [--check] [--unattended --source PATH --version SHA]" >&2; exit 2 ;;
+  esac
+done
+if (( UNATTENDED )) && [[ -z "$MANAGED_SOURCE" || -z "$MANAGED_VERSION" ]]; then
+  echo "usage: install-bastion.sh --unattended --source PATH --version SHA" >&2
+  exit 2
+fi
+
+# The common runtime is installed by aiCodingBaseSetup's minimal Pi bootstrap,
+# before it delegates the selected dvw snapshot here.  Keep this boundary
+# small: dvw owns its client activation, then asks the already-installed
+# common worker to enroll/ensure the schedule.  The Pi bootstrap's component
+# inventory is what limits that worker to dvw and the common runtime.
+AUTO_UPDATE=""
+if (( UNATTENDED )); then
+  if command -v aicoding-auto-update >/dev/null 2>&1; then
+    AUTO_UPDATE="$(command -v aicoding-auto-update)"
+  elif [[ -x "$HOME/.local/bin/aicoding-auto-update" ]]; then
+    AUTO_UPDATE="$HOME/.local/bin/aicoding-auto-update"
+  else
+    echo "minimal common updater missing; install it before Pi enrollment" >&2
+    exit 1
+  fi
+fi
 fail=0
 ok()   { printf '[OK]   %s\n' "$1"; }
 bad()  { printf '[FAIL] %s\n' "$1"; fail=1; }
@@ -29,18 +64,15 @@ else
   if (( CHECK_ONLY )) || [[ "${DVW_BASTION_SKIP_NETWORK:-}" == "1" ]]; then
     bad "devpod binary missing"
   else
-    case "$(uname -m)" in
-      aarch64|arm64) arch=arm64 ;;
-      x86_64)        arch=amd64 ;;
-      *) bad "unsupported arch $(uname -m)"; arch="" ;;
-    esac
-    if [[ -n "$arch" ]]; then
+    if devpod_url=$(dvw_devpod_download_url); then
       mkdir -p "$HOME/.local/bin"
       curl -fsSL -o "$HOME/.local/bin/devpod" \
-        "https://github.com/loft-sh/devpod/releases/latest/download/devpod-linux-$arch"
+        "$devpod_url"
       chmod +x "$HOME/.local/bin/devpod"
       DEVPOD="$HOME/.local/bin/devpod"
       ok "devpod installed to ~/.local/bin"
+    else
+      bad "unsupported arch $(uname -m)"
     fi
   fi
 fi
@@ -56,8 +88,16 @@ if (( ! CHECK_ONLY )); then
   # misses the arm64 binary step 1 just dropped there and sudo-installs its
   # hardcoded devpod-linux-amd64 to /usr/local/bin instead — permanently
   # shadowing the working arm64 copy.
-  PATH="$HOME/.local/bin:$PATH:$HERE" dvw-install.sh
+  install_args=()
+  if (( UNATTENDED )); then
+    install_args=(--unattended --source "$MANAGED_SOURCE" --version "$MANAGED_VERSION")
+  fi
+  PATH="$HOME/.local/bin:$PATH:$HERE" dvw-install.sh "${install_args[@]}"
   ok "dvw client installed/refreshed"
+  if (( UNATTENDED )); then
+    "$AUTO_UPDATE" --ensure </dev/null
+    ok "automatic update schedule enrolled"
+  fi
 fi
 
 # 3. Push watcher: relay Termius paste-uploads into attached workspaces

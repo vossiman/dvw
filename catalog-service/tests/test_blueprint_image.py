@@ -7,7 +7,10 @@ PIN = "ghcr.io/x/y@sha256:" + "c" * 64
 
 def _cache(monkeypatch, results, ttl=900.0):
     """results: list of str payloads or Exceptions, consumed per fetch."""
-    cache = BlueprintImageCache("https://example.invalid/devcontainer.json", ttl)
+    cache = BlueprintImageCache(
+        "https://example.invalid/1234567890abcdef1234567890abcdef12345678/devcontainer.json",
+        ttl,
+    )
     calls = {"n": 0}
 
     def fake_fetch(url, timeout):
@@ -74,3 +77,79 @@ def test_jsonc_fallback(monkeypatch):
     cache, _ = _cache(
         monkeypatch, ['{ // hi\n "image": "%s" }' % PIN], ttl=0.0)
     assert cache.get() == PIN
+
+
+def test_default_source_fetches_ci_selected_sha(monkeypatch):
+    sha = "1234567890abcdef1234567890abcdef12345678"
+    requested = []
+    monkeypatch.setattr("app.blueprint_image._select_sha", lambda: sha)
+    monkeypatch.setattr(
+        "app.blueprint_image._fetch",
+        lambda url, timeout: requested.append(url) or '{"image": "%s"}' % PIN,
+    )
+    cache = BlueprintImageCache("", 900.0)
+
+    assert cache.get() == PIN
+    assert requested == [
+        "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
+        f"{sha}/devcontainer.json"
+    ]
+
+
+def test_selector_failure_does_not_fall_back_to_main(monkeypatch):
+    fetched = []
+    monkeypatch.setattr("app.blueprint_image._select_sha", lambda: None)
+    monkeypatch.setattr(
+        "app.blueprint_image._fetch",
+        lambda url, timeout: fetched.append(url) or '{"image": "%s"}' % PIN,
+    )
+    cache = BlueprintImageCache("", 900.0)
+
+    assert cache.get() is None
+    assert fetched == []
+
+
+def test_configured_blueprint_source_must_be_immutable(monkeypatch):
+    fetched = []
+    monkeypatch.setattr(
+        "app.blueprint_image._fetch",
+        lambda url, timeout: fetched.append(url) or '{"image": "%s"}' % PIN,
+    )
+    cache = BlueprintImageCache(
+        "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json",
+        900.0,
+    )
+
+    assert cache.get() is None
+    assert fetched == []
+
+
+def test_configured_non_github_moving_source_is_rejected(monkeypatch):
+    fetched = []
+    monkeypatch.setattr(
+        "app.blueprint_image._fetch",
+        lambda url, timeout: fetched.append(url) or '{"image": "%s"}' % PIN,
+    )
+
+    assert BlueprintImageCache(
+        "https://blueprints.example/devcontainer.json", 900.0
+    ).get() is None
+    assert fetched == []
+
+
+def test_configured_immutable_blueprint_source_bypasses_selector(monkeypatch):
+    sha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    url = (
+        "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
+        f"{sha}/devcontainer.json"
+    )
+    monkeypatch.setattr(
+        "app.blueprint_image._select_sha",
+        lambda: (_ for _ in ()).throw(AssertionError("selector should not run")),
+    )
+    monkeypatch.setattr(
+        "app.blueprint_image._fetch", lambda actual, timeout: '{"image": "%s"}' % PIN
+        if actual == url else (_ for _ in ()).throw(AssertionError(actual)),
+    )
+
+    assert BlueprintImageCache(url, 900.0).get() == PIN

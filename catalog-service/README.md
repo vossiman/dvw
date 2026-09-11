@@ -114,6 +114,16 @@ data dir + its git-backup repo, `uv sync --frozen`s the venv, installs the units
 adds a narrow passwordless-restart sudoers drop-in, reenables + starts everything,
 and smoke-tests `/v1/health`.
 
+Blueprint image comparison resolves `aiCodingBaseSetup` through
+`aicoding-select aicoding`; install the minimal common updater (including
+`aicoding-select`, `gh`, `jq`, and `timeout`) in the service user's
+`~/.local/bin` before deployment. The rendered systemd unit includes that
+directory in `PATH`. As an explicit alternative, set
+`CATALOG_BLUEPRINT_DEVCONTAINER_URL` in `catalog.env` to an immutable URL that
+contains the selected 40-character SHA. Moving URLs such as raw `/main/` are
+rejected, and selection failures degrade image comparison to unknown within
+the catalog client's request timeout.
+
 **Backup (DVW-14, DVW-15)** — `dvw-catalog-backup.timer` commits and pushes
 the data dir nightly to `CATALOG_BACKUP_REMOTE` from `/opt/dvw-catalog/catalog.env`
 (a private GitHub repo, `vossiman/dvw-catalog-data` on vossisrv; the installer

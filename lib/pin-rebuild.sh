@@ -117,7 +117,7 @@ _dvw_pin_rebuild_one() {
   slug=$(_dvw_repo_slug "$repo") || {
     ui_error "$id: $repo is not a GitHub repo; pin-rebuild cannot PR it"; return 1; }
   bp=$(_dvw_blueprint_pin) || {
-    ui_error "couldn't read the blueprint pin from $DVW_BLUEPRINT_DEVCONTAINER_URL"
+    ui_error "couldn't read the selected blueprint pin"
     return 1; }
 
   # 1. Build branch = the source clone's live HEAD; that is literally what
@@ -134,9 +134,8 @@ _dvw_pin_rebuild_one() {
     branch=$(jq -r '.branch // empty' <<<"$src")
     tree_pin=$(jq -r '.committed_pin // empty' <<<"$src")
   else
-    branch=$(jq -r '.branch // empty' <<<"$ws")
-    tree_pin=""
-    ui_status_warn "catalog service unreachable; falling back to catalog branch '$branch' (unverified; the pull step will fail without the service)"
+    ui_error "$id: catalog source API unavailable; update the catalog service before pin-rebuild"
+    return 1
   fi
   [[ -n "$branch" ]] || { ui_error "$id: couldn't resolve a build branch"; return 1; }
 

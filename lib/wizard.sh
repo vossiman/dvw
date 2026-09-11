@@ -87,19 +87,30 @@ _fetch_remote_branches() {
   return "$rc"
 }
 
-# Canonical devcontainer.json of the aiCodingBaseSetup blueprint — the same
-# source of truth the blueprint's own postStartCommand pulls from. Overridable
-# so tests can point it at a local file:// fixture and stay off the network.
-DVW_BLUEPRINT_DEVCONTAINER_URL="${DVW_BLUEPRINT_DEVCONTAINER_URL:-https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json}"
+# Resolve the canonical aiCodingBaseSetup devcontainer.json at an exact commit
+# whose main CI passed. An explicit URL remains the development/test escape
+# hatch; the default path deliberately has no raw-main fallback.
+_dvw_blueprint_devcontainer_url() {
+  if [[ -n "${DVW_BLUEPRINT_DEVCONTAINER_URL:-}" ]]; then
+    printf '%s\n' "$DVW_BLUEPRINT_DEVCONTAINER_URL"
+    return 0
+  fi
+  command -v aicoding-select >/dev/null 2>&1 || return 1
+  local sha
+  sha=$(aicoding-select aicoding 2>/dev/null) || return 1
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+  printf 'https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/%s/devcontainer.json\n' "$sha"
+}
 
 # Fetch the blueprint devcontainer.json to <dest>. Fails (non-zero) on missing
 # curl, network/HTTP errors, or a response that doesn't look like a JSON(C)
 # object — the first non-blank line must open with "{", which rejects
 # proxy/HTML error pages without outlawing future // comments in the blueprint.
 _fetch_blueprint_devcontainer() {
-  local dest="$1"
+  local dest="$1" url
   command -v curl >/dev/null || return 1
-  curl -fsSL --max-time 10 "$DVW_BLUEPRINT_DEVCONTAINER_URL" -o "$dest" 2>/dev/null || return 1
+  url=$(_dvw_blueprint_devcontainer_url) || return 1
+  curl -fsSL --max-time 10 "$url" -o "$dest" 2>/dev/null || return 1
   [[ -s "$dest" ]] || return 1
   awk 'NF { print; exit }' "$dest" | grep -q '^[[:space:]]*{' || return 1
 }

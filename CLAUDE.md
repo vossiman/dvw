@@ -18,8 +18,9 @@ but this is not enforced: `main` carries no branch protection or rulesets
   can't see the catalog but `dvw status` works, compare those paths (`dvw doctor`
   prints the effective endpoint).
 - **aicoding** owns in-container life (`devcontainer.json`, install/sync).
-  dvw only seeds that file (`DVW_BLUEPRINT_DEVCONTAINER_URL`, tip-of-main by
-  default) and orchestrates DevPod.
+  dvw seeds that file from the exact SHA returned by `aicoding-select
+  aicoding`, while `DVW_BLUEPRINT_DEVCONTAINER_URL` preserves an explicit
+  development override, and orchestrates DevPod.
 - **Image pin reconciliation** (`lib/pin.sh` / `lib/pin-rebuild.sh`) is the
   one exception: aicoding's boot sync rewrites a workspace's
   `.devcontainer/devcontainer.json` pin but deliberately never commits it,

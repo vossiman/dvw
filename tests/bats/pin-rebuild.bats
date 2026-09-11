@@ -115,6 +115,35 @@ setup() {
   [[ "$output" == *"RECREATED demo"* ]]
 }
 
+@test "devMachine manual pin-rebuild carries the selected blueprint image through rebuild verification" {
+  catalog_workspace_get() {
+    jq -n --arg r "git@github.com:vossiman/devMachine.git" --arg b main \
+      '{repo:$r, branch:$b, ide:"ssh"}'
+  }
+  _dvw_catalog_source_get() {
+    jq -n --arg p "$OLD_IMAGE" \
+      '{present:true, detached:false, dirty:false, branch:"main",
+        committed_pin:$p, head:"deadbeef"}'
+  }
+  _dvw_catalog_source_pull() {
+    jq -n --arg p "$BP_IMAGE" \
+      '{present:true, detached:false, dirty:false, branch:"main",
+        committed_pin:$p, head:"c0ffee"}'
+  }
+  _dvw_pin_open_pr() {
+    printf '%s\t%s\t%s\n' "$1" "$2" "$3" > "$BATS_TEST_TMPDIR/pin-request"
+    echo "https://github.com/vossiman/devMachine/pull/99"
+  }
+  _dvw_pin_main_pr() { :; }
+  gh() { echo "MERGED"; }
+
+  run cmd_pin_rebuild devMachine
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/pin-request")" = $'vossiman/devMachine\tmain\t'"$BP_IMAGE" ]
+  [[ "$output" == *"RECREATED devMachine"* ]]
+  [[ "$output" == *"running the blueprint image"* ]]
+}
+
 @test "stale pin with --no-wait: opens the PR and stops cleanly" {
   _dvw_catalog_source_get() {
     jq -n --arg p "$OLD_IMAGE" \
@@ -201,6 +230,19 @@ setup() {
   run cmd_pin_rebuild demo
   [ "$status" -eq 1 ]
   [[ "$output" == *"detached"* ]]
+}
+
+@test "missing catalog source capability stops before opening a PR or rebuilding" {
+  _dvw_catalog_source_get() { return 2; }
+  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
+  _dvw_pin_open_pr() { echo "PR SHOULD NOT OPEN"; }
+  cmd_recreate() { echo "REBUILD SHOULD NOT RUN"; }
+
+  run cmd_pin_rebuild demo
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"source API"* ]]
+  [[ "$output" == *"update the catalog service"* ]]
+  [[ "$output" != *"SHOULD NOT"* ]]
 }
 
 @test "stale working-tree pin but remote branch already current: skips the PR, pulls, rebuilds" {

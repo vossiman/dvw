@@ -4,15 +4,33 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 TARGET_BIN="$HOME/.local/bin/dvw"
+# shellcheck source=lib/managed-install.sh
+. "$SCRIPT_DIR/lib/managed-install.sh"
 
 # --check-only: verify idempotency invariants without modifying the host.
 # Used by tests/bats/install.bats and as a self-diagnostic.
 CHECK_ONLY=0
-for arg in "$@"; do
+UNATTENDED=0
+MANAGED_SOURCE=""
+MANAGED_VERSION=""
+while (($#)); do
+  arg="$1"; shift
   case "$arg" in
     --check-only) CHECK_ONLY=1 ;;
+    --unattended) UNATTENDED=1 ;;
+    --source) MANAGED_SOURCE="${1:-}"; (($#)) && shift ;;
+    --version) MANAGED_VERSION="${1:-}"; (($#)) && shift ;;
   esac
 done
+
+if (( UNATTENDED )); then
+  if [[ -z "$MANAGED_SOURCE" || -z "$MANAGED_VERSION" ]]; then
+    echo "usage: dvw-install.sh --unattended --source PATH --version SHA" >&2
+    exit 2
+  fi
+  dvw_managed_install "$MANAGED_SOURCE" "$MANAGED_VERSION"
+  exit $?
+fi
 
 if (( CHECK_ONLY )); then
   echo "▸ dvw-install.sh --check-only: verifying invariants (no host writes)"
@@ -50,8 +68,12 @@ fi
 step "checking devpod"
 if ! command -v devpod >/dev/null; then
   echo "installing devpod"
+  DEVPOD_URL=$(dvw_devpod_download_url) || {
+    echo "ERROR: unsupported architecture $(uname -m)" >&2
+    exit 1
+  }
   curl -L -o /tmp/devpod \
-    "https://github.com/loft-sh/devpod/releases/latest/download/devpod-linux-amd64"
+    "$DEVPOD_URL"
   sudo install -m 0755 /tmp/devpod /usr/local/bin/devpod
 fi
 

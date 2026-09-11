@@ -81,6 +81,15 @@ cmd_stop() {
 # the parent's pins instead — see lib/update-super.sh.
 cmd_update() {
   . "$DVW_ROOT/lib/version.sh"
+  if command -v dvw_is_managed_install >/dev/null 2>&1 && dvw_is_managed_install; then
+    command -v aicoding-auto-update >/dev/null 2>&1 || {
+      ui_error "aicoding-auto-update is unavailable for this managed dvw install"
+      return 1
+    }
+    ui_info "updating managed dvw through the common updater"
+    aicoding-auto-update --once </dev/null
+    return $?
+  fi
   local super
   super=$(git -C "$DVW_ROOT" rev-parse --show-superproject-working-tree 2>/dev/null || true)
   if [[ -n "$super" ]]; then
@@ -556,7 +565,25 @@ cmd_doctor() {
   # dvw version vs origin/main (advisory; never a doctor failure). Guarded so
   # the check is a no-op if update-check.sh wasn't sourced (e.g. a test that
   # sources commands.sh in isolation).
-  if command -v dvw_update_behind_count >/dev/null 2>&1; then
+  if command -v dvw_is_managed_install >/dev/null 2>&1 && dvw_is_managed_install; then
+    local _dvw_result _dvw_state _dvw_reason _dvw_success
+    if _dvw_result=$(dvw_managed_update_result); then
+      _dvw_state=$(jq -r '.state // empty' <<<"$_dvw_result")
+      _dvw_reason=$(jq -r '.reason // empty' <<<"$_dvw_result")
+      _dvw_success=$(jq -r '.successful_version // empty' <<<"$_dvw_result")
+      case "$_dvw_state" in
+        current|updated)
+          ui_status_ok "dvw: managed update $_dvw_state${_dvw_success:+ at ${_dvw_success:0:12}}" ;;
+        blocked|conflict|failed)
+          ui_status_warn "dvw: managed update $_dvw_state${_dvw_reason:+ — $_dvw_reason}"
+          warn=$((warn+1)) ;;
+        *)
+          ui_status_ok "dvw: managed update status pending" ;;
+      esac
+    else
+      ui_status_ok "dvw: managed update status pending"
+    fi
+  elif command -v dvw_update_behind_count >/dev/null 2>&1; then
     dvw_update_refresh_if_stale
     local _dvw_behind; _dvw_behind=$(dvw_update_behind_count)
     if [[ -z "$_dvw_behind" ]]; then

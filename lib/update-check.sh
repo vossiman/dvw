@@ -10,6 +10,28 @@
 # Throttle window (seconds). Matches aicoding's AICODING_UPDATE_TTL default.
 DVW_UPDATE_TTL="${DVW_UPDATE_TTL:-21600}"   # 6h
 
+dvw_is_managed_install() {
+  [[ -f "${DVW_ROOT:?}/.aicoding-version" ]]
+}
+
+dvw_managed_update_result_path() {
+  printf '%s/update-results.json' "${AICODING_STATE_DIR:-$HOME/.local/state/aicoding}"
+}
+
+# Print the dvw object from the shared updater receipt. Compact JSON preserves
+# nullable fields without shell delimiter ambiguity. Missing, malformed, or
+# unattempted records are unknown (non-zero).
+dvw_managed_update_result() {
+  local result
+  result=$(dvw_managed_update_result_path)
+  [[ -f "$result" ]] || return 1
+  jq -cer '
+    .components.dvw
+    | select(type == "object")
+    | {state, target_version, reason, successful_version}
+  ' "$result" 2>/dev/null
+}
+
 dvw_update_cache_path() {
   printf '%s/update-check' "${DVW_STATE_DIR:-$HOME/.local/state/dvw}"
 }
@@ -17,6 +39,7 @@ dvw_update_cache_path() {
 # Echo the cached behind-count. Empty = unknown (no/garbled cache). No network.
 # Callers treat empty as "not checked yet" and 0 as "up to date". Always exit 0.
 dvw_update_behind_count() {
+  dvw_is_managed_install && return 0
   local cache count
   cache=$(dvw_update_cache_path)
   [ -f "$cache" ] || return 0
@@ -78,6 +101,7 @@ _dvw_update_do_refresh() {
 # detached in the background (the foreground returns immediately and prints the
 # CURRENT cached state). Set DVW_UPDATE_SYNC=1 to run it inline (tests).
 dvw_update_refresh_if_stale() {
+  dvw_is_managed_install && return 0
   _dvw_update_cache_stale || return 0
   git -C "$(dvw_update_target_repo)" rev-parse --git-dir >/dev/null 2>&1 || return 0
   if [ -n "${DVW_UPDATE_SYNC:-}" ]; then
@@ -122,6 +146,18 @@ dvw_update_target_name() {
 # and silent when up to date (0) or unknown (empty). Reads cached state only.
 dvw_update_maybe_nudge() {
   [ "${1:-}" = "update" ] && return 0
+  if dvw_is_managed_install; then
+    local result state reason
+    result=$(dvw_managed_update_result) || return 0
+    state=$(jq -r '.state // empty' <<<"$result")
+    reason=$(jq -r '.reason // empty' <<<"$result")
+    case "$state" in
+      blocked|conflict|failed)
+        printf '⬆ dvw managed update %s%s; will retry automatically\n' \
+          "$state" "${reason:+: $reason}" ;;
+    esac
+    return 0
+  fi
   local behind; behind=$(dvw_update_behind_count)
   case "$behind" in ''|0) return 0 ;; esac
   printf '⬆ %s behind main — run: dvw update\n' "$(dvw_update_target_name)"
