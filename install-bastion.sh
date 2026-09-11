@@ -24,6 +24,10 @@ if (( UNATTENDED )) && [[ -z "$MANAGED_SOURCE" || -z "$MANAGED_VERSION" ]]; then
   echo "usage: install-bastion.sh --unattended --source PATH --version SHA" >&2
   exit 2
 fi
+if (( UNATTENDED && CHECK_ONLY )); then
+  echo "--check and --unattended cannot be combined" >&2
+  exit 2
+fi
 
 # The common runtime is installed by aiCodingBaseSetup's minimal Pi bootstrap,
 # before it delegates the selected dvw snapshot here.  Keep this boundary
@@ -40,6 +44,19 @@ if (( UNATTENDED )); then
     echo "minimal common updater missing; install it before Pi enrollment" >&2
     exit 1
   fi
+  # The selected adapter validates source/version and installs only the client.
+  # Keep enrollment independent of legacy devpod setup and remote reachability.
+  # Invoke this selected source directly; another installer on PATH may belong
+  # to an older development checkout.
+  [[ -x "$MANAGED_SOURCE/dvw-install.sh" ]] || {
+    echo "selected dvw installer missing" >&2
+    exit 1
+  }
+  "$MANAGED_SOURCE/dvw-install.sh" --unattended --source "$MANAGED_SOURCE" \
+    --version "$MANAGED_VERSION" </dev/null
+  "$AUTO_UPDATE" --ensure </dev/null
+  echo "[OK]   managed dvw client installed; background scheduler enrollment requested"
+  exit 0
 fi
 fail=0
 ok()   { printf '[OK]   %s\n' "$1"; }
@@ -88,16 +105,8 @@ if (( ! CHECK_ONLY )); then
   # misses the arm64 binary step 1 just dropped there and sudo-installs its
   # hardcoded devpod-linux-amd64 to /usr/local/bin instead — permanently
   # shadowing the working arm64 copy.
-  install_args=()
-  if (( UNATTENDED )); then
-    install_args=(--unattended --source "$MANAGED_SOURCE" --version "$MANAGED_VERSION")
-  fi
-  PATH="$HOME/.local/bin:$PATH:$HERE" dvw-install.sh "${install_args[@]}"
+  PATH="$HOME/.local/bin:$PATH:$HERE" dvw-install.sh
   ok "dvw client installed/refreshed"
-  if (( UNATTENDED )); then
-    "$AUTO_UPDATE" --ensure </dev/null
-    ok "automatic update schedule enrolled"
-  fi
 fi
 
 # 3. Push watcher: relay Termius paste-uploads into attached workspaces
