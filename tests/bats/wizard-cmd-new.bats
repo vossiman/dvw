@@ -4,6 +4,8 @@
 # repos stand in for remotes; devpod + catalog are stubbed.
 
 setup() {
+  export HOME="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$HOME"
   source "$DVW_ROOT/dvw"
   export DVW_BLUEPRINT_DEVCONTAINER_URL="file://$BATS_TEST_TMPDIR/absent.json"
   # A "remote" with one commit on main.
@@ -71,6 +73,38 @@ setup() {
   run cmd_new --repo --name x --ide ssh --yes
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "usage: dvw new"
+}
+
+@test "cmd_new: seeding fails before remote mutation when CI selector is unavailable" {
+  local surrounding_home="$BATS_TEST_TMPDIR/enrolled-home"
+  mkdir -p "$surrounding_home/.local/bin"
+  cat > "$surrounding_home/.local/bin/aicoding-select" <<'EOF'
+#!/bin/sh
+touch "$INHERITED_SELECTOR_CALLED"
+printf '%040d\n' 1
+EOF
+  chmod +x "$surrounding_home/.local/bin/aicoding-select"
+  export HOME="$surrounding_home"
+  export INHERITED_SELECTOR_CALLED="$BATS_TEST_TMPDIR/inherited-selector-called"
+
+  unset DVW_BLUEPRINT_DEVCONTAINER_URL
+  command() {
+    [[ "$1" == -v && "$2" == aicoding-select ]] && return 1
+    builtin command "$@"
+  }
+  [ "$(_dvw_blueprint_selector_path)" = "$surrounding_home/.local/bin/aicoding-select" ]
+  export HOME="$BATS_TEST_TMPDIR/test-home"
+  mkdir -p "$HOME"
+  _new_resolve_branches() { echo "REMOTE SHOULD NOT BE READ" >&2; return 2; }
+
+  run cmd_new --repo "$REMOTE" --branch main --name wsx --seed-devcontainer --yes
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"aicoding-select is unavailable"* ]]
+  [[ "$output" == *"minimal common updater"* ]]
+  [[ "$output" != *"REMOTE SHOULD NOT BE READ"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ ! -e "$INHERITED_SELECTOR_CALLED" ]
 }
 
 # The workspace URL stays canonical HTTPS even when this host can only probe

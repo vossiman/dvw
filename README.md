@@ -103,6 +103,13 @@ dvw config set DVW_PROVIDER     myhost     # devpod provider name for new worksp
 # also honored: DVW_CATALOG_SOCK, DVW_CATALOG_TOKEN
 ```
 
+For local blueprint development, the explicit
+`DVW_BLUEPRINT_DEVCONTAINER_URL` environment override bypasses the
+CI-selected immutable source. `file://` fixtures and exact
+`raw.githubusercontent.com/.../<40-character-sha>/devcontainer.json` URLs are
+quiet; other URLs, including moving refs such as `main`, remain usable but
+print a policy warning. Avoid persisting a moving override for normal use.
+
 **Server** — `host-install.sh` runs as your normal user and rewrites the systemd
 units' `User=`/`Group=` to whoever installs, so the service isn't tied to `vossi`.
 The default devpod-provider name stamped on entries is `CATALOG_DEFAULT_PROVIDER`
@@ -117,16 +124,20 @@ workspace, drop the canonical file into its `.devcontainer/`, then commit + push
 so any future `dvw new` from that repo picks it up:
 
 ```bash
+(
+set -e
 # 1. create the host state dirs the mounts bind to (once per host)
 mkdir -p ~/devpod/{aicodingsetup,claude,opencode,codex,cursor}
 
 # 2. pull the canonical devcontainer.json into the repo
 mkdir -p .devcontainer
-curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json \
+blueprint_sha=$(aicoding-select aicoding)
+curl -fsSL "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/$blueprint_sha/devcontainer.json" \
   -o .devcontainer/devcontainer.json
 
 # 3. commit + push so `dvw new` builds from it
 git add .devcontainer && git commit -m 'add devcontainer' && git push
+)
 ```
 
 The mounts resolve `${localEnv:HOME}` on the **host** at provision time, so the
@@ -151,7 +162,16 @@ re-points the symlink — switching is safe.
 
 ## Updating dvw
 
-Three update flows, depending on how you installed.
+The update flow depends on how dvw was installed.
+
+### Managed install
+
+    dvw update
+
+Runs one pass of the common updater. Managed releases live under
+`~/.local/share/aicoding/versions/dvw/`; the stable launcher resolves the
+active immutable release once per invocation. A process already running keeps
+its original resources while a later launch gets the newly activated version.
 
 ### Standalone clone
 
@@ -236,11 +256,11 @@ The `sudo rm` step requires interactive auth; don't try to script past it.
 
 ## Updating a running container
 
-Two mechanisms, depending on what changed:
+Updates fall into these cases:
 
-- **New aiCodingBaseSetup (config + CLIs) — no rebuild.** Inside the container: `aicoding-status` (what's behind), `aicoding-sync` (pull latest blueprint, reconcile config, update CLIs). Also runs automatically on every container start (`on-start.sh` → `aicoding-sync --boot`).
+- **New tooling or aiCodingBaseSetup configuration — no rebuild.** The common updater checks tested releases on its six-hour schedule, catches up after startup, and applies safe updates. `aicoding-status` reports the shared result record; `dvw update` asks the same worker to run one pass immediately.
 - **Updated `devcontainer.json` (mounts/provisioning) — needs rebuild.** Mounts are fixed at container-create time, so from the laptop: `dvw recreate <id>`.
-- **New base image — rebuild, but mind the pin.** `devpod up --recreate` builds from the image pinned in the repo's *committed* `.devcontainer/devcontainer.json`. `aicoding-sync` refreshes that file in the container working tree but never commits it, so the repo copy drifts and a rebuild silently reinstalls the old image. `dvw recreate <id>` detects this and offers to hand over to `dvw pin-rebuild <id>`, which PRs the pin, waits for the merge, pulls the clone, rebuilds and verifies the running image. Merging the PR is not enough on its own: nothing else pulls that clone, so a plain rebuild reads the pre-merge file and reinstalls the old image. Nothing does this on a schedule — run it when the ⬆ badge (status output) or "outdated" label (TUI) appears.
+- **New base image — manual pin and rebuild.** `devpod up --recreate` builds from the image pinned in the repo's *committed* `.devcontainer/devcontainer.json`. Run `dvw pin-rebuild <id>` when the ⬆ badge (status output) or "outdated" label (TUI) appears. It selects the tested image, opens the pin PR, waits for the merge, pulls the clone, rebuilds and verifies the running image. The automatic tooling schedule never changes image pins or rebuilds workspaces.
 
 ## Multi-machine sync model
 

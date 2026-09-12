@@ -87,19 +87,59 @@ _fetch_remote_branches() {
   return "$rc"
 }
 
-# Canonical devcontainer.json of the aiCodingBaseSetup blueprint — the same
-# source of truth the blueprint's own postStartCommand pulls from. Overridable
-# so tests can point it at a local file:// fixture and stay off the network.
-DVW_BLUEPRINT_DEVCONTAINER_URL="${DVW_BLUEPRINT_DEVCONTAINER_URL:-https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json}"
+# Resolve the canonical aiCodingBaseSetup devcontainer.json at an exact commit
+# whose main CI passed. An explicit URL remains the development/test escape
+# hatch; the default path deliberately has no raw-main fallback.
+_dvw_blueprint_selector_path() {
+  if command -v aicoding-select >/dev/null 2>&1; then
+    command -v aicoding-select
+  elif [[ -x "$HOME/.local/bin/aicoding-select" ]]; then
+    printf '%s\n' "$HOME/.local/bin/aicoding-select"
+  else
+    return 1
+  fi
+}
+
+_dvw_blueprint_source_preflight() {
+  [[ -n "${DVW_BLUEPRINT_DEVCONTAINER_URL:-}" ]] && return 0
+  if ! _dvw_blueprint_selector_path >/dev/null; then
+    echo "dvw: aicoding-select is unavailable; install the minimal common updater before using CI-selected blueprints" >&2
+    return 1
+  fi
+}
+
+_dvw_blueprint_devcontainer_url() {
+  if [[ -n "${DVW_BLUEPRINT_DEVCONTAINER_URL:-}" ]]; then
+    if [[ "$DVW_BLUEPRINT_DEVCONTAINER_URL" != file://* \
+        && ! "$DVW_BLUEPRINT_DEVCONTAINER_URL" =~ ^https://raw\.githubusercontent\.com/vossiman/aiCodingBaseSetup/[0-9a-f]{40}/devcontainer\.json$ ]]; then
+      echo "WARN: DVW_BLUEPRINT_DEVCONTAINER_URL bypasses CI-selected immutable blueprint policy (development override)" >&2
+    fi
+    printf '%s\n' "$DVW_BLUEPRINT_DEVCONTAINER_URL"
+    return 0
+  fi
+  _dvw_blueprint_source_preflight || return 1
+  local sha selector
+  selector=$(_dvw_blueprint_selector_path) || return 1
+  if ! sha=$("$selector" aicoding); then
+    echo "dvw: aicoding-select could not resolve a CI-qualified aicoding commit; retry after GitHub CI/API access recovers" >&2
+    return 1
+  fi
+  if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "dvw: aicoding-select returned an invalid commit instead of a full CI-qualified SHA" >&2
+    return 1
+  fi
+  printf 'https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/%s/devcontainer.json\n' "$sha"
+}
 
 # Fetch the blueprint devcontainer.json to <dest>. Fails (non-zero) on missing
 # curl, network/HTTP errors, or a response that doesn't look like a JSON(C)
 # object — the first non-blank line must open with "{", which rejects
 # proxy/HTML error pages without outlawing future // comments in the blueprint.
 _fetch_blueprint_devcontainer() {
-  local dest="$1"
+  local dest="$1" url
   command -v curl >/dev/null || return 1
-  curl -fsSL --max-time 10 "$DVW_BLUEPRINT_DEVCONTAINER_URL" -o "$dest" 2>/dev/null || return 1
+  url=$(_dvw_blueprint_devcontainer_url) || return 1
+  curl -fsSL --max-time 10 "$url" -o "$dest" 2>/dev/null || return 1
   [[ -s "$dest" ]] || return 1
   awk 'NF { print; exit }' "$dest" | grep -q '^[[:space:]]*{' || return 1
 }
@@ -304,6 +344,10 @@ cmd_new() {
     if (( init_empty )); then branch="main"; else
       ui_error "dvw new: --branch is required (or --init-empty for a fresh repo)"; _new_usage; return 1
     fi
+  fi
+
+  if (( init_empty || seed_devc )); then
+    _dvw_blueprint_source_preflight || return 1
   fi
 
   # Canonicalize: the workspace URL is always the HTTPS github form (SSH

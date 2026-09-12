@@ -66,12 +66,27 @@ _dvw_tui_ensure_socket() {
 
 # Run the TUI. Returns nonzero (instead of exec) so dvw can fall back.
 dvw_tui_launch() {
-  local sock
+  local sock version platform runtime
   if ! sock=$(_dvw_tui_ensure_socket); then
     ui_error "catalog socket unreachable — TUI needs the catalog service"
     return 1
   fi
-  DVW_TUI_SOCKET="$sock" \
-  DVW_BIN="$DVW_ROOT/dvw" \
+  if [[ -f "$DVW_ROOT/.aicoding-version" ]]; then
+    version=$(tr -d '[:space:]' < "$DVW_ROOT/.aicoding-version")
+    if [[ "$version" =~ ^[0-9a-f]{40}$ ]]; then
+      platform="$(uname -s)-$(uname -m)"
+      platform="${platform//[^A-Za-z0-9_.-]/_}"
+      runtime="${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}/runtime/dvw-tui/$version/$platform"
+      mkdir -p "$runtime"
+      DVW_TUI_SOCKET="$sock" \
+      DVW_BIN="$DVW_ROOT/dvw" \
+      UV_PROJECT_ENVIRONMENT="$runtime/venv" \
+      UV_CACHE_DIR="${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}/runtime/uv-cache" \
+      PYTHONPYCACHEPREFIX="$runtime/pycache" \
+        uv run --frozen --project "$DVW_ROOT/tui" dvw-tui
+      return $?
+    fi
+  fi
+  DVW_TUI_SOCKET="$sock" DVW_BIN="$DVW_ROOT/dvw" \
     uv run --project "$DVW_ROOT/tui" dvw-tui
 }

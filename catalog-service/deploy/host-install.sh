@@ -45,6 +45,45 @@ if [ "$(id -u)" -eq 0 ]; then
   echo "       it will invoke sudo itself for the steps that need it." >&2
   exit 1
 fi
+
+# The deployed unit includes the common updater's user-local tools. Use the
+# same path for this preflight even when the current login shell is stale.
+export PATH="$HOME/.local/bin:$PATH"
+
+catalog_blueprint_url="${CATALOG_BLUEPRINT_DEVCONTAINER_URL:-}"
+catalog_blueprint_url_from_env=0
+[ -z "$catalog_blueprint_url" ] || catalog_blueprint_url_from_env=1
+if [ -z "$catalog_blueprint_url" ] && [ -r "$SVC_DIR/catalog.env" ]; then
+  catalog_blueprint_url=$(awk -F= '
+    $1 == "CATALOG_BLUEPRINT_DEVCONTAINER_URL" {
+      sub(/^[^=]*=/, ""); print; exit
+    }
+  ' "$SVC_DIR/catalog.env")
+  case "$catalog_blueprint_url" in
+    \"*\") catalog_blueprint_url=${catalog_blueprint_url#\"}; catalog_blueprint_url=${catalog_blueprint_url%\"} ;;
+    \'*\') catalog_blueprint_url=${catalog_blueprint_url#\'}; catalog_blueprint_url=${catalog_blueprint_url%\'} ;;
+  esac
+fi
+
+if [ -n "$catalog_blueprint_url" ]; then
+  if [[ ! "$catalog_blueprint_url" =~ ^https://raw\.githubusercontent\.com/vossiman/aiCodingBaseSetup/[0-9a-f]{40}/devcontainer\.json$ ]]; then
+    echo "error: CATALOG_BLUEPRINT_DEVCONTAINER_URL must be an exact supported immutable URL" >&2
+    exit 1
+  fi
+else
+  missing_blueprint_tools=""
+  for tool in aicoding-select jq timeout; do
+    command -v "$tool" >/dev/null 2>&1 || missing_blueprint_tools="$missing_blueprint_tools $tool"
+  done
+  if ! command -v gh >/dev/null 2>&1 && ! command -v curl >/dev/null 2>&1; then
+    missing_blueprint_tools="$missing_blueprint_tools gh-or-curl"
+  fi
+  if [ -n "$missing_blueprint_tools" ]; then
+    echo "error: missing catalog blueprint prerequisite:$missing_blueprint_tools" >&2
+    echo "       install the minimal common updater before deploying, or configure an exact immutable blueprint URL" >&2
+    exit 1
+  fi
+fi
 # Prime sudo up front: fail fast now if you lack sudo rights, and avoid a
 # password prompt stalling the install halfway through.
 echo "==> 0/8 installer needs sudo for /opt, /var/lib, /etc/systemd and sudoers; priming…"
@@ -137,12 +176,27 @@ fi
 
 echo "==> 4/8 venv (uv sync --frozen)"
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
 ( cd "$SVC_DIR" && uv sync --frozen --no-dev )
 
 echo "==> 5/8 env file (once)"
 [ -f "$SVC_DIR/catalog.env" ] || \
   install -m 0640 "$SVC_DIR/deploy/catalog.env.example" "$SVC_DIR/catalog.env"
+if [ "$catalog_blueprint_url_from_env" -eq 1 ]; then
+  catalog_env_tmp=""
+  cleanup_catalog_env_tmp() {
+    [ -z "$catalog_env_tmp" ] || rm -f -- "$catalog_env_tmp"
+  }
+  trap cleanup_catalog_env_tmp EXIT
+  catalog_env_tmp=$(mktemp "$SVC_DIR/.catalog.env.XXXXXX")
+  awk '!/^CATALOG_BLUEPRINT_DEVCONTAINER_URL=/' \
+    "$SVC_DIR/catalog.env" > "$catalog_env_tmp"
+  printf 'CATALOG_BLUEPRINT_DEVCONTAINER_URL=%s\n' \
+    "$catalog_blueprint_url" >> "$catalog_env_tmp"
+  chmod --reference="$SVC_DIR/catalog.env" "$catalog_env_tmp"
+  mv "$catalog_env_tmp" "$SVC_DIR/catalog.env"
+  catalog_env_tmp=""
+  trap - EXIT
+fi
 "$SVC_DIR/deploy/configure-backup-remote.sh" "$DATA_DIR" "$SVC_DIR/catalog.env" "$GH_HELPER"
 
 # The unit no longer has SupplementaryGroups=docker, so dvw-docker-proxy is
@@ -196,6 +250,7 @@ RUN_GROUP="$(id -gn)"
 render_unit() {  # $1 = unit file; renders User/Group and SocketUser/SocketGroup
   sed -e "s/^User=vossi$/User=$USER/" -e "s/^Group=vossi$/Group=$RUN_GROUP/" \
       -e "s/^SocketUser=vossi$/SocketUser=$USER/" -e "s/^SocketGroup=vossi$/SocketGroup=$RUN_GROUP/" \
+      -e "s|^Environment=PATH=/home/vossi/|Environment=PATH=$HOME/|" \
       -e "s|^ReadWritePaths=-/home/vossi/|ReadWritePaths=-$HOME/|" \
       "$SVC_DIR/deploy/$1"
 }

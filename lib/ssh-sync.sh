@@ -78,9 +78,19 @@ _ssh_sync_ensure_include_at_top() {
   rm -f "$tmp"
 }
 
+_ssh_sync_install_remediation() {
+  if command -v dvw_is_managed_install >/dev/null 2>&1 \
+      && dvw_is_managed_install; then
+    printf '%s\n' 're-run install-bastion.sh from a dvw checkout'
+  else
+    printf '%s\n' 'run dvw-install.sh'
+  fi
+}
+
 # Three [OK]/[WARN] lines for `dvw doctor`. Returns 0 always.
 ssh_sync_doctor() {
-  local body managed migration endpoint detail=""
+  local body managed migration endpoint detail="" remediation
+  remediation=$(_ssh_sync_install_remediation)
   if body=$(_catalog_req GET /v1/blueprint 2>/dev/null); then
     managed=$(jq -r '.managed_version // empty' <<< "$body" 2>/dev/null || true)
     migration=$(jq -r '.migration_status // empty' <<< "$body" 2>/dev/null || true)
@@ -101,7 +111,7 @@ ssh_sync_doctor() {
       ui_status_ok "ssh local copy: $DVW_SSH_LOCAL"
     fi
   else
-    ui_status_warn "ssh local copy: $DVW_SSH_LOCAL missing — run dvw-install.sh"
+    ui_status_warn "ssh local copy: $DVW_SSH_LOCAL missing — $remediation"
   fi
 
   if [[ -f "$DVW_SSH_CONFIG" ]] && grep -qF "$DVW_SSH_INCLUDE_LINE" "$DVW_SSH_CONFIG"; then
@@ -111,10 +121,10 @@ ssh_sync_doctor() {
     if [[ -z "$first_host" ]] || (( first_include < first_host )); then
       ui_status_ok "ssh include: $DVW_SSH_CONFIG references dvw.conf (above any Host block)"
     else
-      ui_status_warn "ssh include: dvw.conf Include is BELOW a Host block — run dvw-install.sh to relocate"
+      ui_status_warn "ssh include: dvw.conf Include is BELOW a Host block — $remediation to relocate"
     fi
   else
-    ui_status_warn "ssh include: $DVW_SSH_CONFIG does not contain $DVW_SSH_INCLUDE_LINE — run dvw-install.sh"
+    ui_status_warn "ssh include: $DVW_SSH_CONFIG does not contain $DVW_SSH_INCLUDE_LINE — $remediation"
   fi
 
   return 0

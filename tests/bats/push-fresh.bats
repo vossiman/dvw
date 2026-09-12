@@ -19,8 +19,15 @@ _load() {
   source "$DVW_ROOT/lib/push.sh"
 }
 
-@test "picks the newest UUID-named file" {
+_load_private() {
   _load
+  # Pure selection fixtures must not compete with uploads owned by another
+  # process on the runner. The real /tmp fallback has separate tests below.
+  _dvw_push_fresh_roots() { printf '%s\n' "$TMPDIR"; }
+}
+
+@test "picks the newest UUID-named file" {
+  _load_private
   printf x > "$TMPDIR/$UUID_A.png"
   printf x > "$TMPDIR/$UUID_B.jpg"
   touch -d '5 minutes ago' "$TMPDIR/$UUID_A.png"
@@ -29,8 +36,22 @@ _load() {
   [ "$output" = "$TMPDIR/$UUID_B.jpg" ]
 }
 
+@test "picking the first upload drains later producer output without SIGPIPE" {
+  _load_private
+  _dvw_push_list_fresh() {
+    printf '%s\n' "$TMPDIR/$UUID_B.jpg"
+    sleep 0.1
+    printf '%s\n' "$TMPDIR/$UUID_A.png"
+    : > "$TMPDIR/producer-finished"
+  }
+  run _dvw_push_pick_fresh
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TMPDIR/$UUID_B.jpg" ]
+  [ -e "$TMPDIR/producer-finished" ]
+}
+
 @test "ignores non-UUID names" {
-  _load
+  _load_private
   printf x > "$TMPDIR/notes.png"
   printf x > "$TMPDIR/dvw-push-test"
   run _dvw_push_pick_fresh
@@ -39,7 +60,7 @@ _load() {
 }
 
 @test "ignores files older than the freshness window" {
-  _load
+  _load_private
   printf x > "$TMPDIR/$UUID_A.png"
   touch -d '11 minutes ago' "$TMPDIR/$UUID_A.png"
   run _dvw_push_pick_fresh
@@ -47,7 +68,7 @@ _load() {
 }
 
 @test "freshness window is configurable" {
-  _load
+  _load_private
   printf x > "$TMPDIR/$UUID_A.png"
   touch -d '11 minutes ago' "$TMPDIR/$UUID_A.png"
   DVW_PUSH_FRESH_MINUTES=30 run _dvw_push_pick_fresh
@@ -56,14 +77,14 @@ _load() {
 }
 
 @test "ignores files over the size cap" {
-  _load
+  _load_private
   truncate -s 2M "$TMPDIR/$UUID_A.png"
   DVW_PUSH_MAX_SIZE_MB=1 run _dvw_push_pick_fresh
   [ "$status" -eq 1 ]
 }
 
 @test "ignores UUID-named directories" {
-  _load
+  _load_private
   mkdir "$TMPDIR/$UUID_A.d"
   run _dvw_push_pick_fresh
   [ "$status" -eq 1 ]

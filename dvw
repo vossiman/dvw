@@ -78,6 +78,13 @@ main() {
     ui_info "[dry-run] no commands will be executed; would-be invocations are printed"
   fi
 
+  # A managed update is a client-local request to the common updater. Dispatch
+  # it before catalog reachability and SSH/WSL reconciliation so an unrelated
+  # provider outage cannot prevent the scheduled update path from running.
+  if [[ "${1:-}" == update ]] && dvw_is_managed_install; then
+    shift; cmd_update "$@"; return $?
+  fi
+
   # Update notifier: kick a throttled background fetch, then print the cached
   # "behind main" nudge (suppressed for `dvw update` itself). Fail-open.
   # `dvw update` skips the kick: it fetches the same remote in the foreground

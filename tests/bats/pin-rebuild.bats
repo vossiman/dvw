@@ -4,7 +4,10 @@
 # catalog service, gh, devpod (via cmd_recreate). Follows pin.bats.
 
 setup() {
+  export HOME="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$HOME"
   source "$DVW_ROOT/dvw"
+  export DVW_BLUEPRINT_DEVCONTAINER_URL="file://$BATS_TEST_TMPDIR/blueprint.json"
   ui_progress() { shift; "$@"; }
   dvw_update_refresh_if_stale() { :; }
   dvw_update_maybe_nudge() { :; }
@@ -35,6 +38,38 @@ setup() {
     jq -n --arg d "sha256:$(printf 'a%.0s' {1..64})" '{image_digest:$d}'
   }
   DVW_PIN_REBUILD_POLL_SECS=0
+}
+
+@test "pin-rebuild diagnoses a missing CI selector before catalog mutation" {
+  local surrounding_home="$BATS_TEST_TMPDIR/enrolled-home"
+  mkdir -p "$surrounding_home/.local/bin"
+  cat > "$surrounding_home/.local/bin/aicoding-select" <<'EOF'
+#!/bin/sh
+touch "$INHERITED_SELECTOR_CALLED"
+printf '%040d\n' 1
+EOF
+  chmod +x "$surrounding_home/.local/bin/aicoding-select"
+  export HOME="$surrounding_home"
+  export INHERITED_SELECTOR_CALLED="$BATS_TEST_TMPDIR/inherited-selector-called"
+
+  unset DVW_BLUEPRINT_DEVCONTAINER_URL
+  source "$DVW_ROOT/lib/pin.sh"
+  command() {
+    [[ "$1" == -v && "$2" == aicoding-select ]] && return 1
+    builtin command "$@"
+  }
+  [ "$(_dvw_blueprint_selector_path)" = "$surrounding_home/.local/bin/aicoding-select" ]
+  export HOME="$BATS_TEST_TMPDIR/test-home"
+  mkdir -p "$HOME"
+  catalog_workspace_get() { echo "CATALOG SHOULD NOT RUN" >&2; return 1; }
+
+  run cmd_pin_rebuild demo
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"aicoding-select is unavailable"* ]]
+  [[ "$output" == *"minimal common updater"* ]]
+  [[ "$output" != *"CATALOG SHOULD NOT RUN"* ]]
+  [ ! -e "$INHERITED_SELECTOR_CALLED" ]
 }
 
 @test "current pin: skips PR and pull, rebuilds anyway" {
@@ -113,6 +148,35 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"pull/9"* ]]
   [[ "$output" == *"RECREATED demo"* ]]
+}
+
+@test "devMachine manual pin-rebuild carries the selected blueprint image through rebuild verification" {
+  catalog_workspace_get() {
+    jq -n --arg r "git@github.com:vossiman/devMachine.git" --arg b main \
+      '{repo:$r, branch:$b, ide:"ssh"}'
+  }
+  _dvw_catalog_source_get() {
+    jq -n --arg p "$OLD_IMAGE" \
+      '{present:true, detached:false, dirty:false, branch:"main",
+        committed_pin:$p, head:"deadbeef"}'
+  }
+  _dvw_catalog_source_pull() {
+    jq -n --arg p "$BP_IMAGE" \
+      '{present:true, detached:false, dirty:false, branch:"main",
+        committed_pin:$p, head:"c0ffee"}'
+  }
+  _dvw_pin_open_pr() {
+    printf '%s\t%s\t%s\n' "$1" "$2" "$3" > "$BATS_TEST_TMPDIR/pin-request"
+    echo "https://github.com/vossiman/devMachine/pull/99"
+  }
+  _dvw_pin_main_pr() { :; }
+  gh() { echo "MERGED"; }
+
+  run cmd_pin_rebuild devMachine
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/pin-request")" = $'vossiman/devMachine\tmain\t'"$BP_IMAGE" ]
+  [[ "$output" == *"RECREATED devMachine"* ]]
+  [[ "$output" == *"running the blueprint image"* ]]
 }
 
 @test "stale pin with --no-wait: opens the PR and stops cleanly" {
@@ -201,6 +265,19 @@ setup() {
   run cmd_pin_rebuild demo
   [ "$status" -eq 1 ]
   [[ "$output" == *"detached"* ]]
+}
+
+@test "missing catalog source capability stops before opening a PR or rebuilding" {
+  _dvw_catalog_source_get() { return 2; }
+  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
+  _dvw_pin_open_pr() { echo "PR SHOULD NOT OPEN"; }
+  cmd_recreate() { echo "REBUILD SHOULD NOT RUN"; }
+
+  run cmd_pin_rebuild demo
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"source API"* ]]
+  [[ "$output" == *"update the catalog service"* ]]
+  [[ "$output" != *"SHOULD NOT"* ]]
 }
 
 @test "stale working-tree pin but remote branch already current: skips the PR, pulls, rebuilds" {

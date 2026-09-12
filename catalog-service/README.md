@@ -114,6 +114,31 @@ data dir + its git-backup repo, `uv sync --frozen`s the venv, installs the units
 adds a narrow passwordless-restart sudoers drop-in, reenables + starts everything,
 and smoke-tests `/v1/health`.
 
+Blueprint image comparison resolves `aiCodingBaseSetup` through
+`aicoding-select aicoding`; install the minimal common updater (including
+`aicoding-select`, `jq`, `timeout`, and either `gh` or `curl`) in the service
+user's `~/.local/bin` before deployment. `host-install.sh` checks these before
+sudo or checkout changes, and the rendered systemd unit includes that
+directory in `PATH`. As an explicit alternative on the first deployment,
+export an exact immutable URL for the installer; it validates the URL and
+persists it into the service's newly created `catalog.env`:
+
+```bash
+CATALOG_BLUEPRINT_DEVCONTAINER_URL='https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/<40-character-sha>/devcontainer.json' \
+  /opt/dvw/catalog-service/deploy/host-install.sh
+```
+
+On later runs, the same variable updates the persisted setting, or it can be
+edited directly in `catalog.env`. The only supported raw GitHub form is:
+`https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/<40-character-sha>/devcontainer.json`.
+Moving refs, other paths, queries, and fragments are rejected, and selection
+failures are logged in the service journal and preserve the last qualified
+cached image (or report comparison as unknown until one exists). Refresh runs
+once in the background, so a slow selector does not delay status requests.
+The selector makes
+read-only GitHub API calls and writes only a temporary response beneath
+`PrivateTmp`; it does not need a writable home, state, or cache directory.
+
 **Backup (DVW-14, DVW-15)** — `dvw-catalog-backup.timer` commits and pushes
 the data dir nightly to `CATALOG_BACKUP_REMOTE` from `/opt/dvw-catalog/catalog.env`
 (a private GitHub repo, `vossiman/dvw-catalog-data` on vossisrv; the installer

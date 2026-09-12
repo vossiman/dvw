@@ -36,7 +36,7 @@ setup() {
   # --- stubs ---
   # git/uv: no-op success, so the checkout-refresh and venv-sync steps never
   # touch the network or need a real project.
-  for b in git uv; do
+  for b in git uv aicoding-select; do
     printf '#!/bin/sh\necho "%s $*" >> "$HOME/calls"\nexit 0\n' "$b" > "$HOME/stubs/$b"
   done
   # docker: no containers, so the tecnativa-retirement branch is exercised
@@ -87,6 +87,104 @@ SUDOEOF
   export CHECKOUT BRANCH=main
   export CALLS="$HOME/calls"
   : > "$CALLS"
+}
+
+@test "installer refuses a missing selector before sudo or checkout mutation" {
+  rm -f "$HOME/stubs/aicoding-select"
+  : > "$CALLS"
+
+  run_install
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"missing catalog blueprint prerequisite: aicoding-select"* ]]
+  ! grep -qE '^(sudo|git) ' "$CALLS"
+}
+
+@test "installer reports root invocation before selector prerequisites" {
+  cat > "$HOME/stubs/id" <<'EOF'
+#!/bin/sh
+case "$1" in
+  -u) echo 0 ;;
+  *) /usr/bin/id "$@" ;;
+esac
+EOF
+  chmod +x "$HOME/stubs/id"
+  rm -f "$HOME/stubs/aicoding-select"
+  : > "$CALLS"
+
+  run_install
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"run this as your normal user, not root/sudo"* ]]
+  [[ "$output" != *"missing catalog blueprint prerequisite"* ]]
+  ! grep -qE '^(sudo|git) ' "$CALLS"
+}
+
+@test "immutable configured blueprint lets installer bypass selector enrollment" {
+  rm -f "$HOME/stubs/aicoding-select"
+  printf '%s\n' \
+    'CATALOG_BLUEPRINT_DEVCONTAINER_URL=https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/1234567890abcdef1234567890abcdef12345678/devcontainer.json' \
+    > "$SVC_DIR/catalog.env"
+
+  run_install
+
+  [ "$status" -eq 0 ]
+}
+
+@test "first deploy persists an exported immutable blueprint for the service" {
+  rm -f "$HOME/stubs/aicoding-select" "$SVC_DIR/catalog.env"
+  local url="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/abcdefabcdefabcdefabcdefabcdefabcdefabcd/devcontainer.json"
+  export CATALOG_BLUEPRINT_DEVCONTAINER_URL="$url"
+
+  run_install
+
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^CATALOG_BLUEPRINT_DEVCONTAINER_URL=' "$SVC_DIR/catalog.env")" -eq 1 ]
+  grep -Fxq "CATALOG_BLUEPRINT_DEVCONTAINER_URL=$url" "$SVC_DIR/catalog.env"
+}
+
+@test "exported blueprint preserves an existing catalog env mode" {
+  printf 'CATALOG_DOCKER_HOST=fixture\n' > "$SVC_DIR/catalog.env"
+  chmod 0600 "$SVC_DIR/catalog.env"
+  export CATALOG_BLUEPRINT_DEVCONTAINER_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/abcdefabcdefabcdefabcdefabcdefabcdefabcd/devcontainer.json"
+
+  run_install
+
+  [ "$status" -eq 0 ]
+  [ "$(stat -c %a "$SVC_DIR/catalog.env")" = 600 ]
+}
+
+@test "failed catalog env rewrite preserves the original and removes its temp" {
+  printf 'CATALOG_DOCKER_HOST=fixture\n' > "$SVC_DIR/catalog.env"
+  cp "$SVC_DIR/catalog.env" "$WORK/catalog.env.before"
+  cat > "$HOME/stubs/chmod" <<'EOF'
+#!/bin/sh
+last=""
+for arg in "$@"; do last="$arg"; done
+case "$last" in
+  */.catalog.env.*) exit 42 ;;
+  *) exec /bin/chmod "$@" ;;
+esac
+EOF
+  chmod +x "$HOME/stubs/chmod"
+  export CATALOG_BLUEPRINT_DEVCONTAINER_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/abcdefabcdefabcdefabcdefabcdefabcdefabcd/devcontainer.json"
+
+  run_install
+
+  [ "$status" -eq 42 ]
+  cmp -s "$WORK/catalog.env.before" "$SVC_DIR/catalog.env"
+  [ -z "$(find "$SVC_DIR" -maxdepth 1 -name '.catalog.env.*' -print -quit)" ]
+}
+
+@test "installer rejects an invalid configured blueprint before mutation" {
+  export CATALOG_BLUEPRINT_DEVCONTAINER_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json"
+  : > "$CALLS"
+
+  run_install
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"must be an exact supported immutable URL"* ]]
+  ! grep -qE '^(sudo|git) ' "$CALLS"
 }
 
 teardown() {

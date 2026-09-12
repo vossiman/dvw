@@ -38,3 +38,16 @@ setup() {
     [[ "$output" != *"/home/vossi/.devpod"* ]]
   done
 }
+
+@test "rendered catalog service can execute the minimal user-local CI selector" {
+  local script
+  for script in "$INSTALL" "$UPDATE"; do
+    run env USER=someone RUN_GROUP=somegroup HOME=/home/someone bash -c '
+      eval "$(sed -n "/^render_unit() {/,/^}/p" "$1")"
+      SVC_DIR="$2"; render_unit dvw-catalog.service' _ "$script" \
+      "$DVW_ROOT/catalog-service"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Environment=PATH=/home/someone/.local/bin:"* ]]
+    [[ "$output" != *"Environment=PATH=/home/vossi/.local/bin:"* ]]
+  done
+}

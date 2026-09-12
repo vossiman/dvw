@@ -63,9 +63,10 @@ class Settings(BaseSettings):
     docker_timeout: int = 10
 
     # The aicoding blueprint devcontainer.json (owns the current image pin).
-    blueprint_devcontainer_url: str = (
-        "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup"
-        "/main/devcontainer.json")
+    # Empty means resolve a CI-qualified exact SHA with `aicoding-select
+    # aicoding`. Operators may supply an explicitly immutable URL. There is no
+    # raw-main default because it can expose an image before required CI passes.
+    blueprint_devcontainer_url: str = ""
     # Blueprint image cache TTL, seconds.
     blueprint_image_ttl: float = 900.0
 

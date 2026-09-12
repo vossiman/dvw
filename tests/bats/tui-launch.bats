@@ -106,3 +106,51 @@ EOF
   [ "$output" = "$fwd" ]
   [ ! -f "$marker" ]
 }
+
+@test "managed TUI uses frozen external version-platform runtime without changing release" {
+  local sha="1234567890abcdef1234567890abcdef12345678"
+  export AICODING_DATA_DIR="$BATS_TEST_TMPDIR/data dir"
+  printf '%s\n' "$sha" > "$DVW_ROOT/.aicoding-version"
+  printf 'locked\n' > "$DVW_ROOT/tui/uv.lock"
+  printf 'source\n' > "$DVW_ROOT/tui/app.py"
+  _dvw_tui_ensure_socket() { printf '/fixture/catalog.sock'; }
+  cat > "$STUB_DIR/uv" <<'EOF'
+#!/bin/sh
+{
+  printf 'args=%s\n' "$*"
+  printf 'env=%s\n' "$UV_PROJECT_ENVIRONMENT"
+  printf 'cache=%s\n' "$UV_CACHE_DIR"
+  printf 'pycache=%s\n' "$PYTHONPYCACHEPREFIX"
+} > "$TUI_LAUNCH_RECORD"
+mkdir -p "$UV_PROJECT_ENVIRONMENT" "$UV_CACHE_DIR" "$PYTHONPYCACHEPREFIX"
+EOF
+  chmod +x "$STUB_DIR/uv"
+  export TUI_LAUNCH_RECORD="$BATS_TEST_TMPDIR/tui-launch-record"
+  local before after
+  before=$(find "$DVW_ROOT" -type f -exec sha256sum {} + | sort | sha256sum)
+
+  PATH="$STUB_DIR:$PATH" run dvw_tui_launch
+  [ "$status" -eq 0 ]
+  after=$(find "$DVW_ROOT" -type f -exec sha256sum {} + | sort | sha256sum)
+  [ "$after" = "$before" ]
+  grep -q '^args=run --frozen --project ' "$TUI_LAUNCH_RECORD"
+  grep -Fq "env=$AICODING_DATA_DIR/runtime/dvw-tui/$sha/" "$TUI_LAUNCH_RECORD"
+  grep -Fxq "cache=$AICODING_DATA_DIR/runtime/uv-cache" "$TUI_LAUNCH_RECORD"
+  grep -Fq "pycache=$AICODING_DATA_DIR/runtime/dvw-tui/$sha/" "$TUI_LAUNCH_RECORD"
+  [ ! -e "$DVW_ROOT/tui/.venv" ]
+  [ ! -e "$DVW_ROOT/tui/__pycache__" ]
+}
+
+@test "legacy TUI launch keeps the existing uv invocation" {
+  _dvw_tui_ensure_socket() { printf '/fixture/catalog.sock'; }
+  cat > "$STUB_DIR/uv" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" > "$TUI_LAUNCH_RECORD"
+EOF
+  chmod +x "$STUB_DIR/uv"
+  export TUI_LAUNCH_RECORD="$BATS_TEST_TMPDIR/tui-launch-record"
+
+  PATH="$STUB_DIR:$PATH" run dvw_tui_launch
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TUI_LAUNCH_RECORD")" = "run --project $DVW_ROOT/tui dvw-tui" ]
+}

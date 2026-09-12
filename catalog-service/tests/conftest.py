@@ -73,7 +73,7 @@ class FakeBlueprintImage:
 
     value: str | None = None
 
-    def get(self) -> str | None:
+    def get_cached(self) -> str | None:
         return self.value
 
 
@@ -83,6 +83,10 @@ def settings(tmp_path):
         data_dir=tmp_path,
         docker_host="unix:/nonexistent",
         token=None,
+        blueprint_devcontainer_url=(
+            "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
+            "1234567890abcdef1234567890abcdef12345678/devcontainer.json"
+        ),
         devpod_agent_workspaces_dir=tmp_path / "agent",
     )
 

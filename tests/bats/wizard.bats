@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 #
 # Tests for lib/wizard.sh's standalone helpers (the interactive flow itself
 # is the native Textual TUI wizard, covered by tui/tests/*). Background:
@@ -17,6 +18,88 @@ setup() {
   # exist: tests must never reach real GitHub, and _init_empty_repo tests
   # that don't care about seeding should exercise the empty-commit fallback.
   export DVW_BLUEPRINT_DEVCONTAINER_URL="file://$BATS_TEST_TMPDIR/absent-devcontainer.json"
+}
+
+@test "blueprint source: default resolves the CI-selected aicoding SHA" {
+  unset DVW_BLUEPRINT_DEVCONTAINER_URL
+  local sha="1234567890abcdef1234567890abcdef12345678"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat > "$BATS_TEST_TMPDIR/bin/aicoding-select" <<EOF
+#!/bin/sh
+[ "\$1" = aicoding ] || exit 9
+printf '%s\\n' '$sha'
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/aicoding-select"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run _dvw_blueprint_devcontainer_url
+  [ "$status" -eq 0 ]
+  [ "$output" = "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/$sha/devcontainer.json" ]
+}
+
+@test "blueprint source: finds selector in ~/.local/bin when PATH is stale" {
+  unset DVW_BLUEPRINT_DEVCONTAINER_URL
+  export HOME="$BATS_TEST_TMPDIR/home"
+  local sha="abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+  mkdir -p "$HOME/.local/bin"
+  cat > "$HOME/.local/bin/aicoding-select" <<EOF
+#!/bin/sh
+printf '%s\\n' '$sha'
+EOF
+  chmod +x "$HOME/.local/bin/aicoding-select"
+
+  PATH="/usr/bin:/bin" run _dvw_blueprint_devcontainer_url
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/$sha/devcontainer.json" ]
+}
+
+@test "blueprint source: explicit developer URL bypasses CI selection" {
+  export DVW_BLUEPRINT_DEVCONTAINER_URL="file://$BATS_TEST_TMPDIR/development.json"
+  aicoding-select() { echo "SELECTOR SHOULD NOT RUN"; return 1; }
+  run _dvw_blueprint_devcontainer_url
+  [ "$status" -eq 0 ]
+  [ "$output" = "$DVW_BLUEPRINT_DEVCONTAINER_URL" ]
+}
+
+@test "blueprint source: moving developer URL remains usable with a policy warning" {
+  export DVW_BLUEPRINT_DEVCONTAINER_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json"
+  aicoding-select() { echo "SELECTOR SHOULD NOT RUN"; return 1; }
+  run --separate-stderr _dvw_blueprint_devcontainer_url
+  [ "$status" -eq 0 ]
+  [ "$output" = "$DVW_BLUEPRINT_DEVCONTAINER_URL" ]
+  [[ "$stderr" == *"bypasses CI-selected immutable blueprint policy"* ]]
+}
+
+@test "blueprint source: selector failure and malformed SHA fail closed" {
+  unset DVW_BLUEPRINT_DEVCONTAINER_URL
+  aicoding-select() { return 1; }
+  run _dvw_blueprint_devcontainer_url
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"/main/"* ]]
+
+  aicoding-select() { printf 'not-a-sha\n'; }
+  run _dvw_blueprint_devcontainer_url
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"/main/"* ]]
+}
+
+@test "_fetch_blueprint_devcontainer: fetches the exact CI-selected URL" {
+  unset DVW_BLUEPRINT_DEVCONTAINER_URL
+  local sha="abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat > "$BATS_TEST_TMPDIR/bin/aicoding-select" <<EOF
+#!/bin/sh
+printf '%s\\n' '$sha'
+EOF
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$4" > "$REQUESTED_URL"
+printf '{"image":"ghcr.io/example/image@sha256:%064d"}\n' 0 > "$6"
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/aicoding-select" "$BATS_TEST_TMPDIR/bin/curl"
+  export REQUESTED_URL="$BATS_TEST_TMPDIR/requested-url"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run _fetch_blueprint_devcontainer "$BATS_TEST_TMPDIR/fetched.json"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/requested-url")" = "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/$sha/devcontainer.json" ]
 }
 
 # Write a minimal valid devcontainer.json fixture and point the fetch URL at

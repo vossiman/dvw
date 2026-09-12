@@ -83,7 +83,9 @@ _dvw_push_list_fresh() {
 # Newest fresh upload. Prints the path; rc 1 (silent) when none.
 _dvw_push_pick_fresh() {
   local f
-  f=$(_dvw_push_list_fresh | head -n1)
+  # Consume the whole list: head can close while the producer is still
+  # printing and leak a SIGPIPE diagnostic into the selected upload result.
+  f=$(_dvw_push_list_fresh | sed -n '1p')
   [[ -n "$f" ]] || return 1
   printf '%s\n' "$f"
 }

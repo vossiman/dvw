@@ -167,7 +167,7 @@ async def inspect_container(
     ws_id: WsId, inspector: InspectorDep, blueprint: BlueprintImageDep
 ) -> ContainerInspect:
     """Deep inspection: state, health, mounts, cpu/mem, disk, liveness."""
-    bp = await run_in_threadpool(blueprint.get)
+    bp = blueprint.get_cached()
     return await run_inspect(inspector.inspect, ws_id, bp)
 
 
