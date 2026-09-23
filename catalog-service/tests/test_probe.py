@@ -200,6 +200,22 @@ def test_mcp_kanban_semver_rejects_report():
         ProbeReport.model_validate({**GOOD, "capabilities": bad})
 
 
+def test_suffixed_semver_parses():
+    """Real receipts carry suffixes: Cursor's version is date-plus-shortsha."""
+    r = ProbeReport.model_validate(
+        {**GOOD, "capabilities": {**CAPS, "cursor": {"version": "2026.09.18-9a7762b", "config_compatible": True}}}
+    )
+    assert r.capabilities["cursor"].version == "2026.09.18-9a7762b"
+
+
+def test_prerelease_and_build_suffixed_semver_parses():
+    for version in ("1.2.3-rc1", "1.2.3+build"):
+        r = ProbeReport.model_validate(
+            {**GOOD, "capabilities": {**CAPS, "claude": {"version": version, "config_compatible": True}}}
+        )
+        assert r.capabilities["claude"].version == version
+
+
 def test_non_kanban_sha_rejects_report():
     import pytest
     from pydantic import ValidationError

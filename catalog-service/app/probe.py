@@ -96,9 +96,12 @@ CapabilityName = Literal["claude", "codex", "cursor", "mcp-context7", "mcp-playw
 SEMVER_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # mcp-kanban reports a 40-hex git SHA instead of a semver; every other
-# capability reports x.y.z. Accept either shape at the field level, then
-# pin each key to its own shape below.
-Version = Annotated[str, StringConstraints(max_length=64, pattern=r"^([0-9]+\.[0-9]+\.[0-9]+|[0-9a-f]{40})$")]
+# capability reports x.y.z, which real tools suffix (Cursor's is
+# "2026.09.18-9a7762b"). SEMVER_RE is deliberately a prefix match, matching
+# aicoding's own gate, so the field pattern below must not anchor the
+# semver alternative at the end either. Accept either shape at the field
+# level, then pin each key to its own shape in the model validator.
+Version = Annotated[str, StringConstraints(max_length=64, pattern=f"({SEMVER_RE.pattern}|{SHA_RE.pattern})")]
 
 
 class ProbeCapability(BaseModel):
