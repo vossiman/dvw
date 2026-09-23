@@ -8,10 +8,18 @@ Contract: aiCodingBaseSetup docs/automatic-updates.md, "Shared consumer evidence
 
 from __future__ import annotations
 
+import contextlib
 import datetime
+import json
+import logging
+import os
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .probe import CAPABILITY_NAMES, ProbeReport
+
+log = logging.getLogger(__name__)
 
 SHARED_ROOTS = ("/home/codespace/.claude", "/home/codespace/.codex", "/home/codespace/.cursor")
 REPORT_WINDOW = (-5, 90)  # seconds a probe timestamp may lead or trail the host clock
@@ -76,3 +84,26 @@ def build_proof(members: list[FleetMember], *, now: float, ttl: int = 300) -> di
             "consumers": [{"id": m.container_id, "components": _components(m.report)} for m in users],
         })
     return {"schema": 1, "generated_at": int(now), "newest_container_started_at": newest, "roots": roots}
+
+
+def write_proof(path: Path, proof: dict) -> bool:
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=".consumer-versions.", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w") as fh:
+                json.dump(proof, fh, separators=(",", ":"))
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+    except OSError as e:
+        log.warning("fleet proof write failed: %s", type(e).__name__)
+        return False
+    return True
+
+
+def remove_proof(path: Path) -> None:
+    with contextlib.suppress(FileNotFoundError):
+        path.unlink()

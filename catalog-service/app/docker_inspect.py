@@ -38,6 +38,7 @@ from .models import (
     WorkspaceWindows,
 )
 from .activity import ActivitySample
+from .fleet import FleetMember, parse_docker_time
 from .probe import ProbeMissing, ProbeReport, run_probe
 
 
@@ -575,6 +576,35 @@ class DockerInspector:
                 sample.signals["tmux_sessions"] = len(report.tmux.sessions)
             sample.signals["agents"] = len(report.agents) if report.agents is not None else None
         return result
+
+    # ---- fleet proof -------------------------------------------------------
+
+    def fleet_members(self) -> list[FleetMember]:
+        """Every running devpod container, duplicates included, one probe each."""
+        members = []
+        for c in self._devpod_containers():
+            if c.status != "running":
+                continue
+            mounts = {m.get("Destination"): m.get("Source")
+                      for m in c.attrs.get("Mounts", [])
+                      if m.get("Type") == "bind" and m.get("Destination")}
+            try:
+                report = run_probe(c)
+            except ProbeMissing:
+                report = None
+            members.append(FleetMember(
+                container_id=c.id,
+                started_at=parse_docker_time(c.attrs.get("State", {}).get("StartedAt")),
+                mounts=mounts,
+                report=report,
+            ))
+        return members
+
+    def running_container_ids(self) -> set[str]:
+        """Cheap change detector: one list call, no per-container inspect."""
+        return {c.id for c in self._client.containers.list(
+            sparse=True, filters={"label": self._settings.devpod_id_label})
+            if c.status == "running"}
 
     # ---- bulk status (replaces _dvw_load_probe) --------------------------
 

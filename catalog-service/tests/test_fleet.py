@@ -94,3 +94,76 @@ def test_parse_docker_time_handles_nanoseconds_and_garbage():
     assert parse_docker_time("2026-09-23T12:00:00.123456789Z") == parse_docker_time("2026-09-23T12:00:00.123456Z")
     assert parse_docker_time("0001-01-01T00:00:00Z") is None
     assert parse_docker_time(None) is None and parse_docker_time("nope") is None
+
+
+import json
+import os
+
+from app.config import Settings
+from app.fleet import remove_proof, write_proof
+from tests.test_resolver import FakeContainer, _inspector
+
+
+def _running(cid, started="2026-09-23T10:00:00.5Z", probe=None, extra_mounts=MOUNTS):
+    c = FakeContainer(cid, f"n-{cid}", f"u-{cid}", "/workspaces/ws-a",
+                      probe=probe or {**GOOD, "ts": int(NOW), "capabilities": CAPS})
+    c.attrs["State"]["StartedAt"] = started
+    c.attrs["Mounts"] += [{"Destination": d, "Source": s, "Type": "bind"} for d, s in extra_mounts.items()]
+    return c
+
+
+def test_fleet_members_covers_duplicates_and_skips_stopped(monkeypatch):
+    stopped = _running("s")
+    stopped.status = "exited"
+    insp = _inspector([_running("a"), _running("a2"), stopped], monkeypatch)
+    members = insp.fleet_members()
+    assert [m.container_id for m in members] == ["a", "a2"]
+    assert members[0].mounts["/home/codespace/.claude"] == MOUNTS["/home/codespace/.claude"]
+    assert members[0].started_at == parse_docker_time("2026-09-23T10:00:00.5Z")
+    assert members[0].report.capabilities["claude"].version == "1.2.3"
+
+
+def test_fleet_members_probe_missing_is_a_member_without_report(monkeypatch):
+    c = _running("a")
+    c._probe, c._probe_exit = None, 127
+    (m,) = _inspector([c], monkeypatch).fleet_members()
+    assert m.report is None
+
+
+def test_fleet_members_passes_through_full_container_id(monkeypatch):
+    full_id = "f" * 64
+    c = _running(full_id)
+    (m,) = _inspector([c], monkeypatch).fleet_members()
+    assert m.container_id == full_id
+
+
+def test_running_container_ids(monkeypatch):
+    stopped = _running("s")
+    stopped.status = "exited"
+    assert _inspector([_running("a"), stopped], monkeypatch).running_container_ids() == {"a"}
+
+
+def test_write_proof_is_atomic_and_readable(tmp_path):
+    target = tmp_path / "fleet" / "consumer-versions.json"
+    target.parent.mkdir()
+    assert write_proof(target, {"schema": 1, "roots": []}) is True
+    assert json.loads(target.read_text()) == {"schema": 1, "roots": []}
+    assert oct(target.stat().st_mode & 0o777) == "0o644"
+    assert [p.name for p in target.parent.iterdir()] == ["consumer-versions.json"]
+
+
+def test_write_proof_missing_dir_returns_false(tmp_path, caplog):
+    assert write_proof(tmp_path / "absent" / "x.json", {"schema": 1}) is False
+    assert "fleet proof write failed" in caplog.text
+
+
+def test_remove_proof_tolerates_absence(tmp_path):
+    remove_proof(tmp_path / "x.json")
+    (tmp_path / "x.json").write_text("{}")
+    remove_proof(tmp_path / "x.json")
+    assert not (tmp_path / "x.json").exists()
+
+
+def test_fleet_proof_path_setting():
+    assert Settings(fleet_proof_path="").fleet_proof_file is None
+    assert str(Settings(fleet_proof_path="~/p.json").fleet_proof_file) == os.path.expanduser("~/p.json")
