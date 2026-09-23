@@ -382,6 +382,23 @@ async def test_container_started_during_a_pass_is_retried_without_a_full_interva
     assert [c["id"] for c in json.loads(path.read_text())["roots"][0]["consumers"]] == ["a", "b"]
 
 
+async def test_repeated_no_write_retries_back_off_after_three(tmp_path):
+    path = tmp_path / "p.json"
+    # "b" is running but fleet_members never returns it: every pass writes
+    # nothing and retries. Without a backoff this spins at watch_interval.
+    stub = StubInspector([_member("a")], [{"a", "b"}])
+    pub = FleetPublisher(path, ttl=300, interval=1.0, watch_interval=0.01, clock=lambda: NOW)
+    task = asyncio.create_task(pub.run(stub))
+    await _poll(lambda: stub.member_calls >= 3)
+    await asyncio.sleep(0.2)
+    calls_after_backoff = stub.member_calls
+    await _cancel(task)
+    # Three fast retries, then the loop backs off to the full interval
+    # (1s), so within this short window the pass count stays at 3.
+    assert calls_after_backoff == 3
+    assert not path.exists()
+
+
 def test_mount_target_mismatch_marks_the_root_incomplete():
     claude = SHARED_ROOTS[0]
     relocated = {**MOUNTS}
@@ -408,6 +425,21 @@ def test_canonical_mount_without_a_source_is_incomplete_not_a_crash():
 def test_unrelated_sibling_source_does_not_mark_incomplete():
     near = {**MOUNTS, "/home/codespace/.aicodingsetup": "/home/vossi/devpod/claude-other"}
     p = build_proof([_member("a", mounts=near)], now=NOW)
+    assert all(r["inventory_complete"] is True for r in p["roots"])
+
+
+def test_subdirectory_of_a_root_source_marks_it_incomplete():
+    claude = SHARED_ROOTS[0]
+    subdir = {**MOUNTS, "/opt/x": MOUNTS[claude] + "/plugins"}
+    p = build_proof([_member("a"), _member("b", mounts=subdir)], now=NOW)
+    assert _root(p, claude)["inventory_complete"] is False
+    assert _root(p, SHARED_ROOTS[1])["inventory_complete"] is True
+
+
+def test_sibling_prefix_source_does_not_mark_incomplete():
+    claude = SHARED_ROOTS[0]
+    sibling = {**MOUNTS, "/opt/x": MOUNTS[claude] + "X"}
+    p = build_proof([_member("a"), _member("b", mounts=sibling)], now=NOW)
     assert all(r["inventory_complete"] is True for r in p["roots"])
 
 

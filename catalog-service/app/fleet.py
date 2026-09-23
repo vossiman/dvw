@@ -79,15 +79,23 @@ def _relocated(members: list[FleetMember], root: str, sources: set[str]) -> bool
 
     Such a container uses the shared root through another path (a relocated
     or symlinked home), so its updater never looks up this root entry and
-    this pass cannot vouch for it. Mounting a parent directory of a source
-    exposes the root just the same.
+    this pass cannot vouch for it. Mounting a parent directory of a source,
+    or a subdirectory of it, exposes the root just the same. Comparison is
+    by path component (each candidate is checked with a trailing "/" so a
+    sibling with a shared prefix, e.g. "claudeX" against "claude", never
+    matches).
     """
     for m in members:
         for dest, src in m.mounts.items():
             if dest == root or not src:
                 continue
             src = _norm(src)
-            if any(s == src or s.startswith(src.rstrip("/") + "/") for s in sources):
+            if any(
+                s == src
+                or s.startswith(src.rstrip("/") + "/")
+                or src.startswith(s.rstrip("/") + "/")
+                for s in sources
+            ):
                 return True
     return False
 
@@ -220,22 +228,33 @@ class FleetPublisher:
         """Remove the proof so it does not outlive this process."""
         self._safe_remove()
 
+    # Consecutive no-write retries (a running id fleet_members never returns)
+    # after which run() waits a full interval instead of one watch interval.
+    # The id watcher keeps polling regardless, so this only slows down the
+    # pass cadence, not detection of new containers.
+    _MAX_FAST_RETRIES = 3
+
     async def run(self, inspector) -> None:
         # A proof left by a previous catalog process must not outlive a restart.
         self._safe_remove()
         covered: set[str] | None = None
+        misses = 0
         while True:
             try:
                 covered = await self.publish_once(inspector, covered)
             except Exception as e:
                 log.warning("fleet proof pass failed: %s", type(e).__name__)
                 covered = None
+                misses = 0
                 # A failed pass must not leave a stale proof valid up to its TTL.
                 self._safe_remove()
             else:
                 if covered is None:
-                    await asyncio.sleep(self._watch)
+                    misses += 1
+                    delay = self._interval if misses >= self._MAX_FAST_RETRIES else self._watch
+                    await asyncio.sleep(delay)
                     continue
+                misses = 0
             deadline = time.monotonic() + self._interval
             while time.monotonic() < deadline:
                 await asyncio.sleep(self._watch)
