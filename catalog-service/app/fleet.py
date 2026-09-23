@@ -8,14 +8,18 @@ Contract: aiCodingBaseSetup docs/automatic-updates.md, "Shared consumer evidence
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import datetime
 import json
 import logging
 import os
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from starlette.concurrency import run_in_threadpool
 
 from .probe import CAPABILITY_NAMES, ProbeReport
 
@@ -107,3 +111,48 @@ def write_proof(path: Path, proof: dict) -> bool:
 def remove_proof(path: Path) -> None:
     with contextlib.suppress(FileNotFoundError):
         path.unlink()
+
+
+class FleetPublisher:
+    """Full probe pass every `interval`; between passes, a cheap id watcher.
+
+    A container id the last pass did not cover deletes the proof at once, so
+    no updater can authorize a shared write against an inventory that does
+    not include the new container, and then triggers a full pass.
+    """
+
+    def __init__(self, path: Path, *, ttl: int, interval: float, watch_interval: float, clock=time.time):
+        self._path = path
+        self._ttl = ttl
+        self._interval = interval
+        self._watch = watch_interval
+        self._clock = clock
+
+    async def publish_once(self, inspector) -> set[str]:
+        members = await run_in_threadpool(inspector.fleet_members)
+        proof = build_proof(members, now=self._clock(), ttl=self._ttl)
+        write_proof(self._path, proof)
+        return {m.container_id for m in members}
+
+    async def run(self, inspector) -> None:
+        # A proof left by a previous catalog process must not outlive a restart.
+        remove_proof(self._path)
+        while True:
+            try:
+                covered = await self.publish_once(inspector)
+            except Exception as e:
+                log.warning("fleet proof pass failed: %s", type(e).__name__)
+                covered = None
+            deadline = time.monotonic() + self._interval
+            while time.monotonic() < deadline:
+                await asyncio.sleep(self._watch)
+                if covered is None:
+                    continue
+                try:
+                    ids = await run_in_threadpool(inspector.running_container_ids)
+                except Exception as e:
+                    log.warning("fleet watcher failed: %s", type(e).__name__)
+                    continue
+                if ids - covered:
+                    remove_proof(self._path)
+                    break

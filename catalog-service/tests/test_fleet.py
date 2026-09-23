@@ -167,3 +167,78 @@ def test_remove_proof_tolerates_absence(tmp_path):
 def test_fleet_proof_path_setting():
     assert Settings(fleet_proof_path="").fleet_proof_file is None
     assert str(Settings(fleet_proof_path="~/p.json").fleet_proof_file) == os.path.expanduser("~/p.json")
+
+
+import asyncio
+
+from app.fleet import FleetPublisher
+
+
+class StubInspector:
+    def __init__(self, members, ids_sequence):
+        self.members = members
+        self.ids_sequence = list(ids_sequence)
+        self.member_calls = 0
+
+    def fleet_members(self):
+        self.member_calls += 1
+        return self.members
+
+    def running_container_ids(self):
+        return self.ids_sequence.pop(0) if len(self.ids_sequence) > 1 else self.ids_sequence[0]
+
+
+async def test_publish_once_writes_proof(tmp_path):
+    path = tmp_path / "p.json"
+    pub = FleetPublisher(path, ttl=300, interval=30, watch_interval=0.01, clock=lambda: NOW)
+    ids = await pub.publish_once(StubInspector([_member("a")], [{"a"}]))
+    assert ids == {"a"}
+    assert json.loads(path.read_text())["roots"][0]["consumers"][0]["id"] == "a"
+
+
+async def test_new_container_deletes_proof_and_triggers_a_pass(tmp_path):
+    path = tmp_path / "p.json"
+    stub = StubInspector([_member("a")], [{"a"}, {"a", "b"}])
+    pub = FleetPublisher(path, ttl=300, interval=30, watch_interval=0.01, clock=lambda: NOW)
+    task = asyncio.create_task(pub.run(stub))
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if stub.member_calls >= 2:
+            break
+    task.cancel()
+    assert stub.member_calls >= 2
+
+
+async def test_watcher_removes_file_before_reprobing(tmp_path):
+    path = tmp_path / "p.json"
+    seen = []
+
+    class Slow(StubInspector):
+        def fleet_members(self):
+            seen.append(path.exists())
+            return super().fleet_members()
+
+    stub = Slow([_member("a")], [{"a"}, {"a", "b"}])
+    pub = FleetPublisher(path, ttl=300, interval=30, watch_interval=0.01, clock=lambda: NOW)
+    task = asyncio.create_task(pub.run(stub))
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if len(seen) >= 2:
+            break
+    task.cancel()
+    assert seen[:2] == [False, False]
+
+
+async def test_enumeration_failure_keeps_running(tmp_path, caplog):
+    class Broken(StubInspector):
+        def fleet_members(self):
+            self.member_calls += 1
+            raise RuntimeError("docker down")
+
+    stub = Broken([], [set()])
+    pub = FleetPublisher(tmp_path / "p.json", ttl=300, interval=0.01, watch_interval=0.005, clock=lambda: NOW)
+    task = asyncio.create_task(pub.run(stub))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    assert stub.member_calls >= 2
+    assert "fleet proof pass failed" in caplog.text

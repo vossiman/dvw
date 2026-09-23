@@ -88,6 +88,7 @@ def settings(tmp_path):
             "1234567890abcdef1234567890abcdef12345678/devcontainer.json"
         ),
         devpod_agent_workspaces_dir=tmp_path / "agent",
+        fleet_proof_path="",
     )
 
 

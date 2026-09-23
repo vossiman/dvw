@@ -86,12 +86,23 @@ async def lifespan(app: FastAPI):
     app.state.activity_observer = ActivityObserver(history=app.state.activity_history)
     activity_task = asyncio.create_task(app.state.activity_observer.run(
         app.state.store, app.state.inspector))
+    fleet_task = None
+    if settings.fleet_proof_file is not None:
+        from .fleet import FleetPublisher
+        app.state.fleet_publisher = FleetPublisher(
+            settings.fleet_proof_file, ttl=settings.fleet_proof_ttl,
+            interval=settings.fleet_interval, watch_interval=settings.fleet_watch_interval)
+        fleet_task = asyncio.create_task(app.state.fleet_publisher.run(app.state.inspector))
     try:
         yield
     finally:
         activity_task.cancel()
         with suppress(asyncio.CancelledError):
             await activity_task
+        if fleet_task is not None:
+            fleet_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await fleet_task
         wlock.close()
 
 
