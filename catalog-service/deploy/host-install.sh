@@ -168,6 +168,11 @@ sudo ln -sfn "$SVC_DIR" "$APP_LINK"
 
 echo "==> 3/8 data dir + git backup repo ($DATA_DIR)"
 sudo install -d -o "$USER" -g "$USER" -m 0750 "$DATA_DIR"
+# Fleet proof dir for the aicoding updater (catalog app/fleet.py). Created as
+# the service user; absent aicodingsetup means no devpod containers here.
+if [ -d "$HOME/devpod/aicodingsetup" ]; then
+  install -d -m 0755 "$HOME/devpod/aicodingsetup/fleet"
+fi
 if [ ! -d "$DATA_DIR/.git" ]; then
   git -C "$DATA_DIR" init -q
   git -C "$DATA_DIR" config user.email "dvw-catalog@$(hostname -s)"

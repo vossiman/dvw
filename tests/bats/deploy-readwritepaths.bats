@@ -51,3 +51,25 @@ setup() {
     [[ "$output" != *"Environment=PATH=/home/vossi/.local/bin:"* ]]
   done
 }
+
+@test "the unit grants the fleet proof dir and not its parent" {
+  grep -qxF 'ReadWritePaths=-/home/vossi/devpod/aicodingsetup/fleet' "$UNIT"
+  ! grep -qE '^ReadWritePaths=-?/home/vossi/devpod/aicodingsetup/?$' "$UNIT"
+}
+
+@test "render_unit rewrites the fleet path for the running user" {
+  local script
+  for script in "$INSTALL" "$UPDATE"; do
+    run env USER=someone RUN_GROUP=somegroup HOME=/home/someone bash -c '
+      eval "$(sed -n "/^render_unit() {/,/^}/p" "$1")"
+      SVC_DIR="$2"; render_unit dvw-catalog.service' _ "$script" \
+      "$DVW_ROOT/catalog-service"
+    [[ "$output" == *"ReadWritePaths=-/home/someone/devpod/aicodingsetup/fleet"* ]]
+  done
+}
+
+@test "both installers create the fleet dir only under an existing aicodingsetup" {
+  grep -q 'if \[ -d "\$HOME/devpod/aicodingsetup" \]; then' "$INSTALL"
+  grep -q 'install -d -m 0755 "\$HOME/devpod/aicodingsetup/fleet"' "$INSTALL"
+  grep -q 'install -d -m 0755 "\$HOME/devpod/aicodingsetup/fleet"' "$UPDATE"
+}
