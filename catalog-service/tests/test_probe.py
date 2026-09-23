@@ -154,3 +154,38 @@ def test_explicit_minus_one_activity_keeps_the_report():
     r = ProbeReport.model_validate(data)
     assert r.work_activity() == -1
     assert r.work_windows()[0].activity == -1
+
+
+from app.probe import CAPABILITY_NAMES, ProbeReport
+
+
+CAPS = {name: {"version": "1.2.3", "config_compatible": True} for name in
+        ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright")}
+
+
+def test_capabilities_parse():
+    r = ProbeReport.model_validate({**GOOD, "capabilities": CAPS})
+    assert r.capabilities["mcp-context7"].version == "1.2.3"
+    assert CAPABILITY_NAMES == ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright")
+
+
+def test_capabilities_absent_or_null_is_none():
+    assert ProbeReport.model_validate(GOOD).capabilities is None
+    r = ProbeReport.model_validate({**GOOD, "capabilities": {**CAPS, "codex": None}})
+    assert r.capabilities["codex"] is None
+
+
+def test_capability_with_bad_version_rejects_report():
+    import pytest
+    from pydantic import ValidationError
+    bad = {**CAPS, "claude": {"version": "latest", "config_compatible": True}}
+    with pytest.raises(ValidationError):
+        ProbeReport.model_validate({**GOOD, "capabilities": bad})
+
+
+def test_capability_compatible_must_be_a_real_bool():
+    import pytest
+    from pydantic import ValidationError
+    bad = {**CAPS, "claude": {"version": "1.2.3", "config_compatible": "yes"}}
+    with pytest.raises(ValidationError):
+        ProbeReport.model_validate({**GOOD, "capabilities": bad})

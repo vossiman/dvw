@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
@@ -90,6 +90,17 @@ class ProbeActivity(BaseModel):
     vscode_connections: Annotated[int, Field(ge=0, le=100000, strict=True)] | None = None
 
 
+CAPABILITY_NAMES = ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright")
+CapabilityName = Literal["claude", "codex", "cursor", "mcp-context7", "mcp-playwright"]
+Version = Annotated[str, StringConstraints(max_length=64, pattern=r"^[0-9]+\.[0-9]+\.[0-9]+")]
+
+
+class ProbeCapability(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    version: Version
+    config_compatible: Annotated[bool, Field(strict=True)]
+
+
 class ProbeReport(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
     schema_: int = Field(alias="schema")
@@ -100,6 +111,7 @@ class ProbeReport(BaseModel):
     activity: ProbeActivity | None = None
     git: ProbeGit | None = None
     cgroup: ProbeCgroup | None = None
+    capabilities: dict[CapabilityName, ProbeCapability | None] | None = None
 
     def work_activity(self) -> int:
         if self.tmux is None:
