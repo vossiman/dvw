@@ -14,9 +14,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Annotated, Literal
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator
 
 from .models import WindowInfo
 
@@ -92,22 +92,48 @@ class ProbeActivity(BaseModel):
 
 
 CAPABILITY_NAMES = ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright", "mcp-kanban")
-CapabilityName = Literal["claude", "codex", "cursor", "mcp-context7", "mcp-playwright", "mcp-kanban"]
 SEMVER_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+")
-SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA_RE = re.compile(r"[0-9a-f]{40}")
+MAX_VERSION = 64
 # mcp-kanban reports a 40-hex git SHA instead of a semver; every other
 # capability reports x.y.z, which real tools suffix (Cursor's is
 # "2026.09.18-9a7762b"). SEMVER_RE is deliberately a prefix match, matching
-# aicoding's own gate, so the field pattern below must not anchor the
-# semver alternative at the end either. Accept either shape at the field
-# level, then pin each key to its own shape in the model validator.
-Version = Annotated[str, StringConstraints(max_length=64, pattern=f"({SEMVER_RE.pattern}|{SHA_RE.pattern})")]
+# aicoding's own gate.
 
 
 class ProbeCapability(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    version: Version
+    version: Annotated[str, StringConstraints(max_length=MAX_VERSION)]
     config_compatible: Annotated[bool, Field(strict=True)]
+
+
+def _parse_capability(name: str, raw: object) -> ProbeCapability | None:
+    """One capability entry, or None when it is absent or malformed."""
+    if not isinstance(raw, dict):
+        return None
+    version = raw.get("version")
+    compatible = raw.get("config_compatible")
+    if not isinstance(version, str) or len(version) > MAX_VERSION or not isinstance(compatible, bool):
+        return None
+    shape_ok = SHA_RE.fullmatch(version) if name == "mcp-kanban" else SEMVER_RE.match(version)
+    if not shape_ok:
+        return None
+    return ProbeCapability(version=version, config_compatible=compatible)
+
+
+def _parse_capabilities(value: object) -> dict[str, ProbeCapability | None] | None:
+    """Lenient on purpose: aicoding updates itself, dvw deploys by hand.
+
+    A probe that reports a component this catalog does not know yet, or one
+    entry in a shape it does not accept, must not reject the whole report:
+    that would blank activity and status for every container at once. Each
+    known entry is validated on its own and becomes None when invalid, which
+    keeps it out of the fleet proof (never counted as compatible). Unknown
+    keys are dropped. This never raises.
+    """
+    if not isinstance(value, dict):
+        return None
+    return {name: _parse_capability(name, value[name]) for name in CAPABILITY_NAMES if name in value}
 
 
 class ProbeReport(BaseModel):
@@ -120,21 +146,12 @@ class ProbeReport(BaseModel):
     activity: ProbeActivity | None = None
     git: ProbeGit | None = None
     cgroup: ProbeCgroup | None = None
-    capabilities: dict[CapabilityName, ProbeCapability | None] | None = None
+    capabilities: dict[str, ProbeCapability | None] | None = None
 
-    @model_validator(mode="after")
-    def _check_capability_version_shapes(self) -> "ProbeReport":
-        if self.capabilities is None:
-            return self
-        for name, cap in self.capabilities.items():
-            if cap is None:
-                continue
-            if name == "mcp-kanban":
-                if not SHA_RE.match(cap.version):
-                    raise ValueError("mcp-kanban capability version must be a 40-hex git SHA")
-            elif not SEMVER_RE.match(cap.version):
-                raise ValueError(f"{name} capability version must be x.y.z")
-        return self
+    @field_validator("capabilities", mode="before")
+    @classmethod
+    def _lenient_capabilities(cls, value: object) -> dict[str, ProbeCapability | None] | None:
+        return _parse_capabilities(value)
 
     def work_activity(self) -> int:
         if self.tmux is None:
