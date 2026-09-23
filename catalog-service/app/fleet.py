@@ -131,18 +131,30 @@ class FleetPublisher:
     async def publish_once(self, inspector) -> set[str]:
         members = await run_in_threadpool(inspector.fleet_members)
         proof = build_proof(members, now=self._clock(), ttl=self._ttl)
-        write_proof(self._path, proof)
+        if not write_proof(self._path, proof):
+            # write_proof already logged the reason. A stale proof must not
+            # be reported as covering these ids: fail the pass so run()
+            # removes whatever proof is on disk and retries.
+            raise RuntimeError("fleet proof write failed")
         return {m.container_id for m in members}
+
+    def _safe_remove(self) -> None:
+        try:
+            remove_proof(self._path)
+        except OSError as e:
+            log.warning("fleet proof remove failed: %s", type(e).__name__)
 
     async def run(self, inspector) -> None:
         # A proof left by a previous catalog process must not outlive a restart.
-        remove_proof(self._path)
+        self._safe_remove()
         while True:
             try:
                 covered = await self.publish_once(inspector)
             except Exception as e:
                 log.warning("fleet proof pass failed: %s", type(e).__name__)
                 covered = None
+                # A failed pass must not leave a stale proof valid up to its TTL.
+                self._safe_remove()
             deadline = time.monotonic() + self._interval
             while time.monotonic() < deadline:
                 await asyncio.sleep(self._watch)
@@ -154,5 +166,5 @@ class FleetPublisher:
                     log.warning("fleet watcher failed: %s", type(e).__name__)
                     continue
                 if ids - covered:
-                    remove_proof(self._path)
+                    self._safe_remove()
                     break

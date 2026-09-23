@@ -170,6 +170,7 @@ def test_fleet_proof_path_setting():
 
 
 import asyncio
+from contextlib import suppress
 
 from app.fleet import FleetPublisher
 
@@ -188,6 +189,19 @@ class StubInspector:
         return self.ids_sequence.pop(0) if len(self.ids_sequence) > 1 else self.ids_sequence[0]
 
 
+async def _cancel(task):
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def _poll(condition, attempts=200, step=0.01):
+    for _ in range(attempts):
+        await asyncio.sleep(step)
+        if condition():
+            break
+
+
 async def test_publish_once_writes_proof(tmp_path):
     path = tmp_path / "p.json"
     pub = FleetPublisher(path, ttl=300, interval=30, watch_interval=0.01, clock=lambda: NOW)
@@ -198,15 +212,22 @@ async def test_publish_once_writes_proof(tmp_path):
 
 async def test_new_container_deletes_proof_and_triggers_a_pass(tmp_path):
     path = tmp_path / "p.json"
-    stub = StubInspector([_member("a")], [{"a"}, {"a", "b"}])
+    seen = []
+
+    class Recording(StubInspector):
+        def fleet_members(self):
+            seen.append(path.exists())
+            return super().fleet_members()
+
+    stub = Recording([_member("a")], [{"a"}, {"a", "b"}])
     pub = FleetPublisher(path, ttl=300, interval=30, watch_interval=0.01, clock=lambda: NOW)
     task = asyncio.create_task(pub.run(stub))
-    for _ in range(200):
-        await asyncio.sleep(0.01)
-        if stub.member_calls >= 2:
-            break
-    task.cancel()
+    await _poll(lambda: stub.member_calls >= 2)
+    await _cancel(task)
     assert stub.member_calls >= 2
+    # The second fleet_members call (triggered by the new container id) ran
+    # after the stale proof was deleted, before the fresh pass rewrote it.
+    assert seen == [False, False]
 
 
 async def test_watcher_removes_file_before_reprobing(tmp_path):
@@ -221,11 +242,8 @@ async def test_watcher_removes_file_before_reprobing(tmp_path):
     stub = Slow([_member("a")], [{"a"}, {"a", "b"}])
     pub = FleetPublisher(path, ttl=300, interval=30, watch_interval=0.01, clock=lambda: NOW)
     task = asyncio.create_task(pub.run(stub))
-    for _ in range(200):
-        await asyncio.sleep(0.01)
-        if len(seen) >= 2:
-            break
-    task.cancel()
+    await _poll(lambda: len(seen) >= 2)
+    await _cancel(task)
     assert seen[:2] == [False, False]
 
 
@@ -239,6 +257,64 @@ async def test_enumeration_failure_keeps_running(tmp_path, caplog):
     pub = FleetPublisher(tmp_path / "p.json", ttl=300, interval=0.01, watch_interval=0.005, clock=lambda: NOW)
     task = asyncio.create_task(pub.run(stub))
     await asyncio.sleep(0.1)
-    task.cancel()
+    await _cancel(task)
     assert stub.member_calls >= 2
     assert "fleet proof pass failed" in caplog.text
+
+
+async def test_run_removes_a_preexisting_proof_on_start(tmp_path):
+    path = tmp_path / "p.json"
+    path.write_text('{"stale": true}')
+    stub = StubInspector([_member("a")], [{"a"}])
+    pub = FleetPublisher(path, ttl=300, interval=30, watch_interval=0.01, clock=lambda: NOW)
+    task = asyncio.create_task(pub.run(stub))
+    await _poll(lambda: stub.member_calls >= 1)
+    await _cancel(task)
+    # The restart-time removal ran before the first pass wrote the fresh proof.
+    assert json.loads(path.read_text())["roots"][0]["consumers"][0]["id"] == "a"
+
+
+async def test_enumeration_failure_removes_a_stale_proof(tmp_path):
+    path = tmp_path / "p.json"
+
+    class Broken(StubInspector):
+        def fleet_members(self):
+            self.member_calls += 1
+            if self.member_calls == 1:
+                return super().fleet_members()
+            raise RuntimeError("docker down")
+
+    stub = Broken([_member("a")], [{"a"}])
+    pub = FleetPublisher(path, ttl=300, interval=0.02, watch_interval=0.005, clock=lambda: NOW)
+    task = asyncio.create_task(pub.run(stub))
+    await _poll(lambda: stub.member_calls >= 1)
+    assert path.exists()
+    await _poll(lambda: stub.member_calls >= 2)
+    await _poll(lambda: not path.exists())
+    await _cancel(task)
+    assert not path.exists()
+
+
+async def test_write_failure_removes_a_stale_proof(tmp_path, monkeypatch):
+    path = tmp_path / "p.json"
+    from app import fleet as fleet_module
+
+    calls = {"n": 0}
+    real_write_proof = fleet_module.write_proof
+
+    def flaky_write_proof(target_path, proof):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_write_proof(target_path, proof)
+        return False
+
+    monkeypatch.setattr(fleet_module, "write_proof", flaky_write_proof)
+    stub = StubInspector([_member("a")], [{"a"}])
+    pub = FleetPublisher(path, ttl=300, interval=0.02, watch_interval=0.005, clock=lambda: NOW)
+    task = asyncio.create_task(pub.run(stub))
+    await _poll(lambda: calls["n"] >= 1)
+    assert path.exists()
+    await _poll(lambda: calls["n"] >= 2)
+    await _poll(lambda: not path.exists())
+    await _cancel(task)
+    assert not path.exists()
