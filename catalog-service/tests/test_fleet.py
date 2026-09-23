@@ -170,7 +170,10 @@ def test_fleet_proof_path_setting():
 
 
 import asyncio
+import threading
+import time
 from contextlib import suppress
+from pathlib import Path
 
 from app.fleet import FleetPublisher
 
@@ -226,8 +229,10 @@ async def test_new_container_deletes_proof_and_triggers_a_pass(tmp_path):
     await _cancel(task)
     assert stub.member_calls >= 2
     # The second fleet_members call (triggered by the new container id) ran
-    # after the stale proof was deleted, before the fresh pass rewrote it.
-    assert seen == [False, False]
+    # after the stale proof was deleted. "b" is never enumerated, so every
+    # later pass also refuses to write.
+    assert seen[:2] == [False, False] and not any(seen)
+    assert not path.exists()
 
 
 async def test_watcher_removes_file_before_reprobing(tmp_path):
@@ -318,3 +323,127 @@ async def test_write_failure_removes_a_stale_proof(tmp_path, monkeypatch):
     await _poll(lambda: not path.exists())
     await _cancel(task)
     assert not path.exists()
+
+
+class Gated(StubInspector):
+    """fleet_members blocks until the test releases it, like a slow probe pass."""
+
+    def __init__(self, members, ids_sequence):
+        super().__init__(members, ids_sequence)
+        self.release = threading.Event()
+
+    def fleet_members(self):
+        self.member_calls += 1
+        self.release.wait(5)
+        return self.members
+
+
+async def test_new_id_after_enumeration_blocks_the_write_and_removes_the_old_proof(tmp_path):
+    path = tmp_path / "p.json"
+    path.write_text('{"old": true}')
+    pub = FleetPublisher(path, ttl=300, interval=30, watch_interval=0.01, clock=lambda: NOW)
+    # "b" started after the enumeration listed containers: not a member, but running.
+    covered = await pub.publish_once(StubInspector([_member("a")], [{"a", "b"}]), {"a"})
+    assert covered is None
+    assert not path.exists()
+
+
+async def test_watcher_keeps_running_while_a_pass_probes(tmp_path):
+    path = tmp_path / "p.json"
+    path.write_text('{"old": true}')
+    stub = Gated([_member("a")], [{"a", "b"}])
+    pub = FleetPublisher(path, ttl=300, interval=30, watch_interval=0.01, clock=lambda: NOW)
+    task = asyncio.create_task(pub.publish_once(stub, {"a"}))
+    await _poll(lambda: not path.exists())
+    # The old proof is gone while fleet_members is still probing.
+    assert stub.member_calls == 1 and not stub.release.is_set()
+    assert not path.exists()
+    stub.release.set()
+    assert await task is None
+    assert not path.exists()
+
+
+async def test_container_started_during_a_pass_is_retried_without_a_full_interval(tmp_path):
+    path = tmp_path / "p.json"
+
+    class Late(StubInspector):
+        def fleet_members(self):
+            self.member_calls += 1
+            if self.member_calls == 1:
+                return [_member("a")]
+            return [_member("a"), _member("b")]
+
+    stub = Late([], [{"a", "b"}])
+    pub = FleetPublisher(path, ttl=300, interval=30, watch_interval=0.01, clock=lambda: NOW)
+    task = asyncio.create_task(pub.run(stub))
+    await _poll(lambda: path.exists())
+    await _cancel(task)
+    assert stub.member_calls == 2
+    assert [c["id"] for c in json.loads(path.read_text())["roots"][0]["consumers"]] == ["a", "b"]
+
+
+def test_mount_target_mismatch_marks_the_root_incomplete():
+    claude = SHARED_ROOTS[0]
+    relocated = {**MOUNTS}
+    del relocated[claude]
+    relocated["/home/vscode/.claude"] = MOUNTS[claude]
+    p = build_proof([_member("a"), _member("b", mounts=relocated)], now=NOW)
+    assert _root(p, claude)["inventory_complete"] is False
+    assert [c["id"] for c in _root(p, claude)["consumers"]] == ["a"]
+    assert _root(p, SHARED_ROOTS[1])["inventory_complete"] is True
+
+
+def test_parent_directory_of_a_root_source_marks_it_incomplete():
+    parent = {**MOUNTS, "/mnt/devpod": "/home/vossi/devpod/"}
+    p = build_proof([_member("a"), _member("b", mounts=parent)], now=NOW)
+    assert all(r["inventory_complete"] is False for r in p["roots"])
+
+
+def test_unrelated_sibling_source_does_not_mark_incomplete():
+    near = {**MOUNTS, "/home/codespace/.aicodingsetup": "/home/vossi/devpod/claude-other"}
+    p = build_proof([_member("a", mounts=near)], now=NOW)
+    assert all(r["inventory_complete"] is True for r in p["roots"])
+
+
+def test_lifespan_removes_the_proof_on_shutdown(monkeypatch, settings, tmp_path):
+    from fastapi.testclient import TestClient
+
+    import app.main as main
+
+    path = tmp_path / "fleet" / "consumer-versions.json"
+    path.parent.mkdir()
+    cfg = settings.model_copy(update={"fleet_proof_path": str(path), "fleet_watch_interval": 0.01})
+    stub = StubInspector([_member("a")], [{"a"}])
+    monkeypatch.setattr(main, "get_settings", lambda: cfg)
+    monkeypatch.setattr(main, "DockerInspector", lambda _: stub)
+    with TestClient(main.create_app()):
+        for _ in range(200):
+            if path.exists():
+                break
+            time.sleep(0.01)
+        assert path.exists()
+    assert not path.exists()
+
+
+CONTRACT = Path(__file__).parent / "fixtures" / "fleet-proof-contract.json"
+CONTRACT_IDS = ("7e3c1a9b5d2f4e6a8c0b1d3f5a7c9e2b4d6f8a0c1e3b5d7f9a2c4e6b8d0f1a3c",
+                "0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c")
+
+
+def contract_proof() -> dict:
+    return build_proof([_member(cid) for cid in CONTRACT_IDS], now=NOW)
+
+
+def test_cross_repo_contract_fixture_matches_build_proof():
+    """aiCodingBaseSetup keeps a copy of this file (tests/bats/fixtures/
+    fleet-proof-contract.json) and checks its gate opens on it. Regenerate
+    with: python -c 'from tests.test_fleet import write_contract; write_contract()'
+    and copy it over there too.
+    """
+    proof = contract_proof()
+    assert all(r["inventory_complete"] for r in proof["roots"])
+    assert json.loads(CONTRACT.read_text()) == proof
+
+
+def write_contract() -> None:
+    CONTRACT.write_text(json.dumps(contract_proof(), indent=2) + "\n")

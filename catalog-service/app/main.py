@@ -103,6 +103,8 @@ async def lifespan(app: FastAPI):
             fleet_task.cancel()
             with suppress(asyncio.CancelledError):
                 await fleet_task
+            # Nobody refreshes or watches the proof once this process stops.
+            app.state.fleet_publisher.shutdown()
         wlock.close()
 
 
