@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, model_validator
 
 from .models import WindowInfo
 
@@ -90,9 +91,14 @@ class ProbeActivity(BaseModel):
     vscode_connections: Annotated[int, Field(ge=0, le=100000, strict=True)] | None = None
 
 
-CAPABILITY_NAMES = ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright")
-CapabilityName = Literal["claude", "codex", "cursor", "mcp-context7", "mcp-playwright"]
-Version = Annotated[str, StringConstraints(max_length=64, pattern=r"^[0-9]+\.[0-9]+\.[0-9]+")]
+CAPABILITY_NAMES = ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright", "mcp-kanban")
+CapabilityName = Literal["claude", "codex", "cursor", "mcp-context7", "mcp-playwright", "mcp-kanban"]
+SEMVER_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+")
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+# mcp-kanban reports a 40-hex git SHA instead of a semver; every other
+# capability reports x.y.z. Accept either shape at the field level, then
+# pin each key to its own shape below.
+Version = Annotated[str, StringConstraints(max_length=64, pattern=r"^([0-9]+\.[0-9]+\.[0-9]+|[0-9a-f]{40})$")]
 
 
 class ProbeCapability(BaseModel):
@@ -112,6 +118,20 @@ class ProbeReport(BaseModel):
     git: ProbeGit | None = None
     cgroup: ProbeCgroup | None = None
     capabilities: dict[CapabilityName, ProbeCapability | None] | None = None
+
+    @model_validator(mode="after")
+    def _check_capability_version_shapes(self) -> "ProbeReport":
+        if self.capabilities is None:
+            return self
+        for name, cap in self.capabilities.items():
+            if cap is None:
+                continue
+            if name == "mcp-kanban":
+                if not SHA_RE.match(cap.version):
+                    raise ValueError("mcp-kanban capability version must be a 40-hex git SHA")
+            elif not SEMVER_RE.match(cap.version):
+                raise ValueError(f"{name} capability version must be x.y.z")
+        return self
 
     def work_activity(self) -> int:
         if self.tmux is None:

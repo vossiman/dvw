@@ -161,12 +161,13 @@ from app.probe import CAPABILITY_NAMES, ProbeReport
 
 CAPS = {name: {"version": "1.2.3", "config_compatible": True} for name in
         ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright")}
+CAPS["mcp-kanban"] = {"version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3", "config_compatible": True}
 
 
 def test_capabilities_parse():
     r = ProbeReport.model_validate({**GOOD, "capabilities": CAPS})
     assert r.capabilities["mcp-context7"].version == "1.2.3"
-    assert CAPABILITY_NAMES == ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright")
+    assert CAPABILITY_NAMES == ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright", "mcp-kanban")
 
 
 def test_capabilities_absent_or_null_is_none():
@@ -187,5 +188,21 @@ def test_capability_compatible_must_be_a_real_bool():
     import pytest
     from pydantic import ValidationError
     bad = {**CAPS, "claude": {"version": "1.2.3", "config_compatible": "yes"}}
+    with pytest.raises(ValidationError):
+        ProbeReport.model_validate({**GOOD, "capabilities": bad})
+
+
+def test_mcp_kanban_semver_rejects_report():
+    import pytest
+    from pydantic import ValidationError
+    bad = {**CAPS, "mcp-kanban": {"version": "1.2.3", "config_compatible": True}}
+    with pytest.raises(ValidationError):
+        ProbeReport.model_validate({**GOOD, "capabilities": bad})
+
+
+def test_non_kanban_sha_rejects_report():
+    import pytest
+    from pydantic import ValidationError
+    bad = {**CAPS, "claude": {"version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3", "config_compatible": True}}
     with pytest.raises(ValidationError):
         ProbeReport.model_validate({**GOOD, "capabilities": bad})
