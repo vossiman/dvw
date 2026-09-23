@@ -113,7 +113,7 @@ class FakeContainers:
     def __init__(self, containers):
         self._containers = containers
 
-    def list(self, all=False, filters=None):
+    def list(self, all=False, filters=None, **kwargs):
         return self._containers
 
     def get(self, cid):

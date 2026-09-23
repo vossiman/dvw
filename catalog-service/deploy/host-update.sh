@@ -142,6 +142,12 @@ if ! git -C "$CHECKOUT" diff --quiet "HEAD@{1}" HEAD -- catalog-service/proxy 2>
   fi
 fi
 
+# Fleet proof dir for the aicoding updater (catalog app/fleet.py). Created as
+# the service user; absent aicodingsetup means no devpod containers here.
+if [ -d "$HOME/devpod/aicodingsetup" ]; then
+  install -d -m 0755 "$HOME/devpod/aicodingsetup/fleet"
+fi
+
 echo "==> restart"
 sudo systemctl restart dvw-catalog.service
 
@@ -177,4 +183,15 @@ if [ "$ok" != 1 ]; then
   echo "  journalctl -xeu dvw-catalog.service | tail -50" >&2
   exit 1
 fi
+
+if [ -d "$HOME/devpod/aicodingsetup/fleet" ]; then
+  for _ in $(seq 1 30); do
+    [ -s "$HOME/devpod/aicodingsetup/fleet/consumer-versions.json" ] && break
+    sleep 1
+  done
+  [ -s "$HOME/devpod/aicodingsetup/fleet/consumer-versions.json" ] \
+    && echo "==> fleet proof published" \
+    || echo "WARN: no fleet proof after 30s; check: journalctl -u dvw-catalog | grep fleet" >&2
+fi
+
 echo "update ok"

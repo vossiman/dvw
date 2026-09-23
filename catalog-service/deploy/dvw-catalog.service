@@ -54,6 +54,9 @@ ReadWritePaths=/var/lib/dvw-catalog
 # Read-only file system". The installers rewrite this line for the running
 # user the same way they rewrite User=.
 ReadWritePaths=-/home/vossi/.devpod/agent
+# The aicoding updater's shared-config proof (app/fleet.py). Only this
+# subdirectory: its parent holds .secrets.env, which the service never needs.
+ReadWritePaths=-/home/vossi/devpod/aicodingsetup/fleet
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectControlGroups=true

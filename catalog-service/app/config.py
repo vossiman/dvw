@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     # Docker API call timeout, seconds.
     docker_timeout: int = 10
 
+    # Shared-config consumer proof for the aicoding updater. The host folder
+    # is mounted into every devpod container as ~/.aicodingsetup. Empty
+    # disables publishing.
+    fleet_proof_path: str = "~/devpod/aicodingsetup/fleet/consumer-versions.json"
+    fleet_proof_ttl: int = 300
+    fleet_interval: float = 30.0
+    fleet_watch_interval: float = 2.0
+
     # The aicoding blueprint devcontainer.json (owns the current image pin).
     # Empty means resolve a CI-qualified exact SHA with `aicoding-select
     # aicoding`. Operators may supply an explicitly immutable URL. There is no
@@ -84,6 +92,10 @@ class Settings(BaseSettings):
     # executable to disable, in which case pulls stay anonymous.
     git_credential_helper: Path = (
         Path(__file__).resolve().parent.parent / "deploy" / "gh-token-helper")
+
+    @property
+    def fleet_proof_file(self) -> Path | None:
+        return Path(self.fleet_proof_path).expanduser() if self.fleet_proof_path else None
 
     @property
     def activity_history_path(self) -> Path | None:

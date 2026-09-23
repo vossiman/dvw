@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator
 
 from .models import WindowInfo
 
@@ -90,6 +91,51 @@ class ProbeActivity(BaseModel):
     vscode_connections: Annotated[int, Field(ge=0, le=100000, strict=True)] | None = None
 
 
+CAPABILITY_NAMES = ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright", "mcp-kanban")
+SEMVER_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+")
+SHA_RE = re.compile(r"[0-9a-f]{40}")
+MAX_VERSION = 64
+# mcp-kanban reports a 40-hex git SHA instead of a semver; every other
+# capability reports x.y.z, which real tools suffix (Cursor's is
+# "2026.09.18-9a7762b"). SEMVER_RE is deliberately a prefix match, matching
+# aicoding's own gate.
+
+
+class ProbeCapability(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    version: Annotated[str, StringConstraints(max_length=MAX_VERSION)]
+    config_compatible: Annotated[bool, Field(strict=True)]
+
+
+def _parse_capability(name: str, raw: object) -> ProbeCapability | None:
+    """One capability entry, or None when it is absent or malformed."""
+    if not isinstance(raw, dict):
+        return None
+    version = raw.get("version")
+    compatible = raw.get("config_compatible")
+    if not isinstance(version, str) or len(version) > MAX_VERSION or not isinstance(compatible, bool):
+        return None
+    shape_ok = SHA_RE.fullmatch(version) if name == "mcp-kanban" else SEMVER_RE.match(version)
+    if not shape_ok:
+        return None
+    return ProbeCapability(version=version, config_compatible=compatible)
+
+
+def _parse_capabilities(value: object) -> dict[str, ProbeCapability | None] | None:
+    """Lenient on purpose: aicoding updates itself, dvw deploys by hand.
+
+    A probe that reports a component this catalog does not know yet, or one
+    entry in a shape it does not accept, must not reject the whole report:
+    that would blank activity and status for every container at once. Each
+    known entry is validated on its own and becomes None when invalid, which
+    keeps it out of the fleet proof (never counted as compatible). Unknown
+    keys are dropped. This never raises.
+    """
+    if not isinstance(value, dict):
+        return None
+    return {name: _parse_capability(name, value[name]) for name in CAPABILITY_NAMES if name in value}
+
+
 class ProbeReport(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
     schema_: int = Field(alias="schema")
@@ -100,6 +146,12 @@ class ProbeReport(BaseModel):
     activity: ProbeActivity | None = None
     git: ProbeGit | None = None
     cgroup: ProbeCgroup | None = None
+    capabilities: dict[str, ProbeCapability | None] | None = None
+
+    @field_validator("capabilities", mode="before")
+    @classmethod
+    def _lenient_capabilities(cls, value: object) -> dict[str, ProbeCapability | None] | None:
+        return _parse_capabilities(value)
 
     def work_activity(self) -> int:
         if self.tmux is None:

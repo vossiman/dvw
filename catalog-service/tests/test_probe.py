@@ -154,3 +154,101 @@ def test_explicit_minus_one_activity_keeps_the_report():
     r = ProbeReport.model_validate(data)
     assert r.work_activity() == -1
     assert r.work_windows()[0].activity == -1
+
+
+from app.probe import CAPABILITY_NAMES, ProbeReport
+
+
+CAPS = {name: {"version": "1.2.3", "config_compatible": True} for name in
+        ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright")}
+CAPS["mcp-kanban"] = {"version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3", "config_compatible": True}
+
+
+def test_capabilities_parse():
+    r = ProbeReport.model_validate({**GOOD, "capabilities": CAPS})
+    assert r.capabilities["mcp-context7"].version == "1.2.3"
+    assert CAPABILITY_NAMES == ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright", "mcp-kanban")
+
+
+def test_capabilities_absent_or_null_is_none():
+    assert ProbeReport.model_validate(GOOD).capabilities is None
+    r = ProbeReport.model_validate({**GOOD, "capabilities": {**CAPS, "codex": None}})
+    assert r.capabilities["codex"] is None
+
+
+def _caps_with(**entries):
+    return ProbeReport.model_validate({**GOOD, "capabilities": {**CAPS, **entries}})
+
+
+def test_capability_with_bad_version_is_none_and_report_survives():
+    r = _caps_with(claude={"version": "latest", "config_compatible": True})
+    assert r.capabilities["claude"] is None
+    assert r.capabilities["codex"].version == "1.2.3"
+    assert r.work_activity() == 1756799990
+
+
+def test_capability_compatible_must_be_a_real_bool():
+    r = _caps_with(claude={"version": "1.2.3", "config_compatible": "yes"})
+    assert r.capabilities["claude"] is None
+    assert r.capabilities["codex"].config_compatible is True
+
+
+def test_mcp_kanban_semver_is_none():
+    r = _caps_with(**{"mcp-kanban": {"version": "1.2.3", "config_compatible": True}})
+    assert r.capabilities["mcp-kanban"] is None
+    assert r.capabilities["claude"].version == "1.2.3"
+
+
+def test_bad_kanban_shape_is_none_and_report_parses():
+    for bad in ("not-a-dict", ["x"], {"version": 7, "config_compatible": True},
+                {"version": "A71A8BDCD12E39FCB74BE3ECC0E45F757118F0E3", "config_compatible": True},
+                {"version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3\n", "config_compatible": True},
+                {"config_compatible": True}):
+        r = _caps_with(**{"mcp-kanban": bad})
+        assert r.capabilities["mcp-kanban"] is None
+        assert r.capabilities["claude"].version == "1.2.3"
+
+
+def test_over_long_version_is_none():
+    r = _caps_with(claude={"version": "1.2.3" + "x" * 64, "config_compatible": True})
+    assert r.capabilities["claude"] is None
+
+
+def test_seventh_capability_key_is_ignored():
+    r = _caps_with(**{"mcp-future": {"version": "whatever", "config_compatible": "maybe"}})
+    assert "mcp-future" not in r.capabilities
+    assert set(r.capabilities) == set(CAPABILITY_NAMES)
+
+
+def test_capabilities_of_the_wrong_type_are_none_not_a_rejection():
+    for bad in ("x", ["claude"], 3, True):
+        r = ProbeReport.model_validate({**GOOD, "capabilities": bad})
+        assert r.capabilities is None
+        assert r.work_activity() == 1756799990
+
+
+def test_missing_capability_key_reads_as_none():
+    caps = {k: v for k, v in CAPS.items() if k != "mcp-kanban"}
+    r = ProbeReport.model_validate({**GOOD, "capabilities": caps})
+    assert r.capabilities.get("mcp-kanban") is None
+
+
+def test_suffixed_semver_parses():
+    """Real receipts carry suffixes: Cursor's version is date-plus-shortsha."""
+    r = ProbeReport.model_validate(
+        {**GOOD, "capabilities": {**CAPS, "cursor": {"version": "2026.09.18-9a7762b", "config_compatible": True}}}
+    )
+    assert r.capabilities["cursor"].version == "2026.09.18-9a7762b"
+
+
+def test_prerelease_and_build_suffixed_semver_parses():
+    for version in ("1.2.3-rc1", "1.2.3+build"):
+        r = ProbeReport.model_validate(
+            {**GOOD, "capabilities": {**CAPS, "claude": {"version": version, "config_compatible": True}}}
+        )
+        assert r.capabilities["claude"].version == version
+
+
+def test_non_kanban_sha_is_none():
+    r = _caps_with(claude={"version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3", "config_compatible": True})
+    assert r.capabilities["claude"] is None
