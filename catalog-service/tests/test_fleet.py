@@ -399,6 +399,12 @@ def test_parent_directory_of_a_root_source_marks_it_incomplete():
     assert all(r["inventory_complete"] is False for r in p["roots"])
 
 
+def test_canonical_mount_without_a_source_is_incomplete_not_a_crash():
+    p = build_proof([_member("a"), _member("b", mounts={**MOUNTS, SHARED_ROOTS[0]: None})], now=NOW)
+    assert _root(p, SHARED_ROOTS[0])["inventory_complete"] is False
+    assert _root(p, SHARED_ROOTS[1])["inventory_complete"] is True
+
+
 def test_unrelated_sibling_source_does_not_mark_incomplete():
     near = {**MOUNTS, "/home/codespace/.aicodingsetup": "/home/vossi/devpod/claude-other"}
     p = build_proof([_member("a", mounts=near)], now=NOW)

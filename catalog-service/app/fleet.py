@@ -108,8 +108,9 @@ def build_proof(members: list[FleetMember], *, now: float, ttl: int = 300) -> di
         users = [m for m in members if root in m.mounts]
         if not users:
             continue
-        sources = {_norm(m.mounts[root]) for m in users}
+        sources = {_norm(m.mounts[root]) for m in users if m.mounts[root]}
         complete = (starts_known
+                    and all(m.mounts[root] for m in users)
                     and len(sources) == 1
                     and not _relocated(members, root, sources)
                     and all(_verified(m, now) for m in users))
