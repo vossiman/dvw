@@ -464,6 +464,28 @@ EOF2
   [ "$(echo "$output" | grep -c '==> 1/8 checkout')" -eq 2 ]
 }
 
+# The preflight helper is sourced before the pull, so a pull that changed only
+# the helper must also hand over to the fresh copy.
+@test "installer re-execs itself once when the pull changed only blueprint-preflight.sh" {
+  cat > "$HOME/stubs/git" <<'EOF2'
+#!/bin/sh
+echo "git $*" >> "$HOME/calls"
+case "$*" in
+  *"rev-parse HEAD"*)
+    if [ -e "$HOME/pulled" ]; then echo bbbbbbb; else echo aaaaaaa; fi ;;
+  *"pull --ff-only"*) touch "$HOME/pulled" ;;
+  *"diff --quiet"*blueprint-preflight.sh*) exit 1 ;;
+esac
+exit 0
+EOF2
+  chmod +x "$HOME/stubs/git"
+  cp "$SCRIPT" "$SVC_DIR/deploy/host-install.sh"
+  run_install
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'installer changed by the pull; re-running the new copy'
+  [ "$(echo "$output" | grep -c '==> 1/8 checkout')" -eq 2 ]
+}
+
 @test "installer does not re-exec when the pull left host-install.sh untouched" {
   run_install
   [ "$status" -eq 0 ]

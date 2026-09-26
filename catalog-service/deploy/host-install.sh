@@ -116,8 +116,10 @@ else
   # that changed the installer would finish under the old logic (2026-09-02:
   # the old step 6 ran a compose file the pull had just deleted). Hand over
   # to the fresh copy once; the guard stops a loop if the diff never settles.
+  # The preflight helper was sourced before the pull, so it counts too.
   if [ "$before" != "$after" ] && [ -z "${DVW_INSTALL_REEXEC:-}" ] \
-     && ! git -C "$CHECKOUT" diff --quiet "$before" "$after" -- catalog-service/deploy/host-install.sh; then
+     && ! git -C "$CHECKOUT" diff --quiet "$before" "$after" -- \
+          catalog-service/deploy/host-install.sh catalog-service/deploy/blueprint-preflight.sh; then
     echo "    installer changed by the pull; re-running the new copy"
     DVW_INSTALL_REEXEC=1 exec bash "$SVC_DIR/deploy/host-install.sh"
   fi

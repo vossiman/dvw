@@ -223,3 +223,85 @@ def test_concurrent_callers_never_run_overlapping_probes(monkeypatch):
     for t in threads:
         t.join()
     assert overlaps[0] == 1 and calls[0] == 1
+
+
+def test_cleanup_never_evicts_a_flight_a_caller_is_about_to_enter(monkeypatch):
+    # Caller A fetches c1's flight, then stalls before entering it. A probe for
+    # another container runs cache cleanup meanwhile. If that evicted A's
+    # flight, caller B would get a new one and both would probe c1 at once.
+    import threading
+    import time as real_time
+    import types
+    import app.docker_inspect as di
+
+    clock = [1000.0]
+    monkeypatch.setattr(di.time, "monotonic", lambda: clock[0])
+    c1, c2 = _probe_container("c1", "ws-a"), _probe_container("c2", "ws-b")
+    insp = _shared_inspector([c1, c2], monkeypatch)
+    insp._snapshot(c1)
+    insp._snapshot(c2)
+    insp._snap_flights.pop("c1")
+
+    a_waiting, release_a, b_probing = threading.Event(), threading.Event(), threading.Event()
+    real_lock = threading.Lock
+
+    class GatedLock:
+        def __init__(self):
+            self._lock, self._gated = real_lock(), False
+
+        def __enter__(self):
+            if threading.current_thread().name == "A" and not self._gated:
+                self._gated = True
+                a_waiting.set()
+                release_a.wait(5)
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, *exc):
+            self._lock.release()
+
+        def acquire(self, *a, **kw):
+            return self._lock.acquire(*a, **kw)
+
+        def release(self):
+            self._lock.release()
+
+        def locked(self):
+            return self._lock.locked()
+
+    fake = types.SimpleNamespace(**{k: getattr(threading, k) for k in dir(threading) if not k.startswith("__")})
+    fake.Lock = GatedLock
+    monkeypatch.setattr(di, "threading", fake)
+
+    running, overlaps, calls = [0], [0], [0]
+    count = real_lock()
+    real = di.run_probe
+
+    def probe(container):
+        if container.id != "c1":
+            return real(container)
+        with count:
+            running[0] += 1
+            calls[0] += 1
+            overlaps[0] = max(overlaps[0], running[0])
+        b_probing.set()
+        real_time.sleep(0.3)
+        try:
+            return real(container)
+        finally:
+            with count:
+                running[0] -= 1
+
+    monkeypatch.setattr(di, "run_probe", probe)
+    clock[0] = 1010.0
+    a = threading.Thread(target=insp._snapshot, args=(c1,), name="A")
+    a.start()
+    assert a_waiting.wait(5)
+    insp._snapshot(c2)
+    b = threading.Thread(target=insp._snapshot, args=(c1,), name="B")
+    b.start()
+    assert b_probing.wait(5)
+    release_a.set()
+    a.join(5)
+    b.join(5)
+    assert overlaps[0] == 1 and calls[0] == 1

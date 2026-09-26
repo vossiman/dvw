@@ -149,7 +149,9 @@ class DockerInspector:
         # probes see each other in /proc; single-flight keeps them apart.
         self._snap_lock = threading.Lock()
         self._snap_cache: dict[str, tuple[tuple, float, Snapshot]] = {}
-        self._snap_flights: dict[str, threading.Lock] = {}
+        # cid -> [lock, holders]; holders counts callers between fetching the
+        # flight and leaving it, so cleanup never swaps a lock someone holds.
+        self._snap_flights: dict[str, list] = {}
 
     # ---- helpers ----------------------------------------------------------
 
@@ -212,22 +214,29 @@ class DockerInspector:
             hit = self._fresh_snapshot(c.id, key, ttl)
             if hit is not None:
                 return hit
-            flight = self._snap_flights.setdefault(c.id, threading.Lock())
-        with flight:
+            flight = self._snap_flights.get(c.id)
+            if flight is None:
+                flight = self._snap_flights[c.id] = [threading.Lock(), 0]
+            flight[1] += 1
+        try:
+            with flight[0]:
+                with self._snap_lock:
+                    hit = self._fresh_snapshot(c.id, key, ttl)
+                if hit is not None:
+                    return hit
+                snap = self._probe_snapshot(c)
+                now = time.monotonic()
+                with self._snap_lock:
+                    for cid in [k for k, (_, at, _) in self._snap_cache.items() if now - at >= ttl]:
+                        self._snap_cache.pop(cid, None)
+                        held = self._snap_flights.get(cid)
+                        if held is not None and held[1] == 0:
+                            self._snap_flights.pop(cid, None)
+                    self._snap_cache[c.id] = (key, now, snap)
+                return snap
+        finally:
             with self._snap_lock:
-                hit = self._fresh_snapshot(c.id, key, ttl)
-            if hit is not None:
-                return hit
-            snap = self._probe_snapshot(c)
-            now = time.monotonic()
-            with self._snap_lock:
-                for cid in [k for k, (_, at, _) in self._snap_cache.items() if now - at >= ttl]:
-                    self._snap_cache.pop(cid, None)
-                    lock = self._snap_flights.get(cid)
-                    if lock is not None and not lock.locked():
-                        self._snap_flights.pop(cid, None)
-                self._snap_cache[c.id] = (key, now, snap)
-            return snap
+                flight[1] -= 1
 
     def _fresh_snapshot(self, cid: str, key: tuple, ttl: float) -> Snapshot | None:
         entry = self._snap_cache.get(cid)
