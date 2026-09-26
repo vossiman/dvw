@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # collapsed to near-zero work; 0 disables the cache.
     resolve_cache_ttl: float = 8.0
 
+    # dvw-probe snapshot TTL, seconds, shared by API requests, the activity
+    # sampler and the fleet proof so each container is exec'd once per
+    # window. Well under the 30s sampling interval; 0 disables it.
+    probe_snapshot_ttl: float = 5.0
+
     # Docker API call timeout, seconds.
     docker_timeout: int = 10
 

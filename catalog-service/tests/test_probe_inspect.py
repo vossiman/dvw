@@ -138,3 +138,203 @@ def test_inspect_mem_falls_back_to_cgroup(monkeypatch):
     insp = _inspector([c], monkeypatch)
     info = insp.inspect("ws-a")
     assert info.mem_bytes == 1234 and info.mem_limit == 8589934592
+
+
+def _probe_execs(c):
+    return sum(1 for cmd in c.exec_calls if cmd == ["dvw-probe"])
+
+
+def _shared_inspector(containers, monkeypatch, ttl=5.0):
+    import app.docker_inspect as di
+    monkeypatch.setattr(di.docker, "DockerClient", lambda base_url=None, timeout=None: FakeClient(containers))
+    return DockerInspector(Settings(docker_host="unix:/nonexistent", resolve_cache_ttl=0,
+                                    probe_snapshot_ttl=ttl))
+
+
+def test_status_request_and_activity_sampler_share_one_probe_per_window(monkeypatch):
+    c = _probe_container()
+    insp = _shared_inspector([c], monkeypatch)
+    insp.status_many(["ws-a"])
+    insp.activity_many(["ws-a"])
+    insp.windows_many()
+    insp.fleet_members()
+    assert _probe_execs(c) == 1
+
+
+def test_snapshot_ttl_zero_probes_every_call(monkeypatch):
+    c = _probe_container()
+    insp = _shared_inspector([c], monkeypatch, ttl=0)
+    insp.status_many(["ws-a"])
+    insp.activity_many(["ws-a"])
+    assert _probe_execs(c) == 2
+
+
+def test_snapshot_expires_after_its_window(monkeypatch):
+    import app.docker_inspect as di
+    clock = [1000.0]
+    monkeypatch.setattr(di.time, "monotonic", lambda: clock[0])
+    c = _probe_container()
+    insp = _shared_inspector([c], monkeypatch)
+    insp.windows_many()
+    clock[0] += 4.9
+    insp.windows_many()
+    assert _probe_execs(c) == 1
+    clock[0] += 0.2
+    insp.windows_many()
+    assert _probe_execs(c) == 2
+
+
+def test_restarted_container_is_probed_again(monkeypatch):
+    c = _probe_container()
+    insp = _shared_inspector([c], monkeypatch)
+    insp.windows_many()
+    c.attrs["State"]["StartedAt"] = "2026-09-26T00:00:00Z"
+    insp.windows_many()
+    assert _probe_execs(c) == 2
+
+
+def test_concurrent_callers_never_run_overlapping_probes(monkeypatch):
+    # Overlapping probes see each other in /proc (the tmux false-zero).
+    import threading
+    import time as real_time
+    import app.docker_inspect as di
+    running, overlaps, calls = [0], [0], [0]
+    lock = threading.Lock()
+    real = di.run_probe
+
+    def slow_probe(container):
+        with lock:
+            running[0] += 1
+            calls[0] += 1
+            overlaps[0] = max(overlaps[0], running[0])
+        real_time.sleep(0.1)
+        try:
+            return real(container)
+        finally:
+            with lock:
+                running[0] -= 1
+
+    monkeypatch.setattr(di, "run_probe", slow_probe)
+    c = _probe_container()
+    insp = _shared_inspector([c], monkeypatch)
+    threads = [threading.Thread(target=insp._snapshot, args=(c,)) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert overlaps[0] == 1 and calls[0] == 1
+
+
+def test_cleanup_never_evicts_a_flight_a_caller_is_about_to_enter(monkeypatch):
+    # Caller A fetches c1's flight, then stalls before entering it. A probe for
+    # another container runs cache cleanup meanwhile. If that evicted A's
+    # flight, caller B would get a new one and both would probe c1 at once.
+    import threading
+    import time as real_time
+    import types
+    import app.docker_inspect as di
+
+    clock = [1000.0]
+    monkeypatch.setattr(di.time, "monotonic", lambda: clock[0])
+    c1, c2 = _probe_container("c1", "ws-a"), _probe_container("c2", "ws-b")
+    insp = _shared_inspector([c1, c2], monkeypatch)
+    insp._snapshot(c1)
+    insp._snapshot(c2)
+    insp._snap_flights.pop("c1")
+
+    a_waiting, release_a, b_probing = threading.Event(), threading.Event(), threading.Event()
+    real_lock = threading.Lock
+
+    class GatedLock:
+        def __init__(self):
+            self._lock, self._gated = real_lock(), False
+
+        def __enter__(self):
+            if threading.current_thread().name == "A" and not self._gated:
+                self._gated = True
+                a_waiting.set()
+                release_a.wait(5)
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, *exc):
+            self._lock.release()
+
+        def acquire(self, *a, **kw):
+            return self._lock.acquire(*a, **kw)
+
+        def release(self):
+            self._lock.release()
+
+        def locked(self):
+            return self._lock.locked()
+
+    fake = types.SimpleNamespace(**{k: getattr(threading, k) for k in dir(threading) if not k.startswith("__")})
+    fake.Lock = GatedLock
+    monkeypatch.setattr(di, "threading", fake)
+
+    running, overlaps, calls = [0], [0], [0]
+    count = real_lock()
+    real = di.run_probe
+
+    def probe(container):
+        if container.id != "c1":
+            return real(container)
+        with count:
+            running[0] += 1
+            calls[0] += 1
+            overlaps[0] = max(overlaps[0], running[0])
+        b_probing.set()
+        real_time.sleep(0.3)
+        try:
+            return real(container)
+        finally:
+            with count:
+                running[0] -= 1
+
+    monkeypatch.setattr(di, "run_probe", probe)
+    clock[0] = 1010.0
+    a = threading.Thread(target=insp._snapshot, args=(c1,), name="A")
+    a.start()
+    assert a_waiting.wait(5)
+    insp._snapshot(c2)
+    b = threading.Thread(target=insp._snapshot, args=(c1,), name="B")
+    b.start()
+    assert b_probing.wait(5)
+    release_a.set()
+    a.join(5)
+    b.join(5)
+    assert overlaps[0] == 1 and calls[0] == 1
+
+
+def test_cache_disabled_callers_still_never_overlap(monkeypatch):
+    # TTL 0 turns off reuse, not the one-probe-at-a-time guarantee.
+    import threading
+    import time as real_time
+    import app.docker_inspect as di
+    running, overlaps, calls = [0], [0], [0]
+    lock = threading.Lock()
+    real = di.run_probe
+
+    def slow_probe(container):
+        with lock:
+            running[0] += 1
+            calls[0] += 1
+            overlaps[0] = max(overlaps[0], running[0])
+        real_time.sleep(0.05)
+        try:
+            return real(container)
+        finally:
+            with lock:
+                running[0] -= 1
+
+    monkeypatch.setattr(di, "run_probe", slow_probe)
+    c = _probe_container()
+    insp = _shared_inspector([c], monkeypatch, ttl=0)
+    threads = [threading.Thread(target=insp._snapshot, args=(c,)) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert overlaps[0] == 1 and calls[0] == 5
+    assert insp._snap_flights == {}

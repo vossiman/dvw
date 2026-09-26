@@ -187,7 +187,7 @@ def test_state_change_is_logged_once_and_names_the_reason(caplog):
     assert 'terminals=1' in lines[1]
 
 
-def test_discard_reason_is_logged_and_clears_the_countdown(caplog):
+def test_discard_reason_is_logged_and_one_discard_keeps_earned_credit(caplog):
     o = ActivityObserver()
     tick(o, 0)
     tick(o, 30)
@@ -197,7 +197,7 @@ def test_discard_reason_is_logged_and_clears_the_countdown(caplog):
     lines = [r.getMessage() for r in caplog.records]
     assert 'idle -> unknown' in lines[0] and 'partial probe report' in lines[0]
     assert 'unknown -> idle' in lines[1]
-    assert result.idle_seconds == 0
+    assert result.idle_seconds == 30
 
 
 def test_silent_countdown_reset_is_logged_even_though_the_state_is_unchanged(caplog):
@@ -211,3 +211,53 @@ def test_silent_countdown_reset_is_logged_even_though_the_state_is_unchanged(cap
     assert lines == ['activity w: idle countdown reset [agents=0, cursor_connections=0, '
                      'terminals=0, tmux_sessions=0, vscode_connections=0]']
     assert result.state == 'idle' and result.idle_seconds == 0
+
+
+def test_one_unknown_sample_keeps_earned_idle_credit_without_crediting_the_gap():
+    o = ActivityObserver()
+    for t in range(0, 601, 30):
+        tick(o, t)
+    assert tick(o, 630, [sample(signals={}, note='partial probe report')]).state == 'unknown'
+    resumed = tick(o, 660)
+    # 600s earned before the gap; 600..660 was not observed idle, so not credited.
+    assert resumed.state == 'idle' and resumed.idle_seconds == 600
+    assert resumed.idle_since == 10000
+    assert tick(o, 690).idle_seconds == 630
+
+
+def test_two_unknown_samples_in_a_row_still_reset():
+    o = ActivityObserver()
+    for t in range(0, 601, 30):
+        tick(o, t)
+    tick(o, 630, [sample(signals={})])
+    tick(o, 660, [sample(signals={})])
+    assert tick(o, 690).idle_seconds == 0
+
+
+def test_unknown_carry_needs_the_same_container():
+    o = ActivityObserver()
+    for t in range(0, 601, 30):
+        tick(o, t)
+    tick(o, 630, [sample(signals={}, started_at='restarted')])
+    assert tick(o, 660).idle_seconds == 0
+
+
+def test_unknown_carry_is_dropped_by_active_stopped_or_missing_samples():
+    busy = sample(signals=dict(tmux_sessions=1, terminals=0, cursor_connections=0,
+                               vscode_connections=0, agents=0))
+    for interrupt in ([busy], [sample(running=False)], []):
+        o = ActivityObserver()
+        for t in range(0, 601, 30):
+            tick(o, t)
+        tick(o, 630, [sample(signals={})])
+        tick(o, 660, interrupt)
+        assert tick(o, 690).idle_seconds == 0
+
+
+def test_unknown_without_container_identity_never_carries():
+    o = ActivityObserver()
+    for t in range(0, 601, 30):
+        tick(o, t)
+    tick(o, 630, [sample(container_id=None, started_at=None, running=None, signals={},
+                         note='2 running containers')])
+    assert tick(o, 660).idle_seconds == 0

@@ -26,6 +26,7 @@ MAX_OUTPUT = 256 * 1024
 SCHEMA = 1
 
 Str = Annotated[str, StringConstraints(max_length=512)]
+UNMEASURED_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 NonNeg = Annotated[int, Field(ge=0)]
 
 
@@ -89,6 +90,17 @@ class ProbeActivity(BaseModel):
     terminals: Annotated[int, Field(ge=0, le=100000, strict=True)] | None = None
     cursor_connections: Annotated[int, Field(ge=0, le=100000, strict=True)] | None = None
     vscode_connections: Annotated[int, Field(ge=0, le=100000, strict=True)] | None = None
+    # Why tmux_sessions is null. Lenient on purpose: an unknown or malformed
+    # reason drops to None instead of rejecting the whole report, and only a
+    # short slug survives, since it is shown in the activity history note.
+    tmux_unmeasured: str | None = None
+
+    @field_validator("tmux_unmeasured", mode="before")
+    @classmethod
+    def _slug_reason(cls, value: object) -> str | None:
+        if isinstance(value, str) and UNMEASURED_RE.fullmatch(value):
+            return value
+        return None
 
 
 CAPABILITY_NAMES = ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright", "mcp-kanban")

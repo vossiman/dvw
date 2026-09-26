@@ -50,40 +50,9 @@ fi
 # same path for this preflight even when the current login shell is stale.
 export PATH="$HOME/.local/bin:$PATH"
 
-catalog_blueprint_url="${CATALOG_BLUEPRINT_DEVCONTAINER_URL:-}"
-catalog_blueprint_url_from_env=0
-[ -z "$catalog_blueprint_url" ] || catalog_blueprint_url_from_env=1
-if [ -z "$catalog_blueprint_url" ] && [ -r "$SVC_DIR/catalog.env" ]; then
-  catalog_blueprint_url=$(awk -F= '
-    $1 == "CATALOG_BLUEPRINT_DEVCONTAINER_URL" {
-      sub(/^[^=]*=/, ""); print; exit
-    }
-  ' "$SVC_DIR/catalog.env")
-  case "$catalog_blueprint_url" in
-    \"*\") catalog_blueprint_url=${catalog_blueprint_url#\"}; catalog_blueprint_url=${catalog_blueprint_url%\"} ;;
-    \'*\') catalog_blueprint_url=${catalog_blueprint_url#\'}; catalog_blueprint_url=${catalog_blueprint_url%\'} ;;
-  esac
-fi
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/blueprint-preflight.sh"
+catalog_blueprint_preflight "$SVC_DIR" || exit 1
 
-if [ -n "$catalog_blueprint_url" ]; then
-  if [[ ! "$catalog_blueprint_url" =~ ^https://raw\.githubusercontent\.com/vossiman/aiCodingBaseSetup/[0-9a-f]{40}/devcontainer\.json$ ]]; then
-    echo "error: CATALOG_BLUEPRINT_DEVCONTAINER_URL must be an exact supported immutable URL" >&2
-    exit 1
-  fi
-else
-  missing_blueprint_tools=""
-  for tool in aicoding-select jq timeout; do
-    command -v "$tool" >/dev/null 2>&1 || missing_blueprint_tools="$missing_blueprint_tools $tool"
-  done
-  if ! command -v gh >/dev/null 2>&1 && ! command -v curl >/dev/null 2>&1; then
-    missing_blueprint_tools="$missing_blueprint_tools gh-or-curl"
-  fi
-  if [ -n "$missing_blueprint_tools" ]; then
-    echo "error: missing catalog blueprint prerequisite:$missing_blueprint_tools" >&2
-    echo "       install the minimal common updater before deploying, or configure an exact immutable blueprint URL" >&2
-    exit 1
-  fi
-fi
 # Prime sudo up front: fail fast now if you lack sudo rights, and avoid a
 # password prompt stalling the install halfway through.
 echo "==> 0/8 installer needs sudo for /opt, /var/lib, /etc/systemd and sudoers; priming…"
@@ -147,8 +116,10 @@ else
   # that changed the installer would finish under the old logic (2026-09-02:
   # the old step 6 ran a compose file the pull had just deleted). Hand over
   # to the fresh copy once; the guard stops a loop if the diff never settles.
+  # The preflight helper was sourced before the pull, so it counts too.
   if [ "$before" != "$after" ] && [ -z "${DVW_INSTALL_REEXEC:-}" ] \
-     && ! git -C "$CHECKOUT" diff --quiet "$before" "$after" -- catalog-service/deploy/host-install.sh; then
+     && ! git -C "$CHECKOUT" diff --quiet "$before" "$after" -- \
+          catalog-service/deploy/host-install.sh catalog-service/deploy/blueprint-preflight.sh; then
     echo "    installer changed by the pull; re-running the new copy"
     DVW_INSTALL_REEXEC=1 exec bash "$SVC_DIR/deploy/host-install.sh"
   fi

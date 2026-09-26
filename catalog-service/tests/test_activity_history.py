@@ -32,7 +32,8 @@ def test_records_the_reset_and_the_reason_that_caused_it(tmp_path):
     events = h.tail()
     assert [e.event for e in events] == ['change', 'change', 'change']
     assert events[1].state == 'unknown' and events[1].note == 'partial probe report'
-    assert events[2].state == 'idle' and events[2].idle_seconds == 0
+    # One discarded sample keeps the 30s earned before it (DVW-21).
+    assert events[2].state == 'idle' and events[2].idle_seconds == 30
 
 
 def test_records_a_silent_reset_that_no_state_change_would_show(tmp_path):
