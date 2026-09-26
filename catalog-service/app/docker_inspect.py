@@ -207,11 +207,13 @@ class DockerInspector:
 
     def _shared_snapshot(self, c: Container) -> Snapshot:
         ttl = self._settings.probe_snapshot_ttl
-        if ttl <= 0 or c.status != "running":
+        if c.status != "running":
             return self._probe_snapshot(c)
+        # TTL <= 0 disables reuse only; probes of one container still never overlap.
+        cache = ttl > 0
         key = (c.id, c.attrs.get("State", {}).get("StartedAt"))
         with self._snap_lock:
-            hit = self._fresh_snapshot(c.id, key, ttl)
+            hit = self._fresh_snapshot(c.id, key, ttl) if cache else None
             if hit is not None:
                 return hit
             flight = self._snap_flights.get(c.id)
@@ -220,11 +222,14 @@ class DockerInspector:
             flight[1] += 1
         try:
             with flight[0]:
-                with self._snap_lock:
-                    hit = self._fresh_snapshot(c.id, key, ttl)
-                if hit is not None:
-                    return hit
+                if cache:
+                    with self._snap_lock:
+                        hit = self._fresh_snapshot(c.id, key, ttl)
+                    if hit is not None:
+                        return hit
                 snap = self._probe_snapshot(c)
+                if not cache:
+                    return snap
                 now = time.monotonic()
                 with self._snap_lock:
                     for cid in [k for k, (_, at, _) in self._snap_cache.items() if now - at >= ttl]:
@@ -237,6 +242,8 @@ class DockerInspector:
         finally:
             with self._snap_lock:
                 flight[1] -= 1
+                if flight[1] == 0 and c.id not in self._snap_cache:
+                    self._snap_flights.pop(c.id, None)
 
     def _fresh_snapshot(self, cid: str, key: tuple, ttl: float) -> Snapshot | None:
         entry = self._snap_cache.get(cid)

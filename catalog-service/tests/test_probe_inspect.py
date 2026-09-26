@@ -305,3 +305,36 @@ def test_cleanup_never_evicts_a_flight_a_caller_is_about_to_enter(monkeypatch):
     a.join(5)
     b.join(5)
     assert overlaps[0] == 1 and calls[0] == 1
+
+
+def test_cache_disabled_callers_still_never_overlap(monkeypatch):
+    # TTL 0 turns off reuse, not the one-probe-at-a-time guarantee.
+    import threading
+    import time as real_time
+    import app.docker_inspect as di
+    running, overlaps, calls = [0], [0], [0]
+    lock = threading.Lock()
+    real = di.run_probe
+
+    def slow_probe(container):
+        with lock:
+            running[0] += 1
+            calls[0] += 1
+            overlaps[0] = max(overlaps[0], running[0])
+        real_time.sleep(0.05)
+        try:
+            return real(container)
+        finally:
+            with lock:
+                running[0] -= 1
+
+    monkeypatch.setattr(di, "run_probe", slow_probe)
+    c = _probe_container()
+    insp = _shared_inspector([c], monkeypatch, ttl=0)
+    threads = [threading.Thread(target=insp._snapshot, args=(c,)) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert overlaps[0] == 1 and calls[0] == 5
+    assert insp._snap_flights == {}
