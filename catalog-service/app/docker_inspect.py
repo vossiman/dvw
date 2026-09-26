@@ -144,6 +144,12 @@ class DockerInspector:
         self._attached_slots = threading.BoundedSemaphore(
             self._attached_probe_workers
         )
+        # Shared across requests and the activity sampler, so a container is
+        # exec'd once per window instead of once per caller. Overlapping
+        # probes see each other in /proc; single-flight keeps them apart.
+        self._snap_lock = threading.Lock()
+        self._snap_cache: dict[str, tuple[tuple, float, Snapshot]] = {}
+        self._snap_flights: dict[str, threading.Lock] = {}
 
     # ---- helpers ----------------------------------------------------------
 
@@ -179,10 +185,12 @@ class DockerInspector:
     # ---- the one exec per container per request ---------------------------
 
     def _snapshot(self, c: Container, memo: dict[str, Snapshot] | None = None) -> Snapshot:
-        """One `dvw-probe` exec per container per request.
+        """One `dvw-probe` exec per container per window.
 
         `memo` is per request: resolve/status_many/windows_many/inspect pass
-        one dict down so a container is exec'd once per call, whatever asks.
+        one dict down so a request sees one consistent snapshot per container.
+        Below it, a short-TTL cache shared with other requests and the
+        activity sampler collapses their execs into one.
         A container without the probe (exit 126/127) reports "missing" and a
         probe that exists but broke (any other non-zero exit, or unusable
         output) reports "failed"; both get the empty snapshot. There is no
@@ -190,27 +198,59 @@ class DockerInspector:
         """
         if memo is not None and c.id in memo:
             return memo[c.id]
-        if c.status != "running":
-            snap = Snapshot(probe="failed")
-        else:
-            try:
-                report = run_probe(c)
-            except ProbeMissing:
-                snap = Snapshot(probe="missing")
-            else:
-                if report is None:
-                    snap = Snapshot(probe="failed")
-                else:
-                    snap = Snapshot(
-                        activity=report.work_activity(),
-                        attached=report.work_attached(),
-                        windows=report.work_windows(),
-                        report=report,
-                        probe="partial" if report.partial else "ok",
-                    )
+        snap = self._shared_snapshot(c)
         if memo is not None:
             memo[c.id] = snap
         return snap
+
+    def _shared_snapshot(self, c: Container) -> Snapshot:
+        ttl = self._settings.probe_snapshot_ttl
+        if ttl <= 0 or c.status != "running":
+            return self._probe_snapshot(c)
+        key = (c.id, c.attrs.get("State", {}).get("StartedAt"))
+        with self._snap_lock:
+            hit = self._fresh_snapshot(c.id, key, ttl)
+            if hit is not None:
+                return hit
+            flight = self._snap_flights.setdefault(c.id, threading.Lock())
+        with flight:
+            with self._snap_lock:
+                hit = self._fresh_snapshot(c.id, key, ttl)
+            if hit is not None:
+                return hit
+            snap = self._probe_snapshot(c)
+            now = time.monotonic()
+            with self._snap_lock:
+                for cid in [k for k, (_, at, _) in self._snap_cache.items() if now - at >= ttl]:
+                    self._snap_cache.pop(cid, None)
+                    lock = self._snap_flights.get(cid)
+                    if lock is not None and not lock.locked():
+                        self._snap_flights.pop(cid, None)
+                self._snap_cache[c.id] = (key, now, snap)
+            return snap
+
+    def _fresh_snapshot(self, cid: str, key: tuple, ttl: float) -> Snapshot | None:
+        entry = self._snap_cache.get(cid)
+        if entry and entry[0] == key and 0 <= time.monotonic() - entry[1] < ttl:
+            return entry[2]
+        return None
+
+    def _probe_snapshot(self, c: Container) -> Snapshot:
+        if c.status != "running":
+            return Snapshot(probe="failed")
+        try:
+            report = run_probe(c)
+        except ProbeMissing:
+            return Snapshot(probe="missing")
+        if report is None:
+            return Snapshot(probe="failed")
+        return Snapshot(
+            activity=report.work_activity(),
+            attached=report.work_attached(),
+            windows=report.work_windows(),
+            report=report,
+            probe="partial" if report.partial else "ok",
+        )
 
     def _tmux_work_activity(
         self, c: Container, memo: dict[str, Snapshot] | None = None
@@ -570,7 +610,9 @@ class DockerInspector:
             if report.activity is None:
                 sample.note = sample.note or "probe reports no activity block"
             else:
-                sample.signals = report.activity.model_dump()
+                sample.signals = report.activity.model_dump(exclude={"tmux_unmeasured"})
+                if report.activity.tmux_unmeasured:
+                    sample.note = sample.note or f"tmux unmeasured: {report.activity.tmux_unmeasured}"
             # Older probes can still establish positive tmux/agent evidence.
             if report.tmux and report.tmux.sessions:
                 sample.signals["tmux_sessions"] = len(report.tmux.sessions)
@@ -588,10 +630,7 @@ class DockerInspector:
             mounts = {m.get("Destination"): m.get("Source")
                       for m in c.attrs.get("Mounts", [])
                       if m.get("Type") == "bind" and m.get("Destination")}
-            try:
-                report = run_probe(c)
-            except ProbeMissing:
-                report = None
+            report = self._snapshot(c).report
             members.append(FleetMember(
                 container_id=c.id,
                 started_at=parse_docker_time(c.attrs.get("State", {}).get("StartedAt")),

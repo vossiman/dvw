@@ -65,3 +65,25 @@ def test_duplicate_running_containers_name_the_reason(monkeypatch):
     d.id = 'd'
     s, = _inspector([c, d], monkeypatch).activity_many(['w'])
     assert s.note == '2 running containers'
+
+
+def test_tmux_unmeasured_reason_becomes_the_note(monkeypatch):
+    c = container(activity=dict(tmux_sessions=None, terminals=0, cursor_connections=0,
+                                vscode_connections=0, tmux_unmeasured='list-sessions-timeout'))
+    s, = _inspector([c], monkeypatch).activity_many(['w'])
+    assert s.note == 'tmux unmeasured: list-sessions-timeout'
+    assert 'tmux_unmeasured' not in s.signals and s.signals['tmux_sessions'] is None
+
+
+def test_partial_note_outranks_tmux_unmeasured(monkeypatch):
+    c = container(partial=True, activity=dict(tmux_sessions=None, tmux_unmeasured='proc-unreadable'))
+    s, = _inspector([c], monkeypatch).activity_many(['w'])
+    assert s.note == 'partial probe report'
+
+
+@pytest.mark.parametrize('reason', ['Bad Reason', 'x' * 49, 7, '../etc', ''])
+def test_malformed_tmux_unmeasured_is_dropped_not_fatal(monkeypatch, reason):
+    c = container(activity=dict(tmux_sessions=0, terminals=0, cursor_connections=0,
+                                vscode_connections=0, tmux_unmeasured=reason))
+    s, = _inspector([c], monkeypatch).activity_many(['w'])
+    assert s.note is None and s.signals['terminals'] == 0

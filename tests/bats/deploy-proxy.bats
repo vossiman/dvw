@@ -31,6 +31,7 @@ setup() {
      "$DVW_ROOT/catalog-service/deploy/dvw-docker-proxy.service" \
      "$DVW_ROOT/catalog-service/deploy/catalog.env.example" \
      "$DVW_ROOT/catalog-service/deploy/configure-backup-remote.sh" \
+     "$DVW_ROOT/catalog-service/deploy/blueprint-preflight.sh" \
      "$SVC_DIR/deploy/"
 
   # --- stubs ---

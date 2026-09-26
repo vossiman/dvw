@@ -13,6 +13,10 @@ from starlette.concurrency import run_in_threadpool
 from .activity_history import ActivityEvent, ActivityHistory
 
 log = logging.getLogger(__name__)
+# One flaky probe (timeout, partial report) must not restart an hour-long
+# countdown. Idle credit earned before such a gap is kept, the gap itself is
+# never credited, and a second unknown in a row still resets.
+UNKNOWN_TOLERANCE = 1
 SIGNALS = {'tmux_sessions': 'tmux', 'cursor_connections': 'cursor',
            'vscode_connections': 'vscode', 'terminals': 'terminal', 'agents': 'agent'}
 
@@ -49,6 +53,9 @@ class _Record:
     identity: tuple
     policy: tuple
     idle_start: float | None = None
+    # (idle_start, idle_since wall, last idle observation, unknowns so far)
+    # while an idle countdown is carried across unknown samples.
+    carry: tuple | None = None
 
 
 class ActivityObserver:
@@ -79,7 +86,10 @@ class ActivityObserver:
             reasons = [reason for key, reason in SIGNALS.items()
                        if isinstance(s.signals.get(key), int) and s.signals[key] > 0]
             start = None
+            carry = None
             continuous = False
+            same = bool(old and old.identity == identity and old.policy == policy
+                        and 0 <= observed - old.observed <= self.max_gap)
             if s.running is False:
                 view.state = 'stopped'
             elif w.always_on:
@@ -90,15 +100,28 @@ class ActivityObserver:
             elif (s.running is True and s.container_id and s.started_at and s.complete
                   and all(type(s.signals.get(k)) is int and s.signals[k] == 0 for k in SIGNALS)):
                 view.state = 'idle'
-                continuous = bool(old and old.view.state == 'idle' and old.identity == identity
-                                  and old.policy == policy
-                                  and 0 <= observed - old.observed <= self.max_gap)
-                start = old.idle_start if continuous else observed
-                view.idle_since = old.view.idle_since if continuous else observed_wall
+                continuous = same and old.view.state == 'idle'
+                if continuous:
+                    start, view.idle_since = old.idle_start, old.view.idle_since
+                elif same and old.carry:
+                    # Resume the carried countdown, shifted so the time since
+                    # the last idle observation is not credited.
+                    carried_start, view.idle_since, last_idle, _ = old.carry
+                    start = carried_start + (observed - last_idle)
+                    continuous = True
+                else:
+                    start, view.idle_since = observed, observed_wall
                 view.idle_seconds = max(0, int(observed - start))
                 view.remaining_seconds = max(0, view.timeout_seconds - view.idle_seconds)
+            elif s.running is True and s.container_id and same:
+                if old.view.state == 'idle':
+                    carry = (old.idle_start, old.view.idle_since, old.observed, 1)
+                elif old.carry and old.carry[3] < UNKNOWN_TOLERANCE:
+                    carry = (*old.carry[:3], old.carry[3] + 1)
+                if carry and carry[3] > UNKNOWN_TOLERANCE:
+                    carry = None
             self._record_change(old, view, s, observed_wall, continuous=continuous)
-            records[w.id] = _Record(view, observed, identity, policy, start)
+            records[w.id] = _Record(view, observed, identity, policy, start, carry)
         self._records = records
 
     def _record_change(self, old, view, sample, at, *, continuous):
