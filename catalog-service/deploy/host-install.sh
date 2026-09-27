@@ -46,12 +46,14 @@ if [ "$(id -u)" -eq 0 ]; then
   exit 1
 fi
 
-# The deployed unit includes the common updater's user-local tools. Use the
-# same path for this preflight even when the current login shell is stale.
+# The deployed unit's PATH includes the user-local tools directory; check with
+# the same PATH even when the current login shell is stale.
 export PATH="$HOME/.local/bin:$PATH"
 
+# Host tools only: the vendored selector arrives with the checkout (step 1),
+# so the full check runs after it.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/blueprint-preflight.sh"
-catalog_blueprint_preflight "$SVC_DIR" || exit 1
+catalog_blueprint_preflight "$SVC_DIR" tools || exit 1
 
 # Prime sudo up front: fail fast now if you lack sudo rights, and avoid a
 # password prompt stalling the install halfway through.
@@ -124,6 +126,7 @@ else
     DVW_INSTALL_REEXEC=1 exec bash "$SVC_DIR/deploy/host-install.sh"
   fi
 fi
+catalog_blueprint_preflight "$SVC_DIR" || exit 1
 
 echo "==> 2/8 stable symlink $APP_LINK -> $SVC_DIR"
 # $APP_LINK must be a symlink. If a previous run or a manual `mkdir` left a real

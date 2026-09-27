@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+from pathlib import Path
 
 _IMAGE_RE = re.compile(r'"image"\s*:\s*"([^"]+)"')
 log = logging.getLogger(__name__)
@@ -24,6 +25,15 @@ _FETCH_TIMEOUT = 3.0
 # walking main history. Give it enough aggregate time to finish, with a hard
 # outer limit so a wedged child cannot retain the refresh slot indefinitely.
 _SELECT_TIMEOUT = 60.0
+# dvw carries aiCodingBaseSetup's selector byte-for-byte (DVW-27), so the host
+# needs no aicoding install and a stale one on PATH cannot shadow it.
+_SELECTOR = (
+    Path(__file__).resolve().parent.parent / "vendor" / "aicoding" / "bin" / "aicoding-select"
+)
+# A failed selection usually means GitHub refused or throttled us. The service
+# calls the API anonymously (60 requests/hour per IP), so retrying at the 60s
+# image-fetch cap would keep a rate-limited host rate-limited.
+_SELECTOR_FAILURE_BACKOFF = 900.0
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _AICODING_RAW_PREFIX = (
     "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
@@ -41,7 +51,7 @@ def _fetch(url: str, timeout: float) -> str:
 def _select_sha() -> str | None:
     try:
         result = subprocess.run(  # noqa: S603
-            ["timeout", str(_SELECT_TIMEOUT), "aicoding-select", "aicoding"],
+            ["timeout", str(_SELECT_TIMEOUT), str(_SELECTOR), "aicoding"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -71,17 +81,12 @@ def _select_sha() -> str | None:
     raise RuntimeError(f"aicoding-select failed (exit {result.returncode})")
 
 
-def _blueprint_url(configured_url: str) -> str:
-    if configured_url:
-        if not _AICODING_RAW_URL_RE.fullmatch(configured_url):
-            raise ValueError(
-                "configured blueprint URL is not an immutable supported URL"
-            )
-        return configured_url
-    sha = _select_sha()
-    if sha is None:
-        raise RuntimeError("aicoding-select did not return a CI-qualified SHA")
-    return f"{_AICODING_RAW_PREFIX}{sha}/devcontainer.json"
+def _configured_url(configured_url: str) -> str:
+    if not _AICODING_RAW_URL_RE.fullmatch(configured_url):
+        raise ValueError(
+            "configured blueprint URL is not an immutable supported URL"
+        )
+    return configured_url
 
 
 def _parse_image(text: str) -> str | None:
@@ -110,6 +115,11 @@ class BlueprintImageCache:
         self._fetched_at: float | None = None
         self._last_fetch_ok = False
         self._refreshing = False
+        # Selected SHA, cached apart from the image so an image-fetch retry
+        # does not spend GitHub API requests on a fresh selection.
+        self._sha: str | None = None
+        self._sha_at: float | None = None
+        self._sha_failed_at: float | None = None
 
     def _fresh_locked(self, now: float) -> bool:
         if self._fetched_at is None:
@@ -119,6 +129,27 @@ class BlueprintImageCache:
         )
         return now - self._fetched_at < ttl
 
+    def _blueprint_url(self) -> str:
+        """Called only under _refresh_lock."""
+        if self._url:
+            return _configured_url(self._url)
+        now = time.monotonic()
+        if self._sha is not None and self._sha_at is not None \
+                and now - self._sha_at < self._ttl:
+            return f"{_AICODING_RAW_PREFIX}{self._sha}/devcontainer.json"
+        if self._sha_failed_at is not None \
+                and now - self._sha_failed_at < _SELECTOR_FAILURE_BACKOFF:
+            raise RuntimeError("aicoding-select failed recently; backing off")
+        try:
+            sha = _select_sha()
+            if sha is None:
+                raise RuntimeError("aicoding-select did not return a CI-qualified SHA")
+        except Exception:
+            self._sha_failed_at = time.monotonic()
+            raise
+        self._sha, self._sha_at, self._sha_failed_at = sha, time.monotonic(), None
+        return f"{_AICODING_RAW_PREFIX}{sha}/devcontainer.json"
+
     def get(self) -> str | None:
         """Refresh synchronously, preserving the last qualified value."""
         with self._refresh_lock:
@@ -127,7 +158,7 @@ class BlueprintImageCache:
                 if self._fresh_locked(now):
                     return self._value
             try:
-                url = _blueprint_url(self._url)
+                url = self._blueprint_url()
                 image = _parse_image(_fetch(url, timeout=_FETCH_TIMEOUT))
             except Exception as exc:
                 log.warning("Blueprint image refresh failed: %s", exc)

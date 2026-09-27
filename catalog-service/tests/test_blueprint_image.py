@@ -278,7 +278,7 @@ def test_cached_read_returns_stale_immediately_during_one_slow_refresh(monkeypat
         assert release.wait(2.0)
         return configured_url
 
-    monkeypatch.setattr("app.blueprint_image._blueprint_url", slow_url)
+    monkeypatch.setattr("app.blueprint_image._configured_url", slow_url)
     assert cache.get_cached() == PIN
     assert started.wait(1.0)
 
@@ -300,3 +300,73 @@ def test_cached_read_returns_stale_immediately_during_one_slow_refresh(monkeypat
     while cache.refresh_in_progress and time.monotonic() < deadline:
         time.sleep(0.01)
     assert not cache.refresh_in_progress
+
+
+def test_selector_runs_the_vendored_script_by_absolute_path(monkeypatch):
+    from app.blueprint_image import _SELECTOR
+
+    seen = []
+
+    def fake_run(args, **kwargs):
+        seen.append(args)
+        return subprocess.CompletedProcess(args, 0, "a" * 40 + "\n", "")
+
+    monkeypatch.setattr("app.blueprint_image.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "app.blueprint_image._fetch", lambda url, timeout: '{"image": "%s"}' % PIN
+    )
+    assert BlueprintImageCache("", 900.0).get() == PIN
+    assert seen[0][2] == str(_SELECTOR)
+    assert _SELECTOR.is_absolute()
+    assert _SELECTOR.parts[-4:] == ("vendor", "aicoding", "bin", "aicoding-select")
+    assert _SELECTOR.is_file()
+
+
+def test_selected_sha_is_reused_when_only_the_image_fetch_failed(monkeypatch):
+    selects = {"n": 0}
+
+    def select():
+        selects["n"] += 1
+        return "b" * 40
+
+    fetches = iter([OSError("raw down"), '{"image": "%s"}' % PIN])
+
+    def fetch(url, timeout):
+        r = next(fetches)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr("app.blueprint_image._select_sha", select)
+    monkeypatch.setattr("app.blueprint_image._fetch", fetch)
+    monkeypatch.setattr("app.blueprint_image.time.monotonic", lambda: clock["t"])
+    cache = BlueprintImageCache("", 900.0)
+    assert cache.get() is None
+    clock["t"] = 61.0
+    assert cache.get() == PIN
+    assert selects["n"] == 1
+
+
+def test_selector_failure_backs_off_longer_than_an_image_fetch_failure(monkeypatch, caplog):
+    from app.blueprint_image import _SELECTOR_FAILURE_BACKOFF
+
+    selects = {"n": 0}
+
+    def select():
+        selects["n"] += 1
+        raise RuntimeError("aicoding-select could not access or validate CI metadata (exit 2)")
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr("app.blueprint_image._select_sha", select)
+    monkeypatch.setattr("app.blueprint_image.time.monotonic", lambda: clock["t"])
+    cache = BlueprintImageCache("", 900.0)
+    assert cache.get() is None
+    clock["t"] = 61.0
+    assert cache.get() is None
+    assert selects["n"] == 1
+    assert "backing off" in caplog.text
+    clock["t"] = _SELECTOR_FAILURE_BACKOFF + 1.0
+    cache.get()
+    assert selects["n"] == 2
+    assert _SELECTOR_FAILURE_BACKOFF >= 600.0

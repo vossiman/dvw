@@ -33,11 +33,14 @@ setup() {
      "$DVW_ROOT/catalog-service/deploy/configure-backup-remote.sh" \
      "$DVW_ROOT/catalog-service/deploy/blueprint-preflight.sh" \
      "$SVC_DIR/deploy/"
+  mkdir -p "$SVC_DIR/vendor/aicoding/bin"
+  install -m 0755 "$DVW_ROOT/catalog-service/vendor/aicoding/bin/aicoding-select" \
+    "$SVC_DIR/vendor/aicoding/bin/aicoding-select"
 
   # --- stubs ---
   # git/uv: no-op success, so the checkout-refresh and venv-sync steps never
   # touch the network or need a real project.
-  for b in git uv aicoding-select; do
+  for b in git uv; do
     printf '#!/bin/sh\necho "%s $*" >> "$HOME/calls"\nexit 0\n' "$b" > "$HOME/stubs/$b"
   done
   # docker: no containers, so the tecnativa-retirement branch is exercised
@@ -90,15 +93,25 @@ SUDOEOF
   : > "$CALLS"
 }
 
-@test "installer refuses a missing selector before sudo or checkout mutation" {
-  rm -f "$HOME/stubs/aicoding-select"
+# The vendored selector arrives with the checkout, so a fresh host or a
+# pre-vendoring checkout must get past step 1 before the file is checked.
+@test "a checkout without the vendored selector is refused only after the checkout step" {
+  rm -f "$SVC_DIR/vendor/aicoding/bin/aicoding-select"
   : > "$CALLS"
 
   run_install
 
   [ "$status" -ne 0 ]
-  [[ "$output" == *"missing catalog blueprint prerequisite: aicoding-select"* ]]
-  ! grep -qE '^(sudo|git) ' "$CALLS"
+  [[ "$output" == *"missing vendored selector"* ]]
+  [[ "$output" == *"vendor/aicoding/bin/aicoding-select"* ]]
+  grep -qE '^git .*pull --ff-only' "$CALLS"
+  ! grep -qE '^(uv |sudo systemctl)' "$CALLS"
+}
+
+@test "installer needs no aicoding-select on PATH" {
+  ! command -v aicoding-select >/dev/null 2>&1 || skip "aicoding-select present on this runner's PATH"
+  run_install
+  [ "$status" -eq 0 ]
 }
 
 @test "installer reports root invocation before selector prerequisites" {
@@ -110,7 +123,6 @@ case "$1" in
 esac
 EOF
   chmod +x "$HOME/stubs/id"
-  rm -f "$HOME/stubs/aicoding-select"
   : > "$CALLS"
 
   run_install
@@ -122,7 +134,7 @@ EOF
 }
 
 @test "immutable configured blueprint lets installer bypass selector enrollment" {
-  rm -f "$HOME/stubs/aicoding-select"
+  rm -f "$SVC_DIR/vendor/aicoding/bin/aicoding-select"
   printf '%s\n' \
     'CATALOG_BLUEPRINT_DEVCONTAINER_URL=https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/1234567890abcdef1234567890abcdef12345678/devcontainer.json' \
     > "$SVC_DIR/catalog.env"
@@ -133,7 +145,7 @@ EOF
 }
 
 @test "first deploy persists an exported immutable blueprint for the service" {
-  rm -f "$HOME/stubs/aicoding-select" "$SVC_DIR/catalog.env"
+  rm -f "$SVC_DIR/vendor/aicoding/bin/aicoding-select" "$SVC_DIR/catalog.env"
   local url="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/abcdefabcdefabcdefabcdefabcdefabcdefabcd/devcontainer.json"
   export CATALOG_BLUEPRINT_DEVCONTAINER_URL="$url"
 

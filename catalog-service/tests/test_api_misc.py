@@ -34,15 +34,12 @@ def test_status_does_not_wait_for_slow_blueprint_selector(client, monkeypatch):
     release = threading.Event()
     fetched = threading.Event()
 
-    def slow_url(configured_url):
+    def slow_select():
         started.set()
         assert release.wait(2.0)
-        return (
-            "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
-            "1234567890abcdef1234567890abcdef12345678/devcontainer.json"
-        )
+        return "1234567890abcdef1234567890abcdef12345678"
 
-    monkeypatch.setattr("app.blueprint_image._blueprint_url", slow_url)
+    monkeypatch.setattr("app.blueprint_image._select_sha", slow_select)
     def fake_fetch(url, timeout):
         fetched.set()
         return '{"image": null}'
