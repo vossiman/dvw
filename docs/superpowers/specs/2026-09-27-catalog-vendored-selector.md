@@ -45,19 +45,29 @@ runtime reads it, and it never selects a version.
   the existing `timeout`. It no longer looks up `aicoding-select` on `PATH`, so
   a stale aicoding install on some host cannot shadow the vendored copy.
 - `blueprint-preflight.sh` keeps the URL branch unchanged. Without a URL it
-  checks that the vendored script is executable and that `jq`, `timeout`, and
-  `gh` or `curl` exist. The error text names the vendored path and the missing
-  tools, and no longer suggests installing aicoding.
-- `host-install.sh` and `host-update.sh` need no flow change: both already
-  source the preflight, and `host-install.sh` already re-execs when the pull
-  changes the preflight helper.
+  has two parts, because the vendored script arrives with the checkout:
+  - host tools: `jq`, `timeout` and `curl`. `curl` is required, not "`gh` or
+    `curl`": the service gets no GitHub token, `gh api` refuses to run
+    unauthenticated, and the selector's only tokenless path is `curl`.
+  - repository file: the vendored `aicoding-select` is executable.
+  The error text names the missing tools or the vendored path, and no longer
+  suggests installing aicoding.
+- `host-install.sh` checks the host tools before `sudo -v` and the checkout,
+  as today, and checks the repository file only after step 1 (clone or pull,
+  plus the existing re-exec). A fresh host or a pre-vendoring checkout
+  therefore gets the file before it is checked.
+- `host-update.sh` already runs the preflight after its pull and re-exec, so
+  it checks both parts there. Its re-exec condition gains
+  `blueprint-preflight.sh`, like `host-install.sh`, so a pull that changes the
+  helper runs the new copy.
 
 ## Runtime dependencies and API budget on vossisrv
 
-- Tools: `bash`, `jq`, coreutils `timeout`, and `curl` (or `gh`). The
-  selector tries `gh api` first and falls back to unauthenticated `curl`
-  against `api.github.com`. The service gets no token: nothing new reads the
-  secrets store or puts a credential in the environment.
+- Tools: `bash`, `jq`, coreutils `timeout`, and `curl`. The selector tries
+  `gh api` first (it only works if the service user happens to have a stored
+  gh login) and falls back to unauthenticated `curl` against
+  `api.github.com`. The service gets no token: nothing new reads the secrets
+  store or puts a credential in the environment.
 - One selection costs about 3 requests after aiCodingBaseSetup #201 (workflow
   metadata, main history, one bulk runs page), plus a per-commit query only
   when the bulk page cannot prove coverage.
@@ -74,10 +84,14 @@ runtime reads it, and it never selects a version.
 
 ## Drift detection
 
-- `refresh.sh` downloads the three files from
-  `https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/`
-  (public repo, no auth), and rewrites them and `SOURCE`. `refresh.sh --check`
-  only compares and exits non-zero on a difference, naming the files.
+- `refresh.sh` resolves aiCodingBaseSetup `main` to one commit SHA first
+  (`git ls-remote https://github.com/vossiman/aiCodingBaseSetup refs/heads/main`,
+  public, no auth), then downloads all three files from
+  `https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/<sha>/`, so the
+  set is one consistent snapshot and `SOURCE` names that exact commit. It
+  rewrites the files and `SOURCE` only after every download succeeded.
+  `refresh.sh --check` compares against the same resolved snapshot and exits
+  non-zero on a difference, naming the files.
 - A separate workflow, `.github/workflows/vendor-drift.yml`, runs
   `refresh.sh --check` daily, on `workflow_dispatch`, and on pull requests that
   touch `catalog-service/vendor/**`.
@@ -95,10 +109,15 @@ runtime reads it, and it never selects a version.
   60 s cap.
 - bats: preflight passes with the vendored script plus `jq`, `timeout` and
   `curl` stubs and no `aicoding-select` on `PATH`; it fails naming a missing
-  `jq`; the URL override path is unchanged.
+  `jq`, and fails with `gh` present but no `curl`; the tools-only part passes
+  before the vendored file exists; the URL override path is unchanged.
+- bats: `host-install.sh` on a checkout without the vendored file reaches the
+  checkout step instead of refusing, and `host-update.sh` re-execs when only
+  `blueprint-preflight.sh` changed.
 - bats: `refresh.sh --check` passes when the files match a stubbed upstream,
   fails naming the file on a one-byte difference; `refresh.sh` rewrites files
-  and `SOURCE`. Network is stubbed (a `curl` shim), so CI stays offline.
+  and `SOURCE` with the resolved SHA, fetches every file from that SHA, and
+  leaves the copy untouched when one download fails. Network is stubbed (a `curl` shim), so CI stays offline.
 - An integrity test asserts each vendored file's sha256 matches `SOURCE`, so a
   hand edit to the copy fails `ci.yml` without any network.
 
