@@ -114,12 +114,15 @@ data dir + its git-backup repo, `uv sync --frozen`s the venv, installs the units
 adds a narrow passwordless-restart sudoers drop-in, reenables + starts everything,
 and smoke-tests `/v1/health`.
 
-Blueprint image comparison resolves `aiCodingBaseSetup` through
-`aicoding-select aicoding`; install the minimal common updater (including
-`aicoding-select`, `jq`, `timeout`, and either `gh` or `curl`) in the service
-user's `~/.local/bin` before deployment. `host-install.sh` checks these before
-sudo or checkout changes, and the rendered systemd unit includes that
-directory in `PATH`. As an explicit alternative on the first deployment,
+Blueprint image comparison resolves `aiCodingBaseSetup` through the selector
+dvw vendors byte-for-byte in `vendor/aicoding/` (`bin/aicoding-select
+aicoding`), so the host needs no aicoding install. It needs only `jq`,
+`timeout` and `curl` (`apt install jq curl`); the service calls the GitHub API
+anonymously and backs off 15 minutes after a failed selection.
+`host-install.sh` checks those tools before sudo or checkout changes, and the
+vendored file after step 1. `vendor/aicoding/refresh.sh` re-vendors from one
+resolved aiCodingBaseSetup main commit, and the `vendor-drift` workflow flags
+when upstream changed. As an explicit alternative on the first deployment,
 export an exact immutable URL for the installer; it validates the URL and
 persists it into the service's newly created `catalog.env`:
 

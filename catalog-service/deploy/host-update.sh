@@ -45,7 +45,8 @@ after=$(git -C "$CHECKOUT" rev-parse HEAD)
 # changed the updater would finish under the old logic (same trap as
 # host-install.sh). Hand over to the fresh copy once.
 if [ "$before" != "$after" ] && [ -z "${DVW_UPDATE_REEXEC:-}" ] \
-   && ! git -C "$CHECKOUT" diff --quiet "$before" "$after" -- catalog-service/deploy/host-update.sh; then
+   && ! git -C "$CHECKOUT" diff --quiet "$before" "$after" -- \
+        catalog-service/deploy/host-update.sh catalog-service/deploy/blueprint-preflight.sh; then
   echo "    updater changed by the pull; re-running the new copy"
   DVW_UPDATE_REEXEC=1 exec bash "$SVC_DIR/deploy/host-update.sh"
 fi

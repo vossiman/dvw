@@ -17,7 +17,10 @@ setup() {
   printf '#!/bin/sh\necho "configure-backup-remote $*" >> "$HOME/calls"\n' \
     > "$SVC_DIR/deploy/configure-backup-remote.sh"
   chmod +x "$SVC_DIR/deploy/configure-backup-remote.sh"
-  for b in uv sudo systemctl aicoding-select jq timeout curl; do
+  mkdir -p "$SVC_DIR/vendor/aicoding/bin"
+  install -m 0755 "$DVW_ROOT/catalog-service/vendor/aicoding/bin/aicoding-select" \
+    "$SVC_DIR/vendor/aicoding/bin/aicoding-select"
+  for b in uv sudo systemctl jq timeout curl; do
     printf '#!/bin/sh\necho "%s $*" >> "$HOME/calls"\nexit 0\n' "$b" > "$HOME/stubs/$b"
   done
   cat > "$HOME/stubs/git" <<'STUB'
@@ -39,11 +42,11 @@ run_update() {
     bash "$SVC_DIR/deploy/host-update.sh" </dev/null
 }
 
-@test "update refuses a missing selector before sync, backup config or restart" {
-  rm -f "$HOME/stubs/aicoding-select"
+@test "update refuses a missing vendored selector before sync, backup config or restart" {
+  rm -f "$SVC_DIR/vendor/aicoding/bin/aicoding-select"
   run_update
   [ "$status" -ne 0 ]
-  [[ "$output" == *"missing catalog blueprint prerequisite: aicoding-select"* ]]
+  [[ "$output" == *"missing vendored selector"* ]]
   ! grep -qE '^(uv|sudo|systemctl|configure-backup-remote) ' "$HOME/calls"
 }
 
@@ -57,15 +60,15 @@ run_update() {
 }
 
 @test "an exported URL cannot satisfy the update check for the service" {
-  rm -f "$HOME/stubs/aicoding-select"
+  rm -f "$SVC_DIR/vendor/aicoding/bin/aicoding-select"
   export CATALOG_BLUEPRINT_DEVCONTAINER_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/abcdefabcdefabcdefabcdefabcdefabcdefabcd/devcontainer.json"
   run_update
   [ "$status" -ne 0 ]
-  [[ "$output" == *"missing catalog blueprint prerequisite"* ]]
+  [[ "$output" == *"missing vendored selector"* ]]
 }
 
 @test "immutable URL in catalog.env passes without the selector" {
-  rm -f "$HOME/stubs/aicoding-select"
+  rm -f "$SVC_DIR/vendor/aicoding/bin/aicoding-select"
   printf 'CATALOG_BLUEPRINT_DEVCONTAINER_URL=https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/1234567890abcdef1234567890abcdef12345678/devcontainer.json\n' \
     > "$SVC_DIR/catalog.env"
   run_update
@@ -73,8 +76,25 @@ run_update() {
   grep -qE '^uv sync' "$HOME/calls"
 }
 
-@test "selector present passes the update check" {
+@test "the vendored selector passes the update check with no aicoding install" {
   run_update
   [[ "$output" != *"blueprint prerequisite"* ]]
   grep -qE '^uv sync' "$HOME/calls"
+}
+
+@test "update re-execs when the pull changed only blueprint-preflight.sh" {
+  cat > "$HOME/stubs/git" <<'STUB'
+#!/bin/sh
+echo "git $*" >> "$HOME/calls"
+case "$*" in
+  *"rev-parse HEAD"*)
+    if [ -e "$HOME/pulled" ]; then echo bbbbbbb; else echo aaaaaaa; fi ;;
+  *"pull --ff-only"*) touch "$HOME/pulled" ;;
+  *"diff --quiet"*blueprint-preflight.sh*) exit 1 ;;
+esac
+exit 0
+STUB
+  chmod +x "$HOME/stubs/git"
+  run_update
+  [[ "$output" == *"updater changed by the pull; re-running the new copy"* ]]
 }

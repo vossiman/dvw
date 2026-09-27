@@ -1,0 +1,23 @@
+# Flags when aiCodingBaseSetup's selector changed and the copy dvw vendors in
+# catalog-service/vendor/aicoding needs a refresh (DVW-27). Deliberately NOT
+# part of ci.yml: the aicoding updater qualifies dvw releases on ci.yml, so an
+# upstream change must not turn it red and freeze dvw updates everywhere.
+name: vendor-drift
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "catalog-service/vendor/**"
+
+permissions:
+  contents: read
+
+jobs:
+  aicoding-selector:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: catalog-service/vendor/aicoding/refresh.sh --check
