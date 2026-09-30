@@ -4,7 +4,7 @@ import hashlib
 from pathlib import Path
 
 VENDOR = Path(__file__).resolve().parent.parent / "vendor" / "aicoding"
-FILES = ("bin/aicoding-select", "lib/ci-selector.sh", "lib/update-progress.sh")
+FILES = ("bin/aicoding-select", "lib/ci-selector.sh", "lib/update-progress.sh", "lib/ui.sh")
 
 
 def _source():

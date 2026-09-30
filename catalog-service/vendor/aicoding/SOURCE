@@ -1,6 +1,7 @@
 # Written by refresh.sh. Provenance only: nothing at runtime reads this file.
 repo=vossiman/aiCodingBaseSetup
-commit=4a2240d8e745fd0eaaf859234a83887abe0848ee
+commit=ad92c06698f666d1c6b956a8b25427eed49b323a
 6ff4a9d60e4ec4ae91703c3ce80cac6934f4c587c588ee0bddb8da3c039da9e9  bin/aicoding-select
 ebc975667b101d01a7b42e1c517a1eae1df5a4d2c040c9847c70f9afdc558b1a  lib/ci-selector.sh
-723cee6954f5d1fbbf75fbb67f5ab5851e28ed69f0bce4c1279d042f3f7e0727  lib/update-progress.sh
+791d4fb7ae7ce46755271746f632ff8451c417bd2571c07d7e21e844f8d0504f  lib/update-progress.sh
+23184877b1ef18430b12c03bb6e1ce6bbd0528c7e1c4385016a7f934c8b73564  lib/ui.sh

@@ -6,7 +6,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=vossiman/aiCodingBaseSetup
-FILES=(bin/aicoding-select lib/ci-selector.sh lib/update-progress.sh)
+FILES=(bin/aicoding-select lib/ci-selector.sh lib/update-progress.sh lib/ui.sh)
 RAW_BASE=${AICODING_VENDOR_RAW_BASE:-https://raw.githubusercontent.com/$REPO}
 GIT_URL=${AICODING_VENDOR_GIT_URL:-https://github.com/$REPO}
 
