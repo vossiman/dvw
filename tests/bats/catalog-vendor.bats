@@ -13,6 +13,7 @@ setup() {
   printf 'select\n' > "$WORK/upstream/$SHA/bin/aicoding-select"
   printf 'selector\n' > "$WORK/upstream/$SHA/lib/ci-selector.sh"
   printf 'progress\n' > "$WORK/upstream/$SHA/lib/update-progress.sh"
+  printf 'ui\n' > "$WORK/upstream/$SHA/lib/ui.sh"
   cat > "$WORK/stubs/git" <<STUB
 #!/bin/sh
 echo "git \$*" >> "$WORK/calls"
@@ -39,7 +40,7 @@ teardown() { case "${WORK:-}" in /tmp/*) rm -rf "$WORK" ;; esac; }
   run bash "$VENDOR/refresh.sh"
   [ "$status" -eq 0 ]
   [ "$(grep -c '^git ' "$WORK/calls")" -eq 1 ]
-  [ "$(grep -c "^curl https://raw.test/$SHA/" "$WORK/calls")" -eq 3 ]
+  [ "$(grep -c "^curl https://raw.test/$SHA/" "$WORK/calls")" -eq 4 ]
   grep -qx "commit=$SHA" "$VENDOR/SOURCE"
   grep -q "  lib/ci-selector.sh$" "$VENDOR/SOURCE"
   [ -x "$VENDOR/bin/aicoding-select" ]

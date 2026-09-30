@@ -29,6 +29,7 @@ catalog-service/vendor/aicoding/
   bin/aicoding-select        verbatim from aiCodingBaseSetup main
   lib/ci-selector.sh         verbatim
   lib/update-progress.sh     verbatim (sourced by ci-selector.sh)
+  lib/ui.sh                  verbatim (sourced by update-progress.sh)
   SOURCE                     upstream repo, commit, path and sha256 per file
   refresh.sh                 fetch upstream main; --check compares only
 ```
