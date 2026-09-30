@@ -1,7 +1,7 @@
-# Flags when aiCodingBaseSetup's selector changed and the copy dvw vendors in
-# catalog-service/vendor/aicoding needs a refresh (DVW-27). Deliberately NOT
-# part of ci.yml: the aicoding updater qualifies dvw releases on ci.yml, so an
-# upstream change must not turn it red and freeze dvw updates everywhere.
+# When aiCodingBaseSetup's selector changes, refresh the copy dvw vendors in
+# catalog-service/vendor/aicoding and open a PR for it (DVW-27). Deliberately
+# NOT part of ci.yml: the aicoding updater qualifies dvw releases on ci.yml, so
+# an upstream change must not turn it red and freeze dvw updates everywhere.
 name: vendor-drift
 
 on:
@@ -17,7 +17,60 @@ permissions:
 
 jobs:
   aicoding-selector:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: catalog-service/vendor/aicoding/refresh.sh --check
+
+  refresh-pr:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: vendor-drift/aicoding-selector
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refresh on drift
+        id: refresh
+        run: |
+          rc=0
+          catalog-service/vendor/aicoding/refresh.sh --check || rc=$?
+          case "$rc" in
+            0) echo "drift=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            1) ;;
+            *) exit "$rc" ;;
+          esac
+          catalog-service/vendor/aicoding/refresh.sh
+          echo "drift=true" >> "$GITHUB_OUTPUT"
+      - name: Open or update the refresh PR
+        if: steps.refresh.outputs.drift == 'true'
+        run: |
+          source_file=catalog-service/vendor/aicoding/SOURCE
+          commit=$(sed -n 's/^commit=//p' "$source_file")
+          if git fetch --quiet origin "$BRANCH" 2>/dev/null \
+            && git show "FETCH_HEAD:$source_file" 2>/dev/null | cmp -s - "$source_file"; then
+            echo "$BRANCH already carries aiCodingBaseSetup@$commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          git add catalog-service/vendor/aicoding
+          git commit -m "catalog: refresh vendored aicoding selector to ${commit:0:7}"
+          git push --force origin "$BRANCH"
+          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            gh pr create --head "$BRANCH" --base main \
+              --title "catalog: refresh vendored aicoding selector" \
+              --body "aiCodingBaseSetup changed the CI selector that dvw vendors. This PR refreshes the copy to vossiman/aiCodingBaseSetup@$commit.
+
+          Review the upstream diff before merging. If a catalog test says a vendored library cannot load, upstream added a file the selector now sources: add it to FILES in \`refresh.sh\` and the vendored-selector test, then re-run \`refresh.sh\`.
+
+          Opened by the vendor-drift workflow."
+          fi
+          # Pushes and PRs made with GITHUB_TOKEN start no workflows, so request CI on the branch.
+          gh workflow run ci.yml --ref "$BRANCH"

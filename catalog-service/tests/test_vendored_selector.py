@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from pathlib import Path
 
 VENDOR = Path(__file__).resolve().parent.parent / "vendor" / "aicoding"
@@ -36,3 +37,15 @@ def test_vendored_files_match_their_recorded_digests():
 
 def test_vendored_selector_is_executable():
     assert (VENDOR / "bin" / "aicoding-select").stat().st_mode & 0o111
+
+
+def test_vendored_libraries_load_without_missing_dependencies():
+    # A refresh copies only the listed files, so a new upstream `source` shows up here.
+    result = subprocess.run(
+        ["bash", "-euc", '. "$1/lib/ci-selector.sh"; declare -F aicoding_select_ci_sha >/dev/null', "_", str(VENDOR)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
