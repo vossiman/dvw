@@ -156,12 +156,12 @@ def test_containers_status_defaults_to_all(client, inspector):
                          "container_id": "c1", "devpod_uid": None,
                          "running_siblings": 0, "attached": 2,
                          "image_digest": None, "blueprint_image": None,
-                         "image_current": None},
+                         "image_current": None, "pin_current": None},
                         {"id": "b", "liveness": "alive",
                          "container_id": "c2", "devpod_uid": None,
                          "running_siblings": 0, "attached": 0,
                          "image_digest": None, "blueprint_image": None,
-                         "image_current": None}]
+                         "image_current": None, "pin_current": None}]
 
 
 def test_containers_orphans(client, inspector):

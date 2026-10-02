@@ -3,9 +3,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 from starlette.concurrency import run_in_threadpool
 
+from .. import source as source_mod
 from ..activity import WorkspaceActivity
 from ..activity_history import ActivityEvent
-from ..deps import ActivityDep, BlueprintImageDep, InspectorDep, StoreDep, run_inspect
+from ..config import Settings
+from ..deps import (
+    ActivityDep, BlueprintImageDep, InspectorDep, SettingsDep, StoreDep, run_inspect,
+)
+from ..docker_inspect import _sha256_of, image_current
 from ..models import Orphan, WaitingWindow, WorkspaceStatus, WorkspaceWindows
 
 router = APIRouter(prefix="/containers", tags=["containers"])
@@ -16,6 +21,7 @@ async def status(
     store: StoreDep,
     inspector: InspectorDep,
     blueprint: BlueprintImageDep,
+    settings: SettingsDep,
     ids: list[str] | None = Query(default=None),
 ) -> list[WorkspaceStatus]:
     """Bulk liveness for workspaces (alive/stale/stopped/absent).
@@ -26,7 +32,22 @@ async def status(
     if ids is None:
         ids = [w.id for w in store.list_workspaces()]
     bp = blueprint.get_cached()
-    return await run_inspect(inspector.status_many, ids, bp)
+    rows = await run_inspect(inspector.status_many, ids, bp)
+    await run_in_threadpool(_stamp_pin_current, rows, bp, settings)
+    return rows
+
+
+def _stamp_pin_current(rows: list[WorkspaceStatus], bp: str | None,
+                       settings: Settings) -> None:
+    if bp is None:
+        return
+    for row in rows:
+        try:
+            path = settings.source_path(row.id)
+        except ValueError:
+            continue
+        pin = source_mod.head_pin(path)
+        row.pin_current = image_current(_sha256_of(pin), bp)
 
 
 @router.get("/orphans", response_model=list[Orphan])

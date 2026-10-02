@@ -47,6 +47,10 @@ def test_activity_rendering_uses_server_durations():
     assert render.activity_cell({**record(), 'state': 'active', 'reasons': ['cursor', 'tmux']}).plain == 'Cursor connected, tmux'
     assert render.activity_cell(None).plain == 'activity unknown'
     assert render.activity_cell({**record(), 'state': 'always-on'}).plain == 'always-on'
+    active = {**record(), 'state': 'active', 'reasons': ['cursor', 'tmux']}
+    assert render.activity_row_cell(active).plain == render.ACTIVE_MARK
+    assert render.activity_row_cell(record()).plain == 'idle 10m · would stop in 50m'
+    assert render.activity_row_cell(None).plain == 'activity unknown'
     details = dict(render.activity_lines(record()))
     assert details['mode'] == 'observation-only; no automatic stops'
     assert details['timeout'] == '60m'
@@ -68,6 +72,9 @@ async def test_tree_and_cached_inspect_use_latest_activity(fake_client):
         # Keep the cached inspect response but refresh the workspace activity.
         fake_client._workspaces[0].activity = {**record(), 'state': 'active', 'reasons': ['cursor']}
         app.screen._render_inspect('alpha', app.screen._inspect_cache['alpha'])
+        app.screen._render_tree()
+        row = app.screen.query_one(WorkspaceTree).root.children[0].label.plain
+        assert 'Cursor' not in row and render.ACTIVE_MARK in row
         assert 'Cursor connected' in str(app.query_one('#inspect-body').content)
         assert 'would stop in' not in str(app.query_one('#inspect-body').content)
 
