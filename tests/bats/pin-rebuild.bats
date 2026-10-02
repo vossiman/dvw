@@ -40,36 +40,55 @@ setup() {
   DVW_PIN_REBUILD_POLL_SECS=0
 }
 
-@test "pin-rebuild diagnoses a missing CI selector before catalog mutation" {
-  local surrounding_home="$BATS_TEST_TMPDIR/enrolled-home"
-  mkdir -p "$surrounding_home/.local/bin"
-  cat > "$surrounding_home/.local/bin/aicoding-select" <<'EOF'
-#!/bin/sh
-touch "$INHERITED_SELECTOR_CALLED"
-printf '%040d\n' 1
-EOF
-  chmod +x "$surrounding_home/.local/bin/aicoding-select"
-  export HOME="$surrounding_home"
-  export INHERITED_SELECTOR_CALLED="$BATS_TEST_TMPDIR/inherited-selector-called"
-
-  unset DVW_BLUEPRINT_DEVCONTAINER_URL
-  source "$DVW_ROOT/lib/pin.sh"
+@test "pin-rebuild runs without aicoding-select" {
   command() {
     [[ "$1" == -v && "$2" == aicoding-select ]] && return 1
     builtin command "$@"
   }
-  [ "$(_dvw_blueprint_selector_path)" = "$surrounding_home/.local/bin/aicoding-select" ]
-  export HOME="$BATS_TEST_TMPDIR/test-home"
-  mkdir -p "$HOME"
-  catalog_workspace_get() { echo "CATALOG SHOULD NOT RUN" >&2; return 1; }
-
+  _dvw_catalog_source_pull() { echo "PULL SHOULD NOT RUN" >&2; return 1; }
+  _dvw_pin_open_pr() { echo "OPEN_PR SHOULD NOT RUN" >&2; return 1; }
+  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
   run cmd_pin_rebuild demo
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"RECREATED demo"* ]]
+}
 
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"aicoding-select is unavailable"* ]]
-  [[ "$output" == *"minimal common updater"* ]]
-  [[ "$output" != *"CATALOG SHOULD NOT RUN"* ]]
-  [ ! -e "$INHERITED_SELECTOR_CALLED" ]
+@test "pin target is the newest date-tagged GHCR image digest" {
+  source "$DVW_ROOT/lib/pin.sh"
+  unset DVW_LATEST_IMAGE
+  curl() {
+    case "$*" in
+      *ghcr.io/token*)     echo '{"token":"t"}' ;;
+      *tags/list*)         echo '{"tags":["latest","2026-09-25","2026-10-01","2026-09-30","sha-abc"]}' ;;
+      *manifests/2026-10-01*) printf 'HTTP/2 200\r\nDocker-Content-Digest: sha256:%s\r\n' "$(printf 'c%.0s' {1..64})" ;;
+      *) return 1 ;;
+    esac
+  }
+  run _dvw_blueprint_pin
+  [ "$status" -eq 0 ]
+  [ "$output" = "ghcr.io/vossiman/devbox-base@sha256:$(printf 'c%.0s' {1..64})" ]
+}
+
+@test "pin target fails closed on a malformed digest" {
+  source "$DVW_ROOT/lib/pin.sh"
+  unset DVW_LATEST_IMAGE
+  curl() {
+    case "$*" in
+      *ghcr.io/token*) echo '{"token":"t"}' ;;
+      *tags/list*)     echo '{"tags":["2026-10-01"]}' ;;
+      *manifests*)     printf 'HTTP/2 200\r\nDocker-Content-Digest: nope\r\n' ;;
+    esac
+  }
+  run _dvw_blueprint_pin
+  [ "$status" -ne 0 ]
+}
+
+@test "DVW_LATEST_IMAGE overrides the GHCR lookup" {
+  source "$DVW_ROOT/lib/pin.sh"
+  curl() { echo "CURL SHOULD NOT RUN" >&2; return 1; }
+  DVW_LATEST_IMAGE="ghcr.io/vossiman/devbox-base@sha256:$(printf 'd%.0s' {1..64})" run _dvw_blueprint_pin
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"sha256:dddd"* ]]
 }
 
 @test "current pin: skips PR and pull, rebuilds anyway" {

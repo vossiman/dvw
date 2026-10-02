@@ -78,8 +78,6 @@ cmd_pin_rebuild() {
     shift
   done
 
-  _dvw_blueprint_source_preflight || return 1
-
   local ids_raw
   ids_raw=$(_dvw_pin_resolve_ids ${ids[@]+"${ids[@]}"}) || {
     ui_error "couldn't list catalog workspaces — pin-rebuild cannot know what to rebuild"
@@ -119,7 +117,7 @@ _dvw_pin_rebuild_one() {
   slug=$(_dvw_repo_slug "$repo") || {
     ui_error "$id: $repo is not a GitHub repo; pin-rebuild cannot PR it"; return 1; }
   bp=$(_dvw_blueprint_pin) || {
-    ui_error "couldn't read the selected blueprint pin"
+    ui_error "couldn't read the newest devbox-base image from GHCR"
     return 1; }
 
   # 1. Build branch = the source clone's live HEAD; that is literally what

@@ -21,19 +21,31 @@
 
 DVW_PIN_BRANCH_PREFIX="${DVW_PIN_BRANCH_PREFIX:-chore/pin-devbox-base}"
 
-# Blueprint pin (the source of truth). Reuses wizard.sh's fetch so both paths
-# read the same URL and honor the same test override. Prints the image ref;
-# non-zero on fetch failure or a devcontainer.json with no image.
+# Pin target: the newest date-tagged devbox-base image on GHCR, as an
+# immutable digest ref. The badge (aicoding-status) compares against the same
+# newest tag, so a pinned rebuild always clears it. DVW_LATEST_IMAGE overrides.
+DVW_IMAGE_GHCR_REPO="${DVW_IMAGE_GHCR_REPO:-vossiman/devbox-base}"
 _dvw_blueprint_pin() {
-  local tmp image rc=0
-  tmp=$(mktemp) || return 1
-  if ! _fetch_blueprint_devcontainer "$tmp"; then
-    rm -f "$tmp"; return 1
+  if [[ -n "${DVW_LATEST_IMAGE:-}" ]]; then
+    printf '%s\n' "$DVW_LATEST_IMAGE"; return 0
   fi
-  image=$(jq -r '.image // empty' "$tmp" 2>/dev/null) || rc=1
-  rm -f "$tmp"
-  [[ -n "$image" && $rc -eq 0 ]] || return 1
-  printf '%s\n' "$image"
+  command -v curl >/dev/null || return 1
+  local repo="$DVW_IMAGE_GHCR_REPO" tok tag digest
+  tok=$(curl -fsSL --max-time 10 \
+    "https://ghcr.io/token?scope=repository:${repo}:pull&service=ghcr.io" 2>/dev/null \
+    | jq -r '.token // empty' 2>/dev/null)
+  [[ -n "$tok" ]] || return 1
+  tag=$(curl -fsSL --max-time 10 -H "Authorization: Bearer $tok" \
+    "https://ghcr.io/v2/${repo}/tags/list" 2>/dev/null \
+    | jq -r '.tags[]? // empty' 2>/dev/null \
+    | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort | tail -1)
+  [[ -n "$tag" ]] || return 1
+  digest=$(curl -fsSI --max-time 10 -H "Authorization: Bearer $tok" \
+    -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+    "https://ghcr.io/v2/${repo}/manifests/${tag}" 2>/dev/null \
+    | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:" {print $2; exit}')
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+  printf 'ghcr.io/%s@%s\n' "$repo" "$digest"
 }
 
 # owner/name from either remote form the fleet uses (SSH on hosts, HTTPS in
@@ -260,7 +272,7 @@ _dvw_pin_pr_only() {
   fi
   local bp
   if ! bp=$(_dvw_blueprint_pin); then
-    ui_error "couldn't read the selected blueprint pin"
+    ui_error "couldn't read the newest devbox-base image from GHCR"
     return 1
   fi
 
