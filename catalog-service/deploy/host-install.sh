@@ -50,11 +50,6 @@ fi
 # the same PATH even when the current login shell is stale.
 export PATH="$HOME/.local/bin:$PATH"
 
-# Host tools only: the vendored selector arrives with the checkout (step 1),
-# so the full check runs after it.
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/blueprint-preflight.sh"
-catalog_blueprint_preflight "$SVC_DIR" tools || exit 1
-
 # Prime sudo up front: fail fast now if you lack sudo rights, and avoid a
 # password prompt stalling the install halfway through.
 echo "==> 0/8 installer needs sudo for /opt, /var/lib, /etc/systemd and sudoers; priming…"
@@ -118,15 +113,13 @@ else
   # that changed the installer would finish under the old logic (2026-09-02:
   # the old step 6 ran a compose file the pull had just deleted). Hand over
   # to the fresh copy once; the guard stops a loop if the diff never settles.
-  # The preflight helper was sourced before the pull, so it counts too.
   if [ "$before" != "$after" ] && [ -z "${DVW_INSTALL_REEXEC:-}" ] \
      && ! git -C "$CHECKOUT" diff --quiet "$before" "$after" -- \
-          catalog-service/deploy/host-install.sh catalog-service/deploy/blueprint-preflight.sh; then
+          catalog-service/deploy/host-install.sh; then
     echo "    installer changed by the pull; re-running the new copy"
     DVW_INSTALL_REEXEC=1 exec bash "$SVC_DIR/deploy/host-install.sh"
   fi
 fi
-catalog_blueprint_preflight "$SVC_DIR" || exit 1
 
 echo "==> 2/8 stable symlink $APP_LINK -> $SVC_DIR"
 # $APP_LINK must be a symlink. If a previous run or a manual `mkdir` left a real
@@ -160,22 +153,6 @@ command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 echo "==> 5/8 env file (once)"
 [ -f "$SVC_DIR/catalog.env" ] || \
   install -m 0640 "$SVC_DIR/deploy/catalog.env.example" "$SVC_DIR/catalog.env"
-if [ "$catalog_blueprint_url_from_env" -eq 1 ]; then
-  catalog_env_tmp=""
-  cleanup_catalog_env_tmp() {
-    [ -z "$catalog_env_tmp" ] || rm -f -- "$catalog_env_tmp"
-  }
-  trap cleanup_catalog_env_tmp EXIT
-  catalog_env_tmp=$(mktemp "$SVC_DIR/.catalog.env.XXXXXX")
-  awk '!/^CATALOG_BLUEPRINT_DEVCONTAINER_URL=/' \
-    "$SVC_DIR/catalog.env" > "$catalog_env_tmp"
-  printf 'CATALOG_BLUEPRINT_DEVCONTAINER_URL=%s\n' \
-    "$catalog_blueprint_url" >> "$catalog_env_tmp"
-  chmod --reference="$SVC_DIR/catalog.env" "$catalog_env_tmp"
-  mv "$catalog_env_tmp" "$SVC_DIR/catalog.env"
-  catalog_env_tmp=""
-  trap - EXIT
-fi
 "$SVC_DIR/deploy/configure-backup-remote.sh" "$DATA_DIR" "$SVC_DIR/catalog.env" "$GH_HELPER"
 
 # The unit no longer has SupplementaryGroups=docker, so dvw-docker-proxy is

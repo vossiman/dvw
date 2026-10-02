@@ -114,33 +114,16 @@ data dir + its git-backup repo, `uv sync --frozen`s the venv, installs the units
 adds a narrow passwordless-restart sudoers drop-in, reenables + starts everything,
 and smoke-tests `/v1/health`.
 
-Blueprint image comparison resolves `aiCodingBaseSetup` through the selector
-dvw vendors byte-for-byte in `vendor/aicoding/` (`bin/aicoding-select
-aicoding`), so the host needs no aicoding install. It needs only `jq`,
-`timeout` and `curl` (`apt install jq curl`); the service calls the GitHub API
-anonymously and backs off 15 minutes after a failed selection.
-`host-install.sh` checks those tools before sudo or checkout changes, and the
-vendored file after step 1. `vendor/aicoding/refresh.sh` re-vendors from one
-resolved aiCodingBaseSetup main commit, and the `vendor-drift` workflow flags
-when upstream changed. As an explicit alternative on the first deployment,
-export an exact immutable URL for the installer; it validates the URL and
-persists it into the service's newly created `catalog.env`:
-
-```bash
-CATALOG_BLUEPRINT_DEVCONTAINER_URL='https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/<40-character-sha>/devcontainer.json' \
-  /opt/dvw/catalog-service/deploy/host-install.sh
-```
-
-On later runs, the same variable updates the persisted setting, or it can be
-edited directly in `catalog.env`. The only supported raw GitHub form is:
-`https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/<40-character-sha>/devcontainer.json`.
-Moving refs, other paths, queries, and fragments are rejected, and selection
-failures are logged in the service journal and preserve the last qualified
-cached image (or report comparison as unknown until one exists). Refresh runs
-once in the background, so a slow selector does not delay status requests.
-The selector makes
-read-only GitHub API calls and writes only a temporary response beneath
-`PrivateTmp`; it does not need a writable home, state, or cache directory.
+"Outdated" means a container is not running the image that
+`ghcr.io/vossiman/devbox-base:latest` names right now (`CATALOG_LATEST_IMAGE`).
+The build moves that tag only after its smoke test passes, so it is the newest
+green image. The service resolves the tag on the registry with an anonymous
+pull token to every digest a container can report for it (top-level manifest
+or index, the host platform's manifest, and the config digest). A container
+counts as current when its own image ID matches one of them. The tag string
+itself is never compared. Lookup failures are logged and keep the last good
+value (or report "unknown" until there is one), and the refresh runs in the
+background, so status requests never wait on the registry.
 
 **Backup (DVW-14, DVW-15)** — `dvw-catalog-backup.timer` commits and pushes
 the data dir nightly to `CATALOG_BACKUP_REMOTE` from `/opt/dvw-catalog/catalog.env`

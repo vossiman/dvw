@@ -31,11 +31,7 @@ setup() {
      "$DVW_ROOT/catalog-service/deploy/dvw-docker-proxy.service" \
      "$DVW_ROOT/catalog-service/deploy/catalog.env.example" \
      "$DVW_ROOT/catalog-service/deploy/configure-backup-remote.sh" \
-     "$DVW_ROOT/catalog-service/deploy/blueprint-preflight.sh" \
      "$SVC_DIR/deploy/"
-  mkdir -p "$SVC_DIR/vendor/aicoding/bin"
-  install -m 0755 "$DVW_ROOT/catalog-service/vendor/aicoding/bin/aicoding-select" \
-    "$SVC_DIR/vendor/aicoding/bin/aicoding-select"
 
   # --- stubs ---
   # git/uv: no-op success, so the checkout-refresh and venv-sync steps never
@@ -93,28 +89,7 @@ SUDOEOF
   : > "$CALLS"
 }
 
-# The vendored selector arrives with the checkout, so a fresh host or a
-# pre-vendoring checkout must get past step 1 before the file is checked.
-@test "a checkout without the vendored selector is refused only after the checkout step" {
-  rm -f "$SVC_DIR/vendor/aicoding/bin/aicoding-select"
-  : > "$CALLS"
-
-  run_install
-
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"missing vendored selector"* ]]
-  [[ "$output" == *"vendor/aicoding/bin/aicoding-select"* ]]
-  grep -qE '^git .*pull --ff-only' "$CALLS"
-  ! grep -qE '^(uv |sudo systemctl)' "$CALLS"
-}
-
-@test "installer needs no aicoding-select on PATH" {
-  ! command -v aicoding-select >/dev/null 2>&1 || skip "aicoding-select present on this runner's PATH"
-  run_install
-  [ "$status" -eq 0 ]
-}
-
-@test "installer reports root invocation before selector prerequisites" {
+@test "installer reports root invocation before touching the host" {
   cat > "$HOME/stubs/id" <<'EOF'
 #!/bin/sh
 case "$1" in
@@ -129,74 +104,6 @@ EOF
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"run this as your normal user, not root/sudo"* ]]
-  [[ "$output" != *"missing catalog blueprint prerequisite"* ]]
-  ! grep -qE '^(sudo|git) ' "$CALLS"
-}
-
-@test "immutable configured blueprint lets installer bypass selector enrollment" {
-  rm -f "$SVC_DIR/vendor/aicoding/bin/aicoding-select"
-  printf '%s\n' \
-    'CATALOG_BLUEPRINT_DEVCONTAINER_URL=https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/1234567890abcdef1234567890abcdef12345678/devcontainer.json' \
-    > "$SVC_DIR/catalog.env"
-
-  run_install
-
-  [ "$status" -eq 0 ]
-}
-
-@test "first deploy persists an exported immutable blueprint for the service" {
-  rm -f "$SVC_DIR/vendor/aicoding/bin/aicoding-select" "$SVC_DIR/catalog.env"
-  local url="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/abcdefabcdefabcdefabcdefabcdefabcdefabcd/devcontainer.json"
-  export CATALOG_BLUEPRINT_DEVCONTAINER_URL="$url"
-
-  run_install
-
-  [ "$status" -eq 0 ]
-  [ "$(grep -c '^CATALOG_BLUEPRINT_DEVCONTAINER_URL=' "$SVC_DIR/catalog.env")" -eq 1 ]
-  grep -Fxq "CATALOG_BLUEPRINT_DEVCONTAINER_URL=$url" "$SVC_DIR/catalog.env"
-}
-
-@test "exported blueprint preserves an existing catalog env mode" {
-  printf 'CATALOG_DOCKER_HOST=fixture\n' > "$SVC_DIR/catalog.env"
-  chmod 0600 "$SVC_DIR/catalog.env"
-  export CATALOG_BLUEPRINT_DEVCONTAINER_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/abcdefabcdefabcdefabcdefabcdefabcdefabcd/devcontainer.json"
-
-  run_install
-
-  [ "$status" -eq 0 ]
-  [ "$(stat -c %a "$SVC_DIR/catalog.env")" = 600 ]
-}
-
-@test "failed catalog env rewrite preserves the original and removes its temp" {
-  printf 'CATALOG_DOCKER_HOST=fixture\n' > "$SVC_DIR/catalog.env"
-  cp "$SVC_DIR/catalog.env" "$WORK/catalog.env.before"
-  cat > "$HOME/stubs/chmod" <<'EOF'
-#!/bin/sh
-last=""
-for arg in "$@"; do last="$arg"; done
-case "$last" in
-  */.catalog.env.*) exit 42 ;;
-  *) exec /bin/chmod "$@" ;;
-esac
-EOF
-  chmod +x "$HOME/stubs/chmod"
-  export CATALOG_BLUEPRINT_DEVCONTAINER_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/abcdefabcdefabcdefabcdefabcdefabcdefabcd/devcontainer.json"
-
-  run_install
-
-  [ "$status" -eq 42 ]
-  cmp -s "$WORK/catalog.env.before" "$SVC_DIR/catalog.env"
-  [ -z "$(find "$SVC_DIR" -maxdepth 1 -name '.catalog.env.*' -print -quit)" ]
-}
-
-@test "installer rejects an invalid configured blueprint before mutation" {
-  export CATALOG_BLUEPRINT_DEVCONTAINER_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json"
-  : > "$CALLS"
-
-  run_install
-
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"must be an exact supported immutable URL"* ]]
   ! grep -qE '^(sudo|git) ' "$CALLS"
 }
 
@@ -469,28 +376,6 @@ exit 0
 EOF2
   chmod +x "$HOME/stubs/git"
   # The re-exec targets the checkout's own copy, as on the host.
-  cp "$SCRIPT" "$SVC_DIR/deploy/host-install.sh"
-  run_install
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -q 'installer changed by the pull; re-running the new copy'
-  [ "$(echo "$output" | grep -c '==> 1/8 checkout')" -eq 2 ]
-}
-
-# The preflight helper is sourced before the pull, so a pull that changed only
-# the helper must also hand over to the fresh copy.
-@test "installer re-execs itself once when the pull changed only blueprint-preflight.sh" {
-  cat > "$HOME/stubs/git" <<'EOF2'
-#!/bin/sh
-echo "git $*" >> "$HOME/calls"
-case "$*" in
-  *"rev-parse HEAD"*)
-    if [ -e "$HOME/pulled" ]; then echo bbbbbbb; else echo aaaaaaa; fi ;;
-  *"pull --ff-only"*) touch "$HOME/pulled" ;;
-  *"diff --quiet"*blueprint-preflight.sh*) exit 1 ;;
-esac
-exit 0
-EOF2
-  chmod +x "$HOME/stubs/git"
   cp "$SCRIPT" "$SVC_DIR/deploy/host-install.sh"
   run_install
   [ "$status" -eq 0 ]

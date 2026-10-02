@@ -16,7 +16,7 @@ from fastapi import Depends, Header, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 from .blueprint_store import BlueprintStore
-from .blueprint_image import BlueprintImageCache
+from .latest_image import LatestImageCache
 from .config import Settings, get_settings
 from .docker_inspect import Inspector
 from .models import CanonicalContainer
@@ -39,8 +39,8 @@ def get_blueprint_store(request: Request) -> BlueprintStore:
     # read-modify-write, so a per-request instance would not serialize anything.
     return request.app.state.blueprint_store
 
-def get_blueprint_image_cache(request: Request) -> BlueprintImageCache:
-    return request.app.state.blueprint_image
+def get_latest_image_cache(request: Request) -> LatestImageCache:
+    return request.app.state.latest_image
 
 
 def get_activity_observer(request: Request) -> ActivityObserver:
@@ -53,8 +53,7 @@ ActivityDep = Annotated[ActivityObserver, Depends(get_activity_observer)]
 StoreDep = Annotated[CatalogStore, Depends(get_store)]
 InspectorDep = Annotated[Inspector, Depends(get_inspector)]
 BlueprintStoreDep = Annotated[BlueprintStore, Depends(get_blueprint_store)]
-BlueprintImageDep = Annotated[
-    BlueprintImageCache, Depends(get_blueprint_image_cache)]
+LatestImageDep = Annotated[LatestImageCache, Depends(get_latest_image_cache)]
 
 
 async def require_auth(
