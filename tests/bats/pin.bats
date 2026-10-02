@@ -330,3 +330,29 @@ _stub_recreate_deps() {
   [[ "$main_branch" != *"-main" ]]
   [[ "$feat_branch" == "$main_branch-feat-x" ]]
 }
+
+@test "pin PR: an existing branch ref is not an error" {
+  _install_pin_pr_gh_stub '{"image":"ghcr.io/vossiman/devbox-base@sha256:abc"}'
+  eval "_orig_gh() $(declare -f gh | tail -n +2)"
+  gh() {
+    if [[ "$*" == *" -X POST "*git/refs* ]]; then echo "gh: Reference already exists (HTTP 422)" >&2; return 1; fi
+    _orig_gh "$@"
+  }
+  run _dvw_pin_open_pr vossiman/demo main ghcr.io/vossiman/devbox-base:latest
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pull/9"* ]]
+  grep -q '"image":"ghcr.io/vossiman/devbox-base:latest"' "$BATS_TEST_TMPDIR/put.json"
+}
+
+@test "pin PR: a failed branch create prints gh's error" {
+  _install_pin_pr_gh_stub '{"image":"ghcr.io/vossiman/devbox-base@sha256:abc"}'
+  eval "_orig_gh() $(declare -f gh | tail -n +2)"
+  gh() {
+    if [[ "$*" == *" -X POST "*git/refs* ]]; then echo "gh: Resource not accessible by personal access token (HTTP 403)" >&2; return 1; fi
+    _orig_gh "$@"
+  }
+  run _dvw_pin_open_pr vossiman/demo main ghcr.io/vossiman/devbox-base:latest
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"create branch chore/pin-devbox-base-latest"* ]]
+  [[ "$output" == *"HTTP 403"* ]]
+}
