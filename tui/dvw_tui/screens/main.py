@@ -31,7 +31,7 @@ from ..render import (
     RED,
     SUBTLE,
     inspect_lines,
-    activity_cell,
+    activity_row_cell,
     activity_lines,
     state_cell,
     window_label,
@@ -191,10 +191,11 @@ class MainScreen(Screen):
         text.append(w.id, style=f"bold {ACCENT}")
         text.append(f"  {w.short_repo}@{w.branch}", style=SUBTLE)
         text.append("  ")
-        text.append_text(state_cell(w.liveness, w.attached, w.image_current))
+        text.append_text(state_cell(w.liveness, w.attached, w.image_current,
+                                    w.pin_current))
         if w.liveness not in ("stopped", "absent"):
             text.append(" · ", style=SUBTLE)
-            text.append_text(activity_cell(w.activity))
+            text.append_text(activity_row_cell(w.activity))
         return text
 
     def _render_tree(self) -> None:
@@ -332,16 +333,18 @@ class MainScreen(Screen):
     def _render_inspect_placeholder(self, ws_id: str) -> None:
         """Instant stand-in while no cached inspect data exists yet."""
         liveness = "unknown"
-        image_current = None
+        image_current = pin_current = None
         for w in self._workspaces:
             if w.id == ws_id:
                 liveness = w.liveness
                 image_current = w.image_current
+                pin_current = w.pin_current
                 break
         text = Text()
         text.append(f" {ws_id}\n", style=f"bold {ACCENT}")
         text.append(" ")
-        text.append_text(state_cell(liveness, self._row_attached(ws_id), image_current))
+        text.append_text(state_cell(liveness, self._row_attached(ws_id),
+                                    image_current, pin_current))
         text.append("\n")
         attached = self._row_attached(ws_id)
         if attached >= 1:
@@ -356,9 +359,11 @@ class MainScreen(Screen):
         text = Text()
         text.append(f" {ws_id}\n", style=f"bold {ACCENT}")
         text.append(" ")
+        workspace = next((w for w in self._workspaces if w.id == ws_id), None)
         text.append_text(state_cell(data.get("liveness", "unknown"),
                                     self._row_attached(ws_id),
-                                    _tri(data.get("image_current"))))
+                                    _tri(data.get("image_current")),
+                                    workspace.pin_current if workspace else None))
         text.append("\n")
         attached = self._row_attached(ws_id)
         if attached >= 1:

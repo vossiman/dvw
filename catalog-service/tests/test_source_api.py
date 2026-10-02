@@ -91,3 +91,53 @@ def test_source_path_accepts_normal_id(settings):
     p = settings.source_path("proj")
     assert p == (settings.devpod_agent_workspaces_dir.expanduser().resolve()
                  / "proj" / "content")
+
+
+def _commit_pin(path, image, *, commit=True):
+    (path / ".devcontainer").mkdir(exist_ok=True)
+    (path / ".devcontainer" / "devcontainer.json").write_text(f'{{"image": "{image}"}}')
+    if commit:
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+               "PATH": "/usr/bin:/bin"}
+        subprocess.run(["git", "-C", str(path), "add", "-A"], check=True, env=env)
+        subprocess.run(["git", "-C", str(path), "commit", "-qm", "pin"],
+                       check=True, env=env)
+
+
+OLD = "ghcr.io/x/devbox-base@sha256:" + "a" * 64
+NEW = "ghcr.io/x/devbox-base@sha256:" + "b" * 64
+
+
+def _pin_current(client):
+    return client.get("/v1/containers/status").json()[0]["pin_current"]
+
+
+def test_status_pin_current_compares_committed_pin(client, settings, blueprint_image):
+    blueprint_image.value = NEW
+    _create(client)
+    path = _seed_clone(settings)
+    assert _pin_current(client) is None          # no devcontainer.json
+    _commit_pin(path, OLD)
+    assert _pin_current(client) is False
+    _commit_pin(path, NEW)
+    assert _pin_current(client) is True
+
+
+def test_status_pin_current_ignores_uncommitted_boot_sync_rewrite(
+        client, settings, blueprint_image):
+    blueprint_image.value = NEW
+    _create(client)
+    path = _seed_clone(settings)
+    _commit_pin(path, OLD)
+    _commit_pin(path, NEW, commit=False)
+    assert _pin_current(client) is False
+
+
+def test_status_pin_current_unknown_without_blueprint_or_clone(
+        client, settings, blueprint_image):
+    _create(client)
+    assert _pin_current(client) is None          # no clone
+    path = _seed_clone(settings)
+    _commit_pin(path, OLD)
+    assert _pin_current(client) is None          # blueprint unknown

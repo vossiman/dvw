@@ -60,7 +60,8 @@ async def test_workspaces_with_status_merges_image_current():
     def handler(request):
         if request.url.path == "/v1/containers/status":
             return httpx.Response(200, json=[
-                {"id": "alpha", "liveness": "alive", "image_current": False},
+                {"id": "alpha", "liveness": "alive", "image_current": False,
+                 "pin_current": False},
                 {"id": "beta", "liveness": "stopped"},
             ])
         return ok_handler(request)
@@ -68,6 +69,8 @@ async def test_workspaces_with_status_merges_image_current():
     by_id = {w.id: w for w in ws}
     assert by_id["alpha"].image_current is False
     assert by_id["beta"].image_current is None
+    assert by_id["alpha"].pin_current is False
+    assert by_id["beta"].pin_current is None
 
 
 async def test_workspace_missing_from_status_is_unknown():

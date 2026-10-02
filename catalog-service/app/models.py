@@ -347,6 +347,9 @@ class WorkspaceStatus(BaseModel):
     blueprint_image: str | None = None
     # Tri-state on purpose: None (unknown) must never render as outdated.
     image_current: bool | None = None
+    # Whether the source clone's committed (HEAD) pin matches the blueprint.
+    # Same tri-state rule: None when the clone, pin or blueprint is unknown.
+    pin_current: bool | None = None
 
 
 class Orphan(BaseModel):

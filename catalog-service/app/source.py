@@ -50,14 +50,30 @@ def _credential_args(helper: Path | None) -> list[str]:
     return ["-c", "credential.helper=", "-c", f"credential.helper={helper}"]
 
 
+_DEVCONTAINER = ".devcontainer/devcontainer.json"
+
+
 def _pin_from_devcontainer(path: Path) -> str | None:
-    f = path / ".devcontainer" / "devcontainer.json"
+    f = path / _DEVCONTAINER
     if not f.is_file():
         return None
     try:
         text = f.read_text()
     except OSError:
         return None
+    return _parse_pin(text)
+
+
+def head_pin(path: Path) -> str | None:
+    """The pin committed at HEAD. Boot sync rewrites the working-tree copy
+    without committing it, so only HEAD says whether the repo needs a bump."""
+    if not (path / ".git").exists():
+        return None
+    r = _git(path, "show", f"HEAD:{_DEVCONTAINER}")
+    return _parse_pin(r.stdout) if r.returncode == 0 else None
+
+
+def _parse_pin(text: str) -> str | None:
     try:
         image = json.loads(text).get("image")
         if isinstance(image, str):
