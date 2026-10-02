@@ -29,7 +29,9 @@ log = logging.getLogger(__name__)
 
 _FETCH_TIMEOUT = 5.0
 _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
-_REF_RE = re.compile(r"^(?P<host>[a-z0-9.-]+)/(?P<repo>[a-z0-9._/-]+):(?P<tag>[A-Za-z0-9._-]+)$")
+# GHCR only: its anonymous token endpoint is fixed, where other registries
+# advertise theirs through a WWW-Authenticate challenge this does not follow.
+_REF_RE = re.compile(r"^(?P<host>ghcr\.io)/(?P<repo>[a-z0-9._/-]+):(?P<tag>[A-Za-z0-9._-]+)$")
 _INDEX_TYPES = (
     "application/vnd.oci.image.index.v1+json",
     "application/vnd.docker.distribution.manifest.list.v2+json",
@@ -69,7 +71,7 @@ def _digest(value: object) -> str:
 def resolve(image: str, arch: str | None = None) -> LatestImage:
     m = _REF_RE.match(image)
     if m is None:
-        raise ValueError(f"not a <host>/<repo>:<tag> reference: {image!r}")
+        raise ValueError(f"not a ghcr.io/<repo>:<tag> reference: {image!r}")
     host, repo, tag = m["host"], m["repo"], m["tag"]
     arch = arch or _ARCH.get(platform.machine().lower(), "amd64")
 

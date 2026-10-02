@@ -59,6 +59,11 @@ def test_index_without_host_platform_fails(monkeypatch):
         resolve("ghcr.io/x/y:latest", "amd64")
 
 
+def test_only_ghcr_references_are_accepted():
+    with pytest.raises(ValueError, match="ghcr.io"):
+        resolve("quay.io/x/y:latest", "amd64")
+
+
 def test_bad_digest_header_fails(monkeypatch):
     _registry(monkeypatch, {"latest": ("latest", {"config": {"digest": CFG}})})
     with pytest.raises(ValueError):
