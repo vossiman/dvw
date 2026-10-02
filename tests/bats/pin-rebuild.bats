@@ -35,9 +35,16 @@ setup() {
   _dvw_catalog_source_pull() { _dvw_catalog_source_get "$1"; }
   cmd_recreate() { echo "RECREATED $1"; }
   _catalog_req() {  # step-8 inspect
-    jq -n --arg d "sha256:$(printf 'a%.0s' {1..64})" '{image_digest:$d}'
+    jq -n '{image_current:true}'
   }
   DVW_PIN_REBUILD_POLL_SECS=0
+}
+
+@test "recreate pulls :latest on the provider before rebuilding" {
+  source "$DVW_ROOT/lib/pin.sh"
+  _dvw_run_or_print() { echo "RUN $*"; }
+  run _dvw_pull_latest
+  [[ "$output" == *"ssh"*"vossisrv docker pull -q ghcr.io/vossiman/devbox-base:latest"* ]]
 }
 
 @test "pin-rebuild runs without aicoding-select" {
@@ -53,42 +60,10 @@ setup() {
   [[ "$output" == *"RECREATED demo"* ]]
 }
 
-@test "pin target is the newest date-tagged GHCR image digest" {
+@test "pin target is the floating :latest tag" {
   source "$DVW_ROOT/lib/pin.sh"
-  unset DVW_LATEST_IMAGE
-  curl() {
-    case "$*" in
-      *ghcr.io/token*)     echo '{"token":"t"}' ;;
-      *tags/list*)         echo '{"tags":["latest","2026-09-25","2026-10-01","2026-09-30","sha-abc"]}' ;;
-      *manifests/2026-10-01*) printf 'HTTP/2 200\r\nDocker-Content-Digest: sha256:%s\r\n' "$(printf 'c%.0s' {1..64})" ;;
-      *) return 1 ;;
-    esac
-  }
   run _dvw_blueprint_pin
-  [ "$status" -eq 0 ]
-  [ "$output" = "ghcr.io/vossiman/devbox-base@sha256:$(printf 'c%.0s' {1..64})" ]
-}
-
-@test "pin target fails closed on a malformed digest" {
-  source "$DVW_ROOT/lib/pin.sh"
-  unset DVW_LATEST_IMAGE
-  curl() {
-    case "$*" in
-      *ghcr.io/token*) echo '{"token":"t"}' ;;
-      *tags/list*)     echo '{"tags":["2026-10-01"]}' ;;
-      *manifests*)     printf 'HTTP/2 200\r\nDocker-Content-Digest: nope\r\n' ;;
-    esac
-  }
-  run _dvw_blueprint_pin
-  [ "$status" -ne 0 ]
-}
-
-@test "DVW_LATEST_IMAGE overrides the GHCR lookup" {
-  source "$DVW_ROOT/lib/pin.sh"
-  curl() { echo "CURL SHOULD NOT RUN" >&2; return 1; }
-  DVW_LATEST_IMAGE="ghcr.io/vossiman/devbox-base@sha256:$(printf 'd%.0s' {1..64})" run _dvw_blueprint_pin
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"sha256:dddd"* ]]
+  [ "$output" = "ghcr.io/vossiman/devbox-base:latest" ]
 }
 
 @test "current pin: skips PR and pull, rebuilds anyway" {
@@ -101,7 +76,7 @@ setup() {
   [[ "$output" != *"PULL SHOULD NOT RUN"* ]]
   [[ "$output" != *"OPEN_PR SHOULD NOT RUN"* ]]
   [[ "$output" == *"RECREATED demo"* ]]
-  [[ "$output" == *"running the blueprint image"* ]]
+  [[ "$output" == *"running the newest image"* ]]
 }
 
 @test "working tree current but remote stale: PR opened, merge gate, no pull, rebuild" {
@@ -195,7 +170,7 @@ setup() {
   [ "$status" -eq 0 ]
   [ "$(cat "$BATS_TEST_TMPDIR/pin-request")" = $'vossiman/devMachine\tmain\t'"$BP_IMAGE" ]
   [[ "$output" == *"RECREATED devMachine"* ]]
-  [[ "$output" == *"running the blueprint image"* ]]
+  [[ "$output" == *"running the newest image"* ]]
 }
 
 @test "stale pin with --no-wait: opens the PR and stops cleanly" {
@@ -363,12 +338,10 @@ setup() {
 @test "rebuild landing on the wrong image fails loudly" {
   _dvw_catalog_source_pull() { return 1; }   # unused: pin is current
   _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }   # remote also current
-  _catalog_req() {
-    jq -n --arg d "sha256:$(printf 'b%.0s' {1..64})" '{image_digest:$d}'
-  }
+  _catalog_req() { jq -n '{image_current:false}'; }
   run cmd_pin_rebuild demo
   [ "$status" -eq 1 ]
-  [[ "$output" == *"blueprint is"* ]]
+  [[ "$output" == *"not on the newest image"* ]]
 }
 
 @test "no ids: runs the whole catalog, one workspace at a time" {

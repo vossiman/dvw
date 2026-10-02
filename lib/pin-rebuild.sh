@@ -8,12 +8,6 @@
 
 DVW_PIN_REBUILD_POLL_SECS="${DVW_PIN_REBUILD_POLL_SECS:-10}"
 
-# sha256:<64 hex> component of an image ref; empty output when tag-pinned.
-_dvw_pin_digest() {
-  [[ "${1:-}" =~ sha256:[0-9a-f]{64} ]] || return 1
-  printf '%s\n' "${BASH_REMATCH[0]}"
-}
-
 # Poll until the PR is merged. rc 0 merged / 1 timeout or gh failure /
 # 2 closed-unmerged. Enter re-checks immediately; Ctrl-C aborts the command.
 _dvw_pin_wait_merged() {
@@ -117,7 +111,7 @@ _dvw_pin_rebuild_one() {
   slug=$(_dvw_repo_slug "$repo") || {
     ui_error "$id: $repo is not a GitHub repo; pin-rebuild cannot PR it"; return 1; }
   bp=$(_dvw_blueprint_pin) || {
-    ui_error "couldn't read the newest devbox-base image from GHCR"
+    ui_error "couldn't resolve the devbox-base image ref"
     return 1; }
 
   # 1. Build branch = the source clone's live HEAD; that is literally what
@@ -245,22 +239,14 @@ _dvw_pin_rebuild_one() {
   # 7. Rebuild. Skip recreate's own preflight; this command IS the preflight.
   DVW_SKIP_PIN_PREFLIGHT=1 cmd_recreate "$id" || return 1
 
-  # 8. Assert the running image.
-  local bp_digest digest insp
-  if ! bp_digest=$(_dvw_pin_digest "$bp"); then
-    ui_status_warn "blueprint pin is not digest-pinned; cannot verify the running image"
-    return 0
-  fi
+  # 8. Assert the running image via the catalog's verdict. Under :latest the
+  #    container reports an image ID, so digests are never compared here.
+  local insp current
   insp=$(_catalog_req GET "/v1/workspaces/$id/inspect" 2>/dev/null) || insp=""
-  digest=$(jq -r '.image_digest // empty' <<<"$insp" 2>/dev/null) || digest=""
-  if [[ -z "$digest" ]]; then
-    ui_status_warn "couldn't read the rebuilt container's image digest; verify manually: dvw status"
-    return 0
-  fi
-  if [[ "$digest" == "$bp_digest" ]]; then
-    ui_status_ok "$id is running the blueprint image ($(_dvw_pin_short "$bp"))"
-    return 0
-  fi
-  ui_status_fail "$id rebuilt onto ${digest:0:19}… but the blueprint is ${bp_digest:0:19}…"
-  return 1
+  current=$(jq -r '.image_current' <<<"$insp" 2>/dev/null) || current=""
+  case "$current" in
+    true)  ui_status_ok "$id is running the newest image"; return 0 ;;
+    false) ui_status_fail "$id rebuilt but is not on the newest image (:latest)"; return 1 ;;
+    *)     ui_status_warn "couldn't verify $id's image; check: dvw status"; return 0 ;;
+  esac
 }

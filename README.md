@@ -38,8 +38,8 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
 | `dvw stop <id>` | `devpod stop` |
 | `dvw start <id>` | `devpod up` with the workspace's saved IDE |
-| `dvw recreate <id>` (alias `rebuild`) | rebuild the container (`devpod up --recreate`) — needed to pick up a changed `devcontainer.json` (mounts/hooks). Offers to hand over to `pin-rebuild` if the committed image pin is stale, because a bare recreate cannot fix that itself |
-| `dvw pin-rebuild [<id>…]` | the whole stale-pin flow per workspace: PR the pin, wait for the merge, pull the source clone via the catalog service, rebuild, verify the running image (no args = every catalog workspace) |
+| `dvw recreate <id>` (alias `rebuild`) | pull the newest base image (`:latest`) on the provider, then rebuild the container (`devpod up --recreate`). Offers to hand over to `pin-rebuild` if the repo still pins an old digest |
+| `dvw pin-rebuild [<id>…]` | rebuild onto the newest image and verify it. A repo still pinning a digest gets a one-time PR to `:latest` first (no args = every catalog workspace) |
 | `dvw pin-rebuild --pr-only [<id>…]` | stop after the PRs — the fleet-wide sweep, or a workspace whose provider is unreachable from here |
 | `dvw update` | Update to the latest released tooling and refresh the version marker. Standalone checkout: pull `main` + reinstall. Submodule checkout: follow the parent's pins (ff the parent, check out pinned submodules, reinstall) — never commits or pushes. Startup/`dvw doctor` nudge when behind `origin/main`. |
 | `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
@@ -260,7 +260,7 @@ Updates fall into these cases:
 
 - **New tooling or aiCodingBaseSetup configuration — no rebuild.** The common updater checks tested releases on its six-hour schedule, catches up after startup, and applies safe updates. `aicoding-status` reports the shared result record; `dvw update` asks the same worker to run one pass immediately.
 - **Updated `devcontainer.json` (mounts/provisioning) — needs rebuild.** Mounts are fixed at container-create time, so from the laptop: `dvw recreate <id>`.
-- **New base image — manual pin and rebuild.** `devpod up --recreate` builds from the image pinned in the repo's *committed* `.devcontainer/devcontainer.json`. Run `dvw pin-rebuild <id>` when the ⬆ badge (status output) or "outdated" label (TUI) appears. It selects the tested image, opens the pin PR, waits for the merge, pulls the clone, rebuilds and verifies the running image. The automatic tooling schedule never changes image pins or rebuilds workspaces.
+- **New base image.** Workspaces use `devbox-base:latest`, which the build workflow moves only after its smoke test passes. When the ⬆ badge (status output) or "outdated" label (TUI) appears, run `dvw rebuild <id>`: it pulls `:latest` on the provider and recreates. Nothing rebuilds workspaces automatically.
 
 ## Multi-machine sync model
 
