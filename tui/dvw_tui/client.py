@@ -51,7 +51,6 @@ class Workspace:
     liveness: str = "unknown"  # merged in from /containers/status
     attached: int = 0  # merged in from /containers/status
     image_current: bool | None = None  # merged in from /containers/status
-    pin_current: bool | None = None  # merged in from /containers/status
     activity: dict | None = None
 
     @property
@@ -120,8 +119,6 @@ class CatalogClient:
                 w.attached = 0
             v = s.get("image_current")
             w.image_current = v if isinstance(v, bool) else None
-            v = s.get("pin_current")
-            w.pin_current = v if isinstance(v, bool) else None
         return ws
 
     async def activities(self) -> dict[str, dict]:

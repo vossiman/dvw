@@ -46,19 +46,9 @@ after=$(git -C "$CHECKOUT" rev-parse HEAD)
 # host-install.sh). Hand over to the fresh copy once.
 if [ "$before" != "$after" ] && [ -z "${DVW_UPDATE_REEXEC:-}" ] \
    && ! git -C "$CHECKOUT" diff --quiet "$before" "$after" -- \
-        catalog-service/deploy/host-update.sh catalog-service/deploy/blueprint-preflight.sh; then
+        catalog-service/deploy/host-update.sh; then
   echo "    updater changed by the pull; re-running the new copy"
   DVW_UPDATE_REEXEC=1 exec bash "$SVC_DIR/deploy/host-update.sh"
-fi
-
-# Same selector prerequisite as host-install.sh, checked before anything
-# below changes the host. Only the service's own catalog.env counts here:
-# an exported URL in this shell would not reach the restarted service.
-export PATH="$HOME/.local/bin:$PATH"
-. "$SVC_DIR/deploy/blueprint-preflight.sh"
-if ! CATALOG_BLUEPRINT_DEVCONTAINER_URL= catalog_blueprint_preflight "$SVC_DIR"; then
-  echo "       nothing was changed besides the git pull; the running service is untouched" >&2
-  exit 1
 fi
 
 "$SVC_DIR/deploy/configure-backup-remote.sh" /var/lib/dvw-catalog "$SVC_DIR/catalog.env" "$GH_HELPER"

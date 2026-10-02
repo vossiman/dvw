@@ -75,13 +75,11 @@ class Settings(BaseSettings):
     fleet_interval: float = 30.0
     fleet_watch_interval: float = 2.0
 
-    # The aicoding blueprint devcontainer.json (owns the current image pin).
-    # Empty means resolve a CI-qualified exact SHA with `aicoding-select
-    # aicoding`. Operators may supply an explicitly immutable URL. There is no
-    # raw-main default because it can expose an image before required CI passes.
-    blueprint_devcontainer_url: str = ""
-    # Blueprint image cache TTL, seconds.
-    blueprint_image_ttl: float = 900.0
+    # The floating tag every workspace runs; its build moves it only after the
+    # smoke test passes, so it names the newest green image.
+    latest_image: str = "ghcr.io/vossiman/devbox-base:latest"
+    # Registry lookup cache TTL, seconds.
+    latest_image_ttl: float = 900.0
 
     # devpod agent workspace dirs on this box; each workspace's build source
     # is <dir>/<id>/content. "~" is the service account (vossi on vossisrv).

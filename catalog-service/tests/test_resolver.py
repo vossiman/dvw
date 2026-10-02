@@ -159,43 +159,33 @@ def test_scopes_by_destination_not_prefix(monkeypatch):
     assert insp.resolve("devmachine-new-dvw").container_id == "cb"
 
 
-class FakeImage:
-    def __init__(self, repo_digests):
-        self.attrs = {"RepoDigests": repo_digests}
+def test_running_digests_reads_image_id_and_pinned_ref():
+    from app.docker_inspect import _running_digests
+    img, pin = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    assert _running_digests({"Image": img, "Config": {"Image": f"ghcr.io/x/y@{pin}"}}) == {img, pin}
 
 
-def _digest_container(config_image, repo_digests=None):
-    c = FakeContainer("c1", "name1", "uid-1", "/workspaces/ws-a")
-    c.attrs["Config"] = {"Image": config_image}
-    c.image = FakeImage(repo_digests or []) if repo_digests is not None else None
-    return c
+def test_running_digests_ignores_tag_refs():
+    from app.docker_inspect import _running_digests
+    img = "sha256:" + "a" * 64
+    assert _running_digests({"Image": img, "Config": {"Image": "ghcr.io/x/y:latest"}}) == {img}
+    assert _running_digests({}) == set()
 
 
-def test_image_digest_accepts_pinned_ref(monkeypatch):
-    # Config.Image is a real pinned ref ("repo@sha256:..."); trust it.
-    digest = "a" * 64
-    c = _digest_container(f"ghcr.io/x/y@sha256:{digest}")
-    insp = _inspector([c], monkeypatch)
-    assert insp._image_digest(c) == f"sha256:{digest}"
-
-
-def test_image_digest_rejects_bare_image_id(monkeypatch):
-    # A container created straight from an image ID (no ref) stores a bare
-    # "sha256:<hex>" in Config.Image: that's the image's own id, not a
-    # manifest digest, and must never be trusted as one (permanent false
-    # "outdated" otherwise). Falls through to RepoDigests instead.
-    image_id = "b" * 64
-    repo_digest = "c" * 64
-    c = _digest_container(f"sha256:{image_id}", [f"ghcr.io/x/y@sha256:{repo_digest}"])
-    insp = _inspector([c], monkeypatch)
-    assert insp._image_digest(c) == f"sha256:{repo_digest}"
-
-
-def test_image_digest_bare_image_id_no_repo_digests_is_unknown(monkeypatch):
-    image_id = "d" * 64
-    c = _digest_container(f"sha256:{image_id}", [])
-    insp = _inspector([c], monkeypatch)
-    assert insp._image_digest(c) is None
+def test_status_many_resolves_a_latest_tag_container_by_image_id(monkeypatch):
+    from app.latest_image import LatestImage
+    cfg, top, old = ("sha256:" + c * 64 for c in "cdb")
+    latest = LatestImage(ref="ghcr.io/x/y@" + top, digests=frozenset({top, cfg}))
+    current = FakeContainer("c1", "n1", "u1", "/workspaces/a")
+    stale = FakeContainer("c2", "n2", "u2", "/workspaces/b")
+    for c, image_id in ((current, cfg), (stale, old)):
+        c.attrs["Image"] = image_id
+        c.attrs["Config"] = {"Image": "ghcr.io/x/y:latest"}
+    insp = _inspector([current, stale], monkeypatch)
+    res = {s.id: s for s in insp.status_many(["a", "b"], latest)}
+    assert res["a"].image_current is True and res["a"].image_digest == cfg
+    assert res["b"].image_current is False
+    assert res["a"].latest_image == "ghcr.io/x/y@" + top
 
 
 def test_sibling_tmux_tiebreak_highest_activity_wins(monkeypatch):

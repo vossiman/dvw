@@ -6,9 +6,9 @@ from fastapi.testclient import TestClient
 from app.blueprint_store import BlueprintStore
 from app.config import Settings
 from app.deps import (
-    get_blueprint_image_cache,
     get_blueprint_store,
     get_inspector,
+    get_latest_image_cache,
     get_settings,
     get_store,
     invalidate_resolve_cache,
@@ -44,17 +44,17 @@ class FakeInspector:
     def resolve(self, ws_id: str) -> CanonicalContainer:
         return self.resolutions.get(ws_id, CanonicalContainer(workspace_id=ws_id))
 
-    def inspect(self, ws_id: str, blueprint_image=None) -> ContainerInspect:
+    def inspect(self, ws_id: str, latest=None) -> ContainerInspect:
         return self.inspections.get(ws_id, ContainerInspect(workspace_id=ws_id))
 
     def siblings(self, ws_id: str) -> list:
         return self.sibling_map.get(ws_id, [])
 
-    def status_many(self, ids, blueprint_image=None):
+    def status_many(self, ids, latest=None):
         out = []
         for i in ids:
             s = self.statuses.get(i, WorkspaceStatus(id=i, liveness="absent"))
-            s.blueprint_image = blueprint_image
+            s.latest_image = latest.ref if latest else None
             out.append(s)
         return out
 
@@ -68,8 +68,8 @@ class FakeInspector:
         return self.window_lists
 
 
-class FakeBlueprintImage:
-    """No-network stand-in for BlueprintImageCache."""
+class FakeLatestImage:
+    """No-network stand-in for LatestImageCache."""
 
     value: str | None = None
 
@@ -83,10 +83,6 @@ def settings(tmp_path):
         data_dir=tmp_path,
         docker_host="unix:/nonexistent",
         token=None,
-        blueprint_devcontainer_url=(
-            "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/"
-            "1234567890abcdef1234567890abcdef12345678/devcontainer.json"
-        ),
         devpod_agent_workspaces_dir=tmp_path / "agent",
         fleet_proof_path="",
     )
@@ -113,19 +109,19 @@ def inspector():
 
 
 @pytest.fixture
-def blueprint_image():
-    return FakeBlueprintImage()
+def latest_image():
+    return FakeLatestImage()
 
 
 @pytest.fixture
-def client(settings, store, blueprint_store, inspector, blueprint_image):
+def client(settings, store, blueprint_store, inspector, latest_image):
     invalidate_resolve_cache()
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_blueprint_store] = lambda: blueprint_store
     app.dependency_overrides[get_inspector] = lambda: inspector
-    app.dependency_overrides[get_blueprint_image_cache] = lambda: blueprint_image
+    app.dependency_overrides[get_latest_image_cache] = lambda: latest_image
     # No context manager => lifespan is skipped => no real DockerInspector is
     # constructed. Routers use the overridden deps above.
     return TestClient(app)

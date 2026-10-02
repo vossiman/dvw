@@ -31,19 +31,15 @@ def liveness_cell(liveness: str) -> Text:
 
 
 def state_cell(liveness: str, attached: int = 0,
-               image_current: bool | None = None,
-               pin_current: bool | None = None) -> Text:
-    """liveness_cell plus `⇄ N` for attached clients, `⬆` when the container
-    runs an image older than the blueprint, and `⇡ bump needed` when the
-    repo's committed pin is. Tri-state on purpose: None (unknown) renders
-    nothing, only an actual False earns a badge."""
+               image_current: bool | None = None) -> Text:
+    """liveness_cell plus `⇄ N` for attached clients and `⬆` when the
+    container is not on the newest image. Tri-state on purpose: None
+    (unknown) renders nothing, only an actual False earns the badge."""
     text = liveness_cell(liveness)
     if attached >= 1 and liveness in ("alive", "stale"):
         text.append(f" {glyph('⇄', str(attached))}", style=f"bold {ACCENT}")
     if image_current is False:
         text.append(f" {glyph('⬆', 'outdated')}", style=f"bold {YELLOW}")
-    if pin_current is False:
-        text.append(f" {glyph('⇡', 'bump needed')}", style=f"bold {YELLOW}")
     return text
 
 

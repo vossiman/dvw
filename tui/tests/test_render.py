@@ -87,13 +87,6 @@ def test_state_cell_no_badge_when_current_or_unknown():
     assert "⬆" not in state_cell("alive", 0, image_current=None).plain
 
 
-def test_state_cell_bump_needed_badge():
-    assert "bump needed" in state_cell("alive", 0, pin_current=False).plain
-    assert "bump needed" in state_cell("stopped", 0, pin_current=False).plain
-    assert "bump" not in state_cell("alive", 0, pin_current=True).plain
-    assert "bump" not in state_cell("alive", 0, pin_current=None).plain
-
-
 def test_age_formats_minutes_and_hours():
     now = 10_000
     assert age(now - 90, now) == "1m"
