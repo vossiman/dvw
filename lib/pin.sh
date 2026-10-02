@@ -108,6 +108,12 @@ _dvw_pin_head_branch() {
   printf '%s\n' "$branch"
 }
 
+# Print gh's own error for a failed step, then remove the capture file.
+_dvw_pin_gh_fail() {
+  ui_error "gh failed to $2: $(tr '\n' ' ' <"$1" | cut -c1-300)"
+  rm -f "$1"
+}
+
 # Open (or report) the pin PR for <slug>@<base>, moving the pin to <image>.
 # Idempotent: an existing open PR from our branch is reported, not duplicated.
 # Prints the PR URL on success.
@@ -184,17 +190,24 @@ _dvw_pin_open_pr() {
   # plus the quoted-value replacement cannot introduce JSON/JSONC syntax.
   rm -f "$orig"
 
-  head=$(gh api "repos/$slug/git/ref/heads/$base" --jq '.object.sha' 2>/dev/null) || { rm -f "$tmp"; return 1; }
-  gh api -X POST "repos/$slug/git/refs" -f ref="refs/heads/$branch" -f sha="$head" >/dev/null 2>&1 || true
+  local err msg
+  err=$(mktemp) || { rm -f "$tmp"; return 1; }
+  msg="chore(image): use devbox-base $(_dvw_pin_short "$image")"
+  head=$(gh api "repos/$slug/git/ref/heads/$base" --jq '.object.sha' 2>"$err") || {
+    _dvw_pin_gh_fail "$err" "read $base's head"; rm -f "$tmp"; return 1; }
+  if ! gh api -X POST "repos/$slug/git/refs" -f ref="refs/heads/$branch" -f sha="$head" >/dev/null 2>"$err" \
+     && ! grep -q "Reference already exists" "$err"; then
+    _dvw_pin_gh_fail "$err" "create branch $branch"; rm -f "$tmp"; return 1
+  fi
   gh api -X PUT "repos/$slug/contents/.devcontainer/devcontainer.json" \
-    -f message="chore(image): pin devbox-base $(_dvw_pin_short "$image")" \
-    -f branch="$branch" -f sha="$sha" -f content="$(base64 -w0 "$tmp")" >/dev/null 2>&1 || {
-      rm -f "$tmp"; return 1; }
+    -f message="$msg" -f branch="$branch" -f sha="$sha" -f content="$(base64 -w0 "$tmp")" >/dev/null 2>"$err" || {
+      _dvw_pin_gh_fail "$err" "commit to $branch"; rm -f "$tmp"; return 1; }
   rm -f "$tmp"
 
-  url=$(gh pr create -R "$slug" -B "$base" -H "$branch" \
-    -t "chore(image): pin devbox-base $(_dvw_pin_short "$image")" \
-    -b "Opened by \`dvw pin-rebuild\`. Moves the committed devcontainer image pin to the blueprint's current digest so \`dvw rebuild\` stops recreating this workspace from a stale image." 2>/dev/null) || return 1
+  url=$(gh pr create -R "$slug" -B "$base" -H "$branch" -t "$msg" \
+    -b "Opened by \`dvw pin-rebuild\`. Points the devcontainer at \`$image\`, so \`dvw rebuild\` always pulls the newest smoke-tested image instead of a fixed digest." 2>"$err") || {
+      _dvw_pin_gh_fail "$err" "open the PR"; return 1; }
+  rm -f "$err"
   printf '%s\n' "$url"
 }
 
