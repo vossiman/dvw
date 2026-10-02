@@ -21,20 +21,15 @@ but this is not enforced: `main` carries no branch protection or rulesets
   dvw seeds that file from the exact SHA returned by `aicoding-select
   aicoding`, while `DVW_BLUEPRINT_DEVCONTAINER_URL` preserves an explicit
   development override, and orchestrates DevPod.
-- **Image pin reconciliation** (`lib/pin.sh` / `lib/pin-rebuild.sh`) is the
-  one exception: aicoding's boot sync rewrites a workspace's
-  `.devcontainer/devcontainer.json` pin but deliberately never commits it,
-  while `devpod up --recreate` builds from the committed copy. `dvw recreate
-  <id>` detects stale pins and offers to open a pin-sync PR; after merge,
-  `dvw pin-rebuild <id>` is the closing loop (source-clone pull via catalog
-  service, rebuild, image assertion). `dvw pin-sync` is retained for
-  fleet-wide sweeps across many repos. The catalog service requires
-  redeployment (`catalog-service/deploy/host-update.sh`) before the new
-  `/source` and `/source/pull` endpoints exist: `dvw status` and `dvw
-  pin-sync` degrade gracefully against an old server, but `dvw pin-rebuild`
-  does not, it opens the PR, waits for the merge, then fails at the pull
-  step with a clear error once the endpoint 404s. Consumer discovery is free
-  here: the catalog already lists every workspace's `repo@branch`.
+- **Base image:** every devcontainer references
+  `ghcr.io/vossiman/devbox-base:latest`. The build workflow pushes `:latest`
+  only after its smoke test, so `:latest` is the newest green image; there are
+  no digests to sync. `dvw recreate` pulls `:latest` on the provider first
+  (Docker never refreshes a tag it already has), and the catalog's
+  `image_current` says whether a container runs it. `dvw pin-rebuild <id>`
+  is recreate plus that check; for a repo still carrying an old digest it
+  first opens a one-time PR moving it to `:latest` (source-clone pull via the
+  catalog service).
 
 ### Naming: “blueprint” means two things
 

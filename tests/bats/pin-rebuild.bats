@@ -35,41 +35,42 @@ setup() {
   _dvw_catalog_source_pull() { _dvw_catalog_source_get "$1"; }
   cmd_recreate() { echo "RECREATED $1"; }
   _catalog_req() {  # step-8 inspect
-    jq -n --arg d "sha256:$(printf 'a%.0s' {1..64})" '{image_digest:$d}'
+    jq -n '{image_current:true}'
   }
   DVW_PIN_REBUILD_POLL_SECS=0
 }
 
-@test "pin-rebuild diagnoses a missing CI selector before catalog mutation" {
-  local surrounding_home="$BATS_TEST_TMPDIR/enrolled-home"
-  mkdir -p "$surrounding_home/.local/bin"
-  cat > "$surrounding_home/.local/bin/aicoding-select" <<'EOF'
-#!/bin/sh
-touch "$INHERITED_SELECTOR_CALLED"
-printf '%040d\n' 1
-EOF
-  chmod +x "$surrounding_home/.local/bin/aicoding-select"
-  export HOME="$surrounding_home"
-  export INHERITED_SELECTOR_CALLED="$BATS_TEST_TMPDIR/inherited-selector-called"
-
-  unset DVW_BLUEPRINT_DEVCONTAINER_URL
+@test "recreate pulls :latest on the provider before rebuilding" {
   source "$DVW_ROOT/lib/pin.sh"
+  _dvw_run_or_print() { echo "RUN $*"; }
+  run _dvw_pull_latest
+  [[ "$output" == *"ssh"*"vossisrv docker pull -q ghcr.io/vossiman/devbox-base:latest"* ]]
+}
+
+@test "a :latest pin PR gets a valid git branch name" {
+  source "$DVW_ROOT/lib/pin.sh"
+  run _dvw_pin_head_branch main ghcr.io/vossiman/devbox-base:latest
+  [ "$output" = "chore/pin-devbox-base-latest" ]
+  git check-ref-format "refs/heads/$output"
+}
+
+@test "pin-rebuild runs without aicoding-select" {
   command() {
     [[ "$1" == -v && "$2" == aicoding-select ]] && return 1
     builtin command "$@"
   }
-  [ "$(_dvw_blueprint_selector_path)" = "$surrounding_home/.local/bin/aicoding-select" ]
-  export HOME="$BATS_TEST_TMPDIR/test-home"
-  mkdir -p "$HOME"
-  catalog_workspace_get() { echo "CATALOG SHOULD NOT RUN" >&2; return 1; }
-
+  _dvw_catalog_source_pull() { echo "PULL SHOULD NOT RUN" >&2; return 1; }
+  _dvw_pin_open_pr() { echo "OPEN_PR SHOULD NOT RUN" >&2; return 1; }
+  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
   run cmd_pin_rebuild demo
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"RECREATED demo"* ]]
+}
 
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"aicoding-select is unavailable"* ]]
-  [[ "$output" == *"minimal common updater"* ]]
-  [[ "$output" != *"CATALOG SHOULD NOT RUN"* ]]
-  [ ! -e "$INHERITED_SELECTOR_CALLED" ]
+@test "pin target is the floating :latest tag" {
+  source "$DVW_ROOT/lib/pin.sh"
+  run _dvw_blueprint_pin
+  [ "$output" = "ghcr.io/vossiman/devbox-base:latest" ]
 }
 
 @test "current pin: skips PR and pull, rebuilds anyway" {
@@ -82,7 +83,7 @@ EOF
   [[ "$output" != *"PULL SHOULD NOT RUN"* ]]
   [[ "$output" != *"OPEN_PR SHOULD NOT RUN"* ]]
   [[ "$output" == *"RECREATED demo"* ]]
-  [[ "$output" == *"running the blueprint image"* ]]
+  [[ "$output" == *"running the newest image"* ]]
 }
 
 @test "working tree current but remote stale: PR opened, merge gate, no pull, rebuild" {
@@ -176,7 +177,7 @@ EOF
   [ "$status" -eq 0 ]
   [ "$(cat "$BATS_TEST_TMPDIR/pin-request")" = $'vossiman/devMachine\tmain\t'"$BP_IMAGE" ]
   [[ "$output" == *"RECREATED devMachine"* ]]
-  [[ "$output" == *"running the blueprint image"* ]]
+  [[ "$output" == *"running the newest image"* ]]
 }
 
 @test "stale pin with --no-wait: opens the PR and stops cleanly" {
@@ -344,12 +345,10 @@ EOF
 @test "rebuild landing on the wrong image fails loudly" {
   _dvw_catalog_source_pull() { return 1; }   # unused: pin is current
   _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }   # remote also current
-  _catalog_req() {
-    jq -n --arg d "sha256:$(printf 'b%.0s' {1..64})" '{image_digest:$d}'
-  }
+  _catalog_req() { jq -n '{image_current:false}'; }
   run cmd_pin_rebuild demo
   [ "$status" -eq 1 ]
-  [[ "$output" == *"blueprint is"* ]]
+  [[ "$output" == *"not on the newest image"* ]]
 }
 
 @test "no ids: runs the whole catalog, one workspace at a time" {

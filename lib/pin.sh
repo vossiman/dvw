@@ -21,19 +21,17 @@
 
 DVW_PIN_BRANCH_PREFIX="${DVW_PIN_BRANCH_PREFIX:-chore/pin-devbox-base}"
 
-# Blueprint pin (the source of truth). Reuses wizard.sh's fetch so both paths
-# read the same URL and honor the same test override. Prints the image ref;
-# non-zero on fetch failure or a devcontainer.json with no image.
-_dvw_blueprint_pin() {
-  local tmp image rc=0
-  tmp=$(mktemp) || return 1
-  if ! _fetch_blueprint_devcontainer "$tmp"; then
-    rm -f "$tmp"; return 1
-  fi
-  image=$(jq -r '.image // empty' "$tmp" 2>/dev/null) || rc=1
-  rm -f "$tmp"
-  [[ -n "$image" && $rc -eq 0 ]] || return 1
-  printf '%s\n' "$image"
+# Every devcontainer references the floating :latest tag. The build workflow
+# pushes :latest only after its smoke test, so :latest is the newest green
+# image. Whether a container runs it is the catalog's image_current verdict.
+DVW_IMAGE_GHCR_REPO="${DVW_IMAGE_GHCR_REPO:-vossiman/devbox-base}"
+_dvw_blueprint_pin() { printf 'ghcr.io/%s:latest\n' "$DVW_IMAGE_GHCR_REPO"; }
+
+# Docker never refreshes a tag it already has, so recreate must pull first,
+# on the provider's daemon, or it rebuilds onto the cached old :latest.
+_dvw_pull_latest() {
+  _dvw_run_or_print ssh -o BatchMode=yes -o ConnectTimeout=10 "$DVW_CATALOG_HOST" \
+    docker pull -q "$(_dvw_blueprint_pin)"
 }
 
 # owner/name from either remote form the fleet uses (SSH on hosts, HTTPS in
@@ -93,7 +91,7 @@ _dvw_pin_short() {
   local ref="$1"
   case "$ref" in
     *@sha256:*) printf '%.12s\n' "${ref##*@sha256:}" ;;
-    *)          printf '%s\n' "$ref" ;;
+    *)          local tail="${ref##*/}"; printf '%s\n' "${tail#*:}" ;;
   esac
 }
 
@@ -260,7 +258,7 @@ _dvw_pin_pr_only() {
   fi
   local bp
   if ! bp=$(_dvw_blueprint_pin); then
-    ui_error "couldn't read the selected blueprint pin"
+    ui_error "couldn't resolve the devbox-base image ref"
     return 1
   fi
 

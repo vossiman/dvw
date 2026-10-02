@@ -205,6 +205,10 @@ cmd_recreate() {
       return 1          # it took over and failed; do not rebuild over that
     fi
   fi
+  ui_action "pulling" "$(_dvw_blueprint_pin) on $DVW_CATALOG_HOST"
+  _dvw_pull_latest >/dev/null || {
+    ui_error "couldn't pull the newest image on $DVW_CATALOG_HOST; not rebuilding onto a stale one"
+    return 1; }
   ui_action "recreating" "$id (ide=$ide)"
   _dvw_run_or_print devpod up "$id" --recreate --ide "$ide" || return 1
   # devpod up rewrote its own SSH stanza (ForwardAgent yes) — reconcile it.
