@@ -47,6 +47,13 @@ setup() {
   [[ "$output" == *"ssh"*"vossisrv docker pull -q ghcr.io/vossiman/devbox-base:latest"* ]]
 }
 
+@test "a :latest pin PR gets a valid git branch name" {
+  source "$DVW_ROOT/lib/pin.sh"
+  run _dvw_pin_head_branch main ghcr.io/vossiman/devbox-base:latest
+  [ "$output" = "chore/pin-devbox-base-latest" ]
+  git check-ref-format "refs/heads/$output"
+}
+
 @test "pin-rebuild runs without aicoding-select" {
   command() {
     [[ "$1" == -v && "$2" == aicoding-select ]] && return 1

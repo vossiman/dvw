@@ -91,7 +91,7 @@ _dvw_pin_short() {
   local ref="$1"
   case "$ref" in
     *@sha256:*) printf '%.12s\n' "${ref##*@sha256:}" ;;
-    *)          printf '%s\n' "$ref" ;;
+    *)          local tail="${ref##*/}"; printf '%s\n' "${tail#*:}" ;;
   esac
 }
 
