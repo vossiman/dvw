@@ -61,13 +61,13 @@ catalog_workspace_get() {
   return 1
 }
 
-# Args: id repo branch ide provider host
+# Args: id repo branch provider host
 catalog_workspace_add() {
-  local id="$1" repo="$2" branch="$3" ide="$4" provider="$5" host="$6"
+  local id="$1" repo="$2" branch="$3" provider="$4" host="$5"
   local payload
   payload=$(jq -n --arg id "$id" --arg repo "$repo" --arg branch "$branch" \
-    --arg ide "$ide" --arg provider "$provider" --arg host "$host" \
-    '{id:$id, repo:$repo, branch:$branch, ide:$ide, provider:$provider, created_on:$host}')
+    --arg provider "$provider" --arg host "$host" \
+    '{id:$id, repo:$repo, branch:$branch, provider:$provider, created_on:$host}')
   # `|| true`: _catalog_req returns non-zero on >=400; without this, dvw's
   # `set -e` would abort before the status dispatch below ever runs.
   _catalog_req POST /v1/workspaces "$payload" >/dev/null || true

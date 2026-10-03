@@ -261,7 +261,7 @@ _parse_devpod_ids() {
 DEVPOD_NAME_MAX=48
 
 _new_usage() {
-  ui_info "usage: dvw new --repo <url> --name <name> [--branch <b>] [--ide ssh|cursor] [--init-empty] [--seed-devcontainer] [--yes]"
+  ui_info "usage: dvw new --repo <url> --name <name> [--branch <b>] [--init-empty] [--seed-devcontainer] [--yes]"
 }
 
 # Resolve <repo>'s branch list, retrying the SSH form for HTTPS github URLs
@@ -316,9 +316,7 @@ cmd_new() {
   # Reject a value that's missing or looks like the next flag (e.g. `--repo
   # --name x`, a common typo when a value is accidentally omitted) rather
   # than silently swallowing the following flag as this one's value.
-  # --ide defaults to ssh: every connect starts as ssh, Cursor is picked per
-  # connect from the menu. `cursor` stays accepted for scripted callers.
-  local repo="" branch="" name="" ide="ssh" init_empty=0 seed_devc=0 yes=0
+  local repo="" branch="" name="" init_empty=0 seed_devc=0 yes=0
   while (($#)); do
     case "$1" in
       --repo)   [[ -n "${2:-}" && "$2" != --* ]] || { ui_error "dvw new: --repo requires a value"; _new_usage; return 1; }
@@ -327,8 +325,6 @@ cmd_new() {
                 branch="$2"; shift 2 ;;
       --name)   [[ -n "${2:-}" && "$2" != --* ]] || { ui_error "dvw new: --name requires a value"; _new_usage; return 1; }
                 name="$2";   shift 2 ;;
-      --ide)    [[ -n "${2:-}" && "$2" != --* ]] || { ui_error "dvw new: --ide requires a value"; _new_usage; return 1; }
-                ide="$2";    shift 2 ;;
       --init-empty)         init_empty=1; shift ;;
       --seed-devcontainer)  seed_devc=1;  shift ;;
       --yes)                yes=1;        shift ;;
@@ -337,9 +333,6 @@ cmd_new() {
   done
   [[ -z "$repo" ]] && { ui_error "dvw new: --repo is required"; _new_usage; return 1; }
   [[ -z "$name" ]] && { ui_error "dvw new: --name is required"; _new_usage; return 1; }
-  case "$ide" in cursor|ssh) ;; *)
-    ui_error "dvw new: --ide must be ssh or cursor (got: ${ide:-<empty>})"; _new_usage; return 1 ;;
-  esac
   if [[ -z "$branch" ]]; then
     if (( init_empty )); then branch="main"; else
       ui_error "dvw new: --branch is required (or --init-empty for a fresh repo)"; _new_usage; return 1
@@ -448,21 +441,18 @@ cmd_new() {
   fi
 
   # Confirm (unless --yes), then the existing devpod-up/cleanup/catalog tail verbatim.
-  local devpod_ide="$ide"
-  [[ "$ide" == "ssh" ]] && devpod_ide="none"
-  printf '%srepo%s    %s\n%sbranch%s  %s\n%sname%s    %s\n%sIDE%s     %s\n' \
+  printf '%srepo%s    %s\n%sbranch%s  %s\n%sname%s    %s\n' \
     "$(_ansi "$DVW_SUBTLE")" "$(ui_reset)" "$repo" \
     "$(_ansi "$DVW_SUBTLE")" "$(ui_reset)" "$branch" \
-    "$(_ansi "$DVW_SUBTLE")" "$(ui_reset)" "$name" \
-    "$(_ansi "$DVW_SUBTLE")" "$(ui_reset)" "$ide"
+    "$(_ansi "$DVW_SUBTLE")" "$(ui_reset)" "$name"
   if (( ! yes )) && ! ui_confirm "Create workspace?"; then
     ui_info "aborted"
     return 1
   fi
 
   # 6. Run devpod up
-  ui_action "creating" "$name (ide=$devpod_ide)"
-  if devpod up "${repo}@${branch}" --id "$name" --ide "$devpod_ide"; then
+  ui_action "creating" "$name"
+  if devpod up "${repo}@${branch}" --id "$name" --ide none; then
     # devpod wrote its own SSH stanza (ForwardAgent yes) — reconcile it to the
     # dvw standard. Best-effort: a fresh workspace is still usable without it.
     _dvw_ensure_ssh_alias "$name" || true
@@ -487,7 +477,7 @@ cmd_new() {
   provider=$(catalog_default provider)
   provider="${provider:-${DVW_PROVIDER:-vossisrv}}"
   host=$(hostname -s)
-  catalog_workspace_add "$name" "$repo" "$branch" "$ide" "$provider" "$host"
+  catalog_workspace_add "$name" "$repo" "$branch" "$provider" "$host"
   catalog_repo_upsert "$repo" "$branch"
   # Snapshot devpod's local workspace.json (carries the uid that binds the
   # workspace ID to the remote agent dir + dind volumes) into the catalog so

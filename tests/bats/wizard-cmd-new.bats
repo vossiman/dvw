@@ -43,34 +43,35 @@ setup() {
 }
 
 @test "cmd_new: missing --repo errors with usage" {
-  run cmd_new --name x --ide ssh --yes
+  run cmd_new --name x --yes
   [ "$status" -eq 1 ]
   echo "$output" | grep -q -- "--repo"
   echo "$output" | grep -q "usage: dvw new"
 }
 
-@test "cmd_new: --ide omitted defaults to ssh (devpod --ide none, catalog ide=ssh)" {
+@test "cmd_new: always creates with devpod --ide none and stores no ide" {
   devpod() {
     case "$1" in
       list) printf '[]' ;;
       up) echo "up:$*" >> "$BATS_TEST_TMPDIR/calls" ;;
     esac
   }
-  catalog_workspace_add() { echo "cat-add:$1 ide=$4" >> "$BATS_TEST_TMPDIR/calls"; }
+  catalog_workspace_add() { echo "cat-add:$*" >> "$BATS_TEST_TMPDIR/calls"; }
   run cmd_new --repo "$REMOTE" --branch main --name wsx --yes
   [ "$status" -eq 0 ]
   grep -q -- "--ide none" "$BATS_TEST_TMPDIR/calls"
-  grep -q "cat-add:wsx ide=ssh" "$BATS_TEST_TMPDIR/calls"
+  grep -q "cat-add:wsx $REMOTE main" "$BATS_TEST_TMPDIR/calls"
+  ! grep -qE "cat-add:.*(ssh|cursor)" "$BATS_TEST_TMPDIR/calls"
 }
 
-@test "cmd_new: bad --ide errors" {
-  run cmd_new --repo "$REMOTE" --branch main --name x --ide vim --yes
+@test "cmd_new: --ide is no longer accepted" {
+  run cmd_new --repo "$REMOTE" --branch main --name x --ide cursor --yes
   [ "$status" -eq 1 ]
-  echo "$output" | grep -q "ide"
+  echo "$output" | grep -q "unknown argument: --ide"
 }
 
 @test "cmd_new: --repo followed by a flag-shaped value errors with usage" {
-  run cmd_new --repo --name x --ide ssh --yes
+  run cmd_new --repo --name x --yes
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "usage: dvw new"
 }
@@ -121,7 +122,7 @@ EOF
     esac
   }
   _branch_has_devcontainer() { echo "devc-probe:$1" >> "$BATS_TEST_TMPDIR/calls"; return 0; }
-  run cmd_new --repo https://github.com/foo/bar.git --branch main --name wsx --ide ssh --yes
+  run cmd_new --repo https://github.com/foo/bar.git --branch main --name wsx --yes
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "answered github only over SSH"
   grep -q "up:https://github.com/foo/bar.git@main" "$BATS_TEST_TMPDIR/calls"
@@ -138,14 +139,14 @@ EOF
     esac
   }
   _branch_has_devcontainer() { return 0; }
-  run cmd_new --repo git@github.com:foo/bar.git --branch main --name wsx --ide ssh --yes
+  run cmd_new --repo git@github.com:foo/bar.git --branch main --name wsx --yes
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "using HTTPS form for github"
   grep -q "up:https://github.com/foo/bar.git@main" "$BATS_TEST_TMPDIR/calls"
 }
 
 @test "cmd_new: happy path creates workspace non-interactively" {
-  run cmd_new --repo "$REMOTE" --branch main --name wsx --ide ssh --yes
+  run cmd_new --repo "$REMOTE" --branch main --name wsx --yes
   [ "$status" -eq 0 ]
   grep -q "up:${REMOTE}@main" "$BATS_TEST_TMPDIR/calls"
   grep -q "cat-add:wsx" "$BATS_TEST_TMPDIR/calls"
@@ -157,7 +158,7 @@ EOF
 # every freshly created workspace starts life forwarding the whole keyring.
 @test "cmd_new: reconciles the ssh alias after a successful devpod up" {
   _dvw_ensure_ssh_alias() { echo "reconciled:$1" >> "$BATS_TEST_TMPDIR/calls"; return 0; }
-  run cmd_new --repo "$REMOTE" --branch main --name wsx --ide ssh --yes
+  run cmd_new --repo "$REMOTE" --branch main --name wsx --yes
   [ "$status" -eq 0 ]
   grep -qx "reconciled:wsx" "$BATS_TEST_TMPDIR/calls"
 }
@@ -171,53 +172,53 @@ EOF
     esac
   }
   _dvw_ensure_ssh_alias() { echo "reconciled:$1" >> "$BATS_TEST_TMPDIR/calls"; return 0; }
-  run cmd_new --repo "$REMOTE" --branch main --name wsx --ide ssh --yes
+  run cmd_new --repo "$REMOTE" --branch main --name wsx --yes
   [ "$status" -ne 0 ]
   ! grep -q "reconciled:wsx" "$BATS_TEST_TMPDIR/calls"
 }
 
 @test "cmd_new: nonexistent branch errors naming available branches" {
-  run cmd_new --repo "$REMOTE" --branch nope --name wsx --ide ssh --yes
+  run cmd_new --repo "$REMOTE" --branch nope --name wsx --yes
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "main"
 }
 
 @test "cmd_new: empty repo without --init-empty errors naming the flag" {
-  run cmd_new --repo "$EMPTY_REMOTE" --branch main --name wsx --ide ssh --yes
+  run cmd_new --repo "$EMPTY_REMOTE" --branch main --name wsx --yes
   [ "$status" -eq 1 ]
   echo "$output" | grep -q -- "--init-empty"
 }
 
 @test "cmd_new: empty repo with --init-empty seeds and proceeds" {
-  run cmd_new --repo "$EMPTY_REMOTE" --name wsx --ide ssh --init-empty --yes
+  run cmd_new --repo "$EMPTY_REMOTE" --name wsx --init-empty --yes
   [ "$status" -eq 0 ]
   git --git-dir "$EMPTY_REMOTE" rev-parse refs/heads/main   # branch now exists
   grep -q "up:" "$BATS_TEST_TMPDIR/calls"
 }
 
 @test "cmd_new: missing devcontainer without --seed-devcontainer warns but proceeds" {
-  run cmd_new --repo "$REMOTE" --branch main --name wsx --ide ssh --yes
+  run cmd_new --repo "$REMOTE" --branch main --name wsx --yes
   [ "$status" -eq 0 ]
   echo "$output" | grep -qi "no devcontainer"
   echo "$output" | grep -q -- "--seed-devcontainer"
 }
 
 @test "cmd_new: without --yes, non-TTY fails closed before devpod up" {
-  run cmd_new --repo "$REMOTE" --branch main --name wsx --ide ssh < /dev/null
+  run cmd_new --repo "$REMOTE" --branch main --name wsx < /dev/null
   [ "$status" -eq 1 ]
   ! grep -q "up:" "$BATS_TEST_TMPDIR/calls" 2>/dev/null || false
 }
 
 @test "cmd_new: name colliding with catalog errors" {
   catalog_workspace_get() { [[ "$1" == "wsx" ]]; }
-  run cmd_new --repo "$REMOTE" --branch main --name wsx --ide ssh --yes
+  run cmd_new --repo "$REMOTE" --branch main --name wsx --yes
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "already exists in catalog"
 }
 
 @test "cmd_new: name colliding with devpod store errors" {
   devpod() { case "$1" in list) printf '[{"id":"wsx"}]' ;; esac; }
-  run cmd_new --repo "$REMOTE" --branch main --name wsx --ide ssh --yes
+  run cmd_new --repo "$REMOTE" --branch main --name wsx --yes
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "already exists in DevPod"
 }

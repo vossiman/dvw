@@ -62,7 +62,7 @@ def new_check_devcontainer(repo: str, branch: str) -> list[str]:
 
 def new_create(repo: str, branch: str, name: str,
                init_empty: bool = False, seed_devcontainer: bool = False) -> list[str]:
-    # No --ide: `dvw new` defaults to ssh; Cursor is chosen per connect.
+    # Workspaces store no IDE; Cursor is chosen per connect.
     argv = [dvw_bin(), "new", "--repo", repo, "--branch", branch,
             "--name", name]
     if init_empty:
