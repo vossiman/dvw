@@ -78,6 +78,25 @@ Record the container id and a marker file in the workspace first.
 9. After each restart, confirm what the container needs at boot came back
    (the boot sync ran, the tmux `work` session can be created).
 
+### Result (run by the owner, 2026-10-03, `dataenv-git-devpod`)
+
+Passed. Decision 3 stands.
+
+| Step | Observed |
+|---|---|
+| 1 | `docker stop -t 10` returned in 0.86 s, exit code 0. Restart policy `no`. |
+| 2 | Catalog status `liveness: stopped`, activity state `stopped`. `GET /v1/workspaces/<id>/container` returns `container_id: null`. |
+| 3 | Still exited after ten minutes, same `StartedAt`. |
+| 4 | Client `devpod status` said `Stopped`. `dvw <id>` printed `starting`, the session opened about 14 s later. Same container id, new `StartedAt`, both marker files present (the one in the container filesystem proves a restart, not a recreate), exactly one container on the workspace mount. |
+| 5 | Stop, then connect at once: took the explicit start path and connected in about 4 s. |
+| 5a | Stop in the background, connect 0.3 s later: connected normally. The stop finished before dvw reached its liveness check, so the in-flight window was not actually hit. It is under a second for an idle container. |
+| 6 | `dvw start` reported `state=stopped`, started it, and the following connect worked. |
+| 9 | tmux `work` was created on each start. |
+
+Not run: step 7 (Cursor) and step 8 (second client). DevPod prints
+`Creating devcontainer...` on every start, including a plain restart, so
+that line is not evidence of a recreate.
+
 If any step fails, stop and revise this spec to the fallback (host-side
 stopper running `devpod stop`). Sections "T3 exemption", "Decision rule"
 and "TUI" are unaffected by that switch.
