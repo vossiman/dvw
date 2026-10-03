@@ -1,20 +1,22 @@
 # Automatic workspace stop after idle: design
 
-Date: 2026-10-03. Ticket: DVW-18. Status: draft for review.
+Date: 2026-10-03. Ticket: DVW-18. Status: draft, revised after review round 1
+(Codex `gpt-6-astra`, 2026-10-03).
 
 ## Goal
 
 The catalog already measures how long each workspace has been idle
 (`catalog-service/app/activity.py`), but only reports it. This design makes
-the catalog stop a workspace container once it has been continuously idle
-for its timeout, and tidies how the TUI shows idle state.
+the catalog stop a workspace container once it has accumulated its timeout
+in verified idle time, and tidies how the TUI shows idle state.
 
 Success means:
 
 - An idle workspace is stopped after its timeout (default 60 minutes) and
   starts again on the next `dvw <id>`.
-- A workspace with a live session, a running agent, a T3 server or an
-  `always_on` flag is never stopped.
+- A workspace with a live session, a running agent or a T3 server that the
+  probe can see, or with an `always_on` flag, is never stopped. What the
+  probe cannot see is listed under "Detection limits".
 - Any doubt about a measurement blocks the stop.
 - Nothing is ever deleted. The only new capability is "stop one DevPod
   workspace container".
@@ -44,20 +46,34 @@ Success means:
 
 Decision 3 rests on an assumption that has not been tested on this fleet:
 that a Docker-level stop leaves DevPod in a state it restarts cleanly from.
-`lib/connect.sh:66-93` suggests it does (a stopped container falls through
-to the `<id>.devpod` alias, whose ProxyCommand runs DevPod's implicit up),
-but that path has not been exercised after a plain `docker stop`.
 
-On vossisrv, with an idle workspace nobody needs (`dataenv-git-devpod`):
+What the code says should happen: the catalog resolves only running
+containers, so a stopped workspace answers "no container" and
+`lib/connect.sh:76-79` runs an explicit `devpod up` before anything touches
+the `<id>.devpod` alias. That answer is cached for 8 s
+(`resolve_cache_ttl`, `app/deps.py:82-95`), so a reconnect inside that
+window takes the other branch: the alias probe fails and the provider is
+asked directly (`connect.sh:80-90`).
 
-1. `docker stop -t 30 <container>`.
+On vossisrv, with an idle workspace nobody needs (`dataenv-git-devpod`).
+Record the container id and a marker file in the workspace first.
+
+1. `docker stop -t 10 <container>`.
 2. Confirm the catalog reports `liveness: stopped` and the activity state
    `stopped`.
 3. Confirm the container stays stopped for ten minutes (no restart policy
    or DevPod daemon brings it back).
 4. `dvw dataenv-git-devpod` from a client. It must start the same
-   container (same container id, no twin, no recreate) and open the
-   session with the workspace content intact.
+   container (same container id, no twin, no recreate), open the session,
+   and show the marker file.
+5. Stop it again and reconnect within 5 seconds, to exercise the cached
+   "still running" answer.
+6. Stop it again and run `dvw start dataenv-git-devpod`.
+7. Stop it again and open it with `--cursor`.
+8. Stop it again and connect from a second client machine, whose local
+   DevPod state is older.
+9. After each restart, confirm what the container needs at boot came back
+   (the boot sync ran, the tmux `work` session can be created).
 
 If any step fails, stop and revise this spec to the fallback (host-side
 stopper running `devpod stop`). Sections "T3 exemption", "Decision rule"
@@ -72,12 +88,15 @@ number of running T3 server processes in the container. A T3 server is a
 process whose executable basename is `t3` and whose first argument is
 `serve` (today: `.../t3-linux-x64/t3 serve <dir>`). It follows the same
 rule as the other counters: an integer when the `/proc` scan was complete,
-`null` when it was not.
+`null` when it was not. Like the existing counters it sees only processes
+owned by the probe's own user (`bin/dvw-probe:230`, `:361`), which is the
+user the managed launcher runs T3 as (`lib/t3-supervise:33`).
 
 In the catalog, `ProbeActivity` (`app/probe.py`) gains
 `t3_servers: int | None`. It is not an activity signal. It is an exemption:
 
-- `t3_servers > 0`: state `always-on`, with the reason `t3`.
+- `t3_servers > 0`: state `always-on`, with the reason `t3`. Entering this
+  state clears any idle credit, like any other non-idle state.
 - `t3_servers == 0`: no effect.
 - `t3_servers` null or absent: the sample is not complete, so the state is
   `unknown`, exactly like a null in any existing signal. This needs no code
@@ -92,56 +111,95 @@ stopping T3 lifts it without anyone editing the catalog.
 
 ### 2. Decision rule (catalog)
 
-The observer keeps doing what it does today. Its docstring promise stays
-true: `activity.py` holds no mutation capability. A new module,
-`app/stopper.py`, owns the stop.
+The observer stays the single owner of idle credit, and `activity.py`
+still holds no mutation capability. A new module, `app/stopper.py`, owns
+the stop. It never keeps its own copy of the countdown.
 
-After each observer pass (every 30 s), for each workspace whose view is
-`idle` with `remaining_seconds == 0`, and only when enforcement is on, the
-stopper runs these checks in order. Any failed check means "do not stop
-now"; the reason is logged and recorded once per change, not every pass.
+**Idle credit.** Credit is accumulated verified idle time, not strictly
+uninterrupted time: today's observer keeps earned credit across one
+unknown sample and does not credit the gap
+(`activity.py:106-111`, `tests/test_activity.py:216`). That rule stays. A
+second unknown in a row, any activity, a container restart, a policy change
+or a gap over 90 s resets it, as today.
 
-1. **Policy.** The workspace is not `always_on`.
-2. **Recent use.** `POST /v1/workspaces/{id}/touch` (already sent by
-   `lib/connect.sh:92` before the session opens) resets that workspace's
-   idle credit to zero. So a workspace someone is connecting to right now
-   has a full timeout ahead of it. This is the coordination with
-   connect/start that the ticket asks for.
-3. **Fresh, uncached recheck.** Probe the workspace again, bypassing the
-   5 s snapshot cache. Require all of:
-   - exactly one running DevPod container for the workspace,
-   - the same `(container id, StartedAt)` as the record that earned the
-     idle credit,
-   - a complete probe report inside the accepted time window,
-   - every activity signal an integer `0`, and `t3_servers` an integer `0`.
-4. **Stop.** `POST /containers/<full id>/stop?t=30` through the proxy.
+**Touch.** `POST /v1/workspaces/{id}/touch` resets that workspace's credit
+to zero in the observer. `lib/connect.sh:92` already sends it before the
+session opens. Two client changes make it cover every entry path: the
+touch moves to the top of `_connect_ssh` (before the start checks, not
+after; `_connect_cursor` already sends it first, `lib/connect.sh:367`),
+and `cmd_start` sends it too (it sends none today,
+`lib/commands.sh:135`).
 
-One stop runs at a time, inside the observer loop, so a stop cannot overlap
-the next sampling pass for that workspace.
+**Stop sequence.** After each observer pass (every 30 s), for each
+workspace whose view is `idle` with `remaining_seconds == 0`, and only when
+enforcement is on and the workspace is not `always_on`:
+
+1. **Recheck.** Take a fresh sample of that workspace, bypassing the 5 s
+   snapshot cache, and feed it through `ActivityObserver.update` like any
+   other sample. The recheck is therefore an ordinary observation: if it
+   shows activity, a T3 server, an unknown, a second container or a
+   restarted container, the observer's existing rules clear or carry the
+   credit. There is no separate "refused, try again next pass" state that
+   could stop on stale credit.
+2. **Revalidate.** The recheck runs in a thread while the event loop keeps
+   serving requests, so a touch can arrive during it. After it returns, read
+   the workspace's record again and require: state `idle`,
+   `remaining_seconds == 0`, the same idle start as before the recheck, the
+   same `(container id, StartedAt)`, and policy unchanged. Steps 2 and 3
+   run without yielding to the event loop in between, so no touch can land
+   between the final check and the dispatch.
+3. **Stop.** `POST /containers/<full id>/stop?t=10` through the proxy, with
+   a 25 s client deadline for this call only. The general Docker client
+   timeout stays at 10 s (`config.py:68`); the proxy's 30 s upstream
+   timeout (`dvw_docker_proxy.py:558`) already exceeds the grace period.
+4. **Invalidate.** Drop the workspace's entries from the resolve cache and
+   the snapshot cache, so a reconnect straight after does not read "still
+   running".
+
+One stop runs at a time, inside the observer loop.
+
+A touch that arrives after the stop is dispatched cannot cancel it. The
+session that sent it finds the container stopped and starts it again
+through the normal path; gate 0 step 5 tests exactly that.
 
 Outcomes:
 
-- Success (Docker answers 204, or 304 "already stopped"): history event
-  `stop` with the idle seconds; the next pass reports state `stopped`.
-- Failure (proxy denial, Docker error, timeout): history event
-  `stop-failed` with a short reason; the workspace is not retried for 10
-  minutes. Idle credit is kept.
+- **Stopped** (Docker answers 204, or 304 "already stopped"): history event
+  `stop` with the idle seconds.
+- **Failed** (proxy denial, Docker error status): history event
+  `stop-failed` with a short reason. No retry for 10 minutes.
+- **Uncertain** (deadline passed or connection lost): nothing is assumed.
+  The next observer pass reports what the container actually is. If it is
+  stopped, record `stop`; if it is still running, record `stop-failed` and
+  apply the 10 minute back-off.
 
 Existing protections that continue to block a stop with no new code:
 unknown, partial or stale probes; duplicate running containers; a gap of
 more than 90 s between samples; a container restart; a policy change. A
 catalog restart resets every countdown to zero, so no workspace is stopped
-sooner than one full timeout after the catalog starts.
+sooner than one full timeout after the catalog starts. Countdowns are never
+restored from the history file.
 
-Residual risk, accepted: between the recheck and the stop there is a
-window of a few milliseconds. A session opened in that window is dropped
-and the user reconnects, which starts the workspace again. No data is at
-risk; a stop sends SIGTERM and waits 30 s.
+**Detection limits.** These are inherited from the observation feature
+and become enforcing. The guarantee in "Goal" covers only what the probe
+measures:
 
-Detection limits carry over from the observation feature and are now
-enforcing: a background job with no terminal, a residual IDE server
-process and a bare DevPod process do not count as activity. A workspace
-that must survive those needs `always_on`.
+- Processes owned by another user in the container are not seen
+  (`bin/dvw-probe:230`, `:361`).
+- Agents are recognised from a fixed list: `claude`, `codex`,
+  `cursor-agent`, `opencode` (`bin/dvw-probe:26`).
+- IDE connections are detected from TCP sockets only
+  (`bin/dvw-probe:425`).
+- A background job with no terminal, a residual IDE server process and a
+  bare DevPod process do not count as activity.
+
+A workspace whose real use falls outside these needs `always_on`. Rollout
+step 4 checks this against real use before enforcement; whether any
+workspace on the fleet is exposed today is not verified.
+
+What a stop costs: the container gets SIGTERM and 10 s, then SIGKILL.
+Files on the workspace mount are untouched. Anything held only in a
+process is lost, exactly as with a manual `dvw stop`.
 
 ### 3. Enforcement switch
 
@@ -160,17 +218,29 @@ Accepted only when all hold, otherwise denied like any unknown route:
 
 - `<cid>` is a full 64-character lowercase hex id. Names and short ids are
   refused for this route.
-- The query is exactly one `t=<n>` with `n` an integer from 1 to 60.
+- The raw query string matches `t=<n>` exactly, with `n` an integer from 1
+  to 20, checked with an anchored pattern against the undecoded string. The
+  proxy forwards the original request target today
+  (`dvw_docker_proxy.py:333-336`); for this route it rebuilds a canonical
+  one (`/containers/<cid>/stop?t=<n>`) instead of passing the client's
+  through.
 - The request has no body.
 - The proxy itself asks Docker for that container
   (`GET /containers/<cid>/json`) and finds the DevPod workspace label
   (`dev.containers.id`) on it. vossisrv also runs the Dokploy-managed
   production containers, so this check is what keeps a misbehaving catalog
-  from stopping anything that is not a workspace.
+  from stopping anything that is not a workspace. A malformed or failed
+  inspect response denies the stop.
 
 Every allow and deny is logged with the container id, as for existing
 routes. `start`, `restart`, `kill`, `pause`, `remove`, `update` and
 `rename` stay denied, and tests assert each one.
+
+What the route does not limit: a compromised catalog could stop any
+labelled workspace container, including an active or exempt one, and the
+enforcement switch does not revoke the route. The damage is bounded to
+stopping workspaces, which restart on connect. Removing the capability
+means deploying the previous proxy.
 
 The proxy is deployed separately from the catalog
 (`deploy/dvw-docker-proxy.service`), so it must be updated before the
@@ -192,8 +262,12 @@ it already uses.
 
 Compatibility: an older TUI rejects entries whose `observation_only` is not
 `true` or whose reasons it does not know, and shows `activity unknown` for
-them (`tui/dvw_tui/client.py:229-236`). That is a safe degradation, and
-`dvw update` fixes it. The TUI and catalog ship from the same repository.
+them (`tui/dvw_tui/client.py:229-236`). But its sidebar also prints
+`observation-only; no automatic stops` unconditionally
+(`tui/dvw_tui/render.py:181`), which would be false once enforcement is on.
+So every client machine must run the new TUI before enforcement is switched
+on (rollout step 5). While enforcement is off, old and new clients are both
+correct.
 
 ### 6. TUI (`tui/dvw_tui/render.py`, `client.py`)
 
@@ -215,16 +289,22 @@ Sidebar (inspect pane), in this order:
 | last stop | `auto-stopped 14:02 after 60m idle` | or `stop failed 14:02`. Only when `stop` is present. |
 
 `parse_activity` accepts `observation_only` as a boolean, keeps `signals`
-and `stop`, and accepts the `t3` reason.
+and `stop`, and accepts the `t3` reason. When an entry cannot be parsed,
+the `mode` line reads `unknown`, never `observation-only`.
+
+The sidebar skips the activity block for stopped and absent workspaces
+today (`tui/dvw_tui/screens/main.py:378-379`). That changes: a stopped
+workspace shows `activity`, `mode`, `timeout` and `last stop`.
 
 ## Components and repositories
 
 | Change | Repository | Files |
 |---|---|---|
 | `t3_servers` in the probe | aiCodingBaseSetup | `bin/dvw-probe`, its tests |
-| Exemption, stopper, switch, API | dvw | `catalog-service/app/{probe,activity,stopper,config,main,docker_inspect}.py`, `routers/workspaces.py` (touch resets credit) |
+| Exemption, stopper, switch, API | dvw | `catalog-service/app/{probe,activity,stopper,config,main,docker_inspect,deps}.py`, `routers/workspaces.py` (touch resets credit) |
+| Touch on every entry path | dvw | `lib/connect.sh`, `lib/commands.sh` |
 | Stop route | dvw | `catalog-service/proxy/dvw_docker_proxy.py`, `deploy/docker-proxy.md` |
-| TUI | dvw | `tui/dvw_tui/{render,client}.py` |
+| TUI | dvw | `tui/dvw_tui/{render,client}.py`, `tui/dvw_tui/screens/main.py` |
 | Docs | dvw | `README.md`, `catalog-service/README.md` |
 
 ## Testing
@@ -240,13 +320,22 @@ and `stop`, and accepts the `t3` reason.
   `StartedAt`, partial probe, stale probe, any non-zero signal, any null
   signal), plus success, "already stopped", failure with 10 minute
   back-off, and "no stop within one timeout of catalog start".
+  Interleavings: a touch during the recheck cancels the stop; mature credit,
+  then a recheck that sees an agent or T3, then quiet, needs a full new
+  timeout; a stop whose response is lost is reconciled on the next pass in
+  both directions; the caches are invalidated after a stop; the catalog
+  shutting down mid-stop leaves no false record.
+- **Client:** `_connect_ssh`, `_connect_cursor` and `cmd_start` each send
+  the touch before their start checks.
 - **Proxy:** the allow case, and a denial for each of: wrong method, short
-  id, container name, missing `t`, `t` out of range, duplicate `t`, extra
-  query key, non-empty body, container without the DevPod label, upstream
-  inspect failure. Plus a denial for each sibling verb listed in section 4.
+  id, container name, missing `t`, blank `t`, `t` out of range, duplicate
+  `t`, extra query key, percent-encoded key or value, non-empty body,
+  container without the DevPod label, upstream inspect failure, malformed
+  inspect response. The forwarded target is the rebuilt canonical one. Plus a denial for each sibling verb listed in section 4.
 - **TUI:** render tests for the overview row and each sidebar line in
-  observation-only and enforcing modes, and parser tests for the new
-  fields including an old-shape entry.
+  observation-only and enforcing modes, parser tests for the new fields
+  including an old-shape entry, and a screen-level test that a stopped
+  workspace shows its `last stop` line.
 - **Live:** gate 0, then the rollout steps below.
 
 ## Rollout
@@ -260,9 +349,13 @@ what happens to a running workspace.
 3. dvw PR merges. Proxy and catalog are deployed with enforcement off.
 4. Validate in observation mode for at least one working day: T3
    workspaces show `always-on (t3)`, no workspace sits at `unknown`, and
-   countdowns behave during normal tmux, Cursor and T3 use.
-5. Owner gives an explicit go-ahead. Set `CATALOG_ACTIVITY_ENFORCE=true`
-   and restart the catalog.
+   countdowns behave during normal tmux, Cursor and T3 use. For each kind
+   of real use on the fleet, confirm the workspace reads `active` while it
+   is in use; set `always_on` (via `PATCH /v1/workspaces/{id}`) on any
+   workspace whose use the probe does not see, and note it in the README.
+5. Every client machine runs the new TUI (`dvw update`). Owner gives an
+   explicit go-ahead. Set `CATALOG_ACTIVITY_ENFORCE=true` and restart the
+   catalog.
 6. Supervised first stop: set `idle_timeout_minutes` to 5 on one idle
    workspace, watch it stop, reconnect with `dvw <id>`, restore the
    timeout.
@@ -270,13 +363,17 @@ what happens to a running workspace.
 Rollback at any point: set `CATALOG_ACTIVITY_ENFORCE=false` and restart the
 catalog. Stopped workspaces start again on connect.
 
-## Open points for review
+## Review record
 
-- Whether touch-resets-credit is enough coordination with connect, or the
-  stopper should also refuse when `last_used_at` is within the last few
-  minutes regardless of credit.
-- Whether the in-memory `stop` record should instead be read back from the
-  history file so the "last stop" line survives a catalog restart.
-- Whether `always_on` needs a `dvw` command now that the flag has real
-  consequences, or the PATCH field is enough for the few workspaces that
-  need it.
+Round 1 (Codex `gpt-6-astra`, high effort, 2026-10-03): eight findings,
+all confirmed against the code and folded in above. The three points left
+open in the first draft are settled as the reviewer recommended:
+
+- **Connect coordination:** touch alone was not enough. The design now
+  uses an early touch on every entry path plus revalidation after the
+  recheck.
+- **"Last stop" across catalog restarts:** stays in memory. The history
+  file is the durable record.
+- **A `dvw` command for `always_on`:** not needed for this change. The
+  PATCH field is enough, with the exemption check written into rollout
+  step 4.
