@@ -7,6 +7,16 @@
 # running `devpod up <repo>@<branch> --id <id>`, which provisions a brand-new
 # workspace and would clobber the existing remote state.
 
+# Tell the catalog this workspace is about to be used BEFORE any liveness
+# check. The touch resets the idle countdown and waits out an automatic stop
+# in flight, so the checks that follow see a settled container state.
+_dvw_touch_first() {
+  local ws="$1"
+  catalog_workspace_touch "$ws" 2>/dev/null && return 0
+  ui_status_warn "$ws: the catalog did not confirm this connect; an automatic stop may be in progress. If the session drops, run: dvw $ws"
+  return 0
+}
+
 cmd_connect() {
   local ws="$1"
   shift || true
@@ -39,6 +49,9 @@ cmd_connect() {
     esac
   done
 
+  # First, before any container-state read below.
+  _dvw_touch_first "$ws"
+
   # Materialize devpod local state from the catalog snapshot if missing,
   # then resolve which container is canonical by direct observation of the
   # provider (tmux-bearing container wins). Both are no-ops on the happy path.
@@ -63,19 +76,8 @@ cmd_connect() {
 # from this code path — that's the wipe footgun. The actual `ssh -t`
 # below uses default (long) ssh timeouts and no BatchMode, so it retries
 # on its own where the 5s BatchMode probe gave up.
-# Tell the catalog this workspace is about to be used BEFORE any liveness
-# check. The touch resets the idle countdown and waits out an automatic stop
-# in flight, so the checks that follow see a settled container state.
-_dvw_touch_first() {
-  local ws="$1"
-  catalog_workspace_touch "$ws" 2>/dev/null && return 0
-  ui_status_warn "$ws: the catalog did not confirm this connect; an automatic stop may be in progress. If the session drops, run: dvw $ws"
-  return 0
-}
-
 _connect_ssh() {
   local ws="$1" win="${2:-}"
-  _dvw_touch_first "$ws"
   # Single-initiator ordering (2026-08-09): when the catalog says the
   # workspace has NO container, run the explicit up BEFORE anything touches
   # the <ws>.devpod alias. The alias's ProxyCommand (`devpod ssh --stdio`)
@@ -374,7 +376,6 @@ _dvw_ssh_session() {
 # involvement to be openable in Cursor.
 _connect_cursor() {
   local ws="$1"
-  _dvw_touch_first "$ws"
 
   # Single-initiator ordering (2026-08-09): a definitively cold workspace is
   # brought up here, before the health check — _dvw_workspace_health probes
