@@ -10,6 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +26,11 @@ class Settings(BaseSettings):
     # GET /containers/activity/history. Empty disables recording.
     activity_history_filename: str = "activity-history.jsonl"
     activity_history_max_bytes: int = 2 * 1024 * 1024
+    # Automatic stop of idle workspaces. Off = observation only. Turning it
+    # on needs an explicit owner go-ahead; see the auto-stop design spec.
+    activity_enforce: bool = False
+    # Seconds a container gets between SIGTERM and SIGKILL on an automatic stop.
+    activity_stop_grace: int = Field(default=10, ge=1, le=20)
 
     # Where the single JSON catalog lives. Plain, deliberately simple JSON so
     # the file stays hand-editable and trivial to copy between hosts.

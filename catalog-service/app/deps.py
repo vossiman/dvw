@@ -21,6 +21,7 @@ from .config import Settings, get_settings
 from .docker_inspect import Inspector
 from .models import CanonicalContainer
 from .activity import ActivityObserver
+from .stopper import Stopper
 from .store import CatalogStore
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -48,6 +49,13 @@ def get_activity_observer(request: Request) -> ActivityObserver:
 
 
 ActivityDep = Annotated[ActivityObserver, Depends(get_activity_observer)]
+
+
+def get_stopper(request: Request) -> Stopper:
+    return request.app.state.stopper
+
+
+StopperDep = Annotated[Stopper, Depends(get_stopper)]
 
 
 StoreDep = Annotated[CatalogStore, Depends(get_store)]

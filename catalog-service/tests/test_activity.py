@@ -148,7 +148,7 @@ def test_lifespan_starts_and_stops_observer(monkeypatch, settings):
     import asyncio
     events = []
     class Observer(ActivityObserver):
-        async def run(self, store, inspector):
+        async def run(self, store, inspector, *, after_pass=None):
             events.append('started')
             try: await asyncio.Event().wait()
             finally: events.append('stopped')

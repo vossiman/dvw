@@ -20,7 +20,7 @@ from .activity_history import ActivityHistory
 from .blueprint_store import BlueprintStore
 from .latest_image import LatestImageCache
 from .config import get_settings
-from .deps import require_auth
+from .deps import invalidate_resolve_cache, require_auth
 from .docker_inspect import DockerInspector
 from .routers import (
     blueprint,
@@ -31,6 +31,7 @@ from .routers import (
     repos,
     workspaces,
 )
+from .stopper import Stopper
 from .store import CatalogStore
 
 log = logging.getLogger("dvw-catalog")
@@ -83,9 +84,15 @@ async def lifespan(app: FastAPI):
         ActivityHistory(history_path, settings.activity_history_max_bytes)
         if history_path else None
     )
-    app.state.activity_observer = ActivityObserver(history=app.state.activity_history)
+    app.state.activity_observer = ActivityObserver(
+        history=app.state.activity_history, enforce=settings.activity_enforce)
+    app.state.stopper = Stopper(
+        app.state.activity_observer, app.state.inspector,
+        enforce=settings.activity_enforce, grace=settings.activity_stop_grace,
+        invalidate=invalidate_resolve_cache)
+    log.info("automatic idle stop: %s", "ON" if settings.activity_enforce else "off (observation only)")
     activity_task = asyncio.create_task(app.state.activity_observer.run(
-        app.state.store, app.state.inspector))
+        app.state.store, app.state.inspector, after_pass=app.state.stopper.run_pass))
     fleet_task = None
     if settings.fleet_proof_file is not None:
         from .fleet import FleetPublisher

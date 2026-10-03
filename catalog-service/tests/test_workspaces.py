@@ -112,3 +112,30 @@ def test_inspect_exposes_agents_git_and_probe(client, inspector):
 def test_inspect_defaults_when_probe_missing(client, inspector):
     body = client.get("/v1/workspaces/ws-zzz/inspect").json()
     assert body["probe"] == "missing" and body["agents"] == [] and body["git"] is None
+
+
+def test_touch_resets_idle_credit_and_waits_for_a_stop(client):
+    from app.deps import get_activity_observer, get_stopper
+    calls = []
+
+    class FakeObserver:
+        def reset(self, ws_id):
+            calls.append(('reset', ws_id))
+
+    class FakeStopper:
+        settled = True
+
+        async def wait(self, ws_id, timeout=25.0):
+            calls.append(('wait', ws_id))
+            return self.settled
+
+    stopper = FakeStopper()
+    client.app.dependency_overrides[get_activity_observer] = lambda: FakeObserver()
+    client.app.dependency_overrides[get_stopper] = lambda: stopper
+    _create(client, ws_id='w')
+    assert client.post('/v1/workspaces/w/touch').status_code == 200
+    assert calls == [('reset', 'w'), ('wait', 'w')]
+    stopper.settled = False
+    assert client.post('/v1/workspaces/w/touch').status_code == 503
+    assert client.post('/v1/workspaces/nope/touch').status_code == 404
+    assert calls[-1] == ('wait', 'w')                # the 404 never reached reset or wait

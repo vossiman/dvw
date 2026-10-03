@@ -3,14 +3,17 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from app.activity import ActivityObserver
 from app.blueprint_store import BlueprintStore
 from app.config import Settings
 from app.deps import (
+    get_activity_observer,
     get_blueprint_store,
     get_inspector,
     get_latest_image_cache,
     get_settings,
     get_store,
+    get_stopper,
     invalidate_resolve_cache,
 )
 from app.main import create_app
@@ -22,6 +25,7 @@ from app.models import (
     WorkspaceStatus,
     WorkspaceWindows,
 )
+from app.stopper import Stopper
 from app.store import CatalogStore
 
 
@@ -122,6 +126,10 @@ def client(settings, store, blueprint_store, inspector, latest_image):
     app.dependency_overrides[get_blueprint_store] = lambda: blueprint_store
     app.dependency_overrides[get_inspector] = lambda: inspector
     app.dependency_overrides[get_latest_image_cache] = lambda: latest_image
+    observer = ActivityObserver()
+    stopper = Stopper(observer, inspector, enforce=False)
+    app.dependency_overrides[get_activity_observer] = lambda: observer
+    app.dependency_overrides[get_stopper] = lambda: stopper
     # No context manager => lifespan is skipped => no real DockerInspector is
     # constructed. Routers use the overridden deps above.
     return TestClient(app)

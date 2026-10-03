@@ -234,7 +234,7 @@ All env vars are prefixed `CATALOG_` (see `deploy/catalog.env.example`):
 `CATALOG_RESOLVE_CACHE_TTL`. Clients use `DVW_CATALOG_HOST` / `DVW_CATALOG_SOCK`
 / `DVW_CATALOG_TOKEN`.
 
-## Workspace activity (observation only)
+## Workspace activity and automatic stop
 
 `GET /v1/containers/activity` returns the catalogue's shared activity snapshot.
 A background task samples catalogued workspaces every 30 seconds, even with no
@@ -273,3 +273,25 @@ recognized. Processes hidden from the probe or alternate IDE installation paths
 are not universally detectable. Always-on is appropriate for workspaces hosting
 services you want available even when no coding session is open. General service
 traffic is not treated as coding activity.
+
+### Automatic stop
+
+With `CATALOG_ACTIVITY_ENFORCE=true` the catalog stops a workspace container
+once it has accumulated its idle timeout. It is off by default.
+
+- Exempt: workspaces with `always_on: true`, and any workspace running a T3
+  server (reported by the probe as `t3_servers`, shown as `always-on (t3)`).
+- Before stopping, the catalog takes a fresh uncached sample and stops only if
+  the countdown is unchanged. Any unknown, partial or stale measurement blocks
+  the stop.
+- `POST /v1/workspaces/{id}/touch` resets the countdown and waits for a stop in
+  flight. dvw sends it first on connect and on `dvw start`.
+- Outcomes are in `GET /v1/containers/activity` (`stop`) and, durably, in
+  `GET /v1/containers/activity/history` (events `stop`, `stop-failed`).
+- The probe does not see processes of other users, agents outside its fixed
+  list, IDE connections that are not TCP, or background jobs without a
+  terminal. Set `always_on` for a workspace that depends on those:
+  `curl -s --unix-socket /run/dvw-catalog/catalog.sock -X PATCH
+  -H 'content-type: application/json' -d '{"always_on": true}'
+  http://dvw/v1/workspaces/<id>`.
+- Rollback: set the variable to `false` and restart `dvw-catalog`.
