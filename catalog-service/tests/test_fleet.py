@@ -5,13 +5,7 @@ from app.probe import CAPABILITY_NAMES, ProbeReport
 from tests.test_probe import GOOD
 
 NOW = 1_790_000_000.0
-CAPS = {
-    n: {
-        "version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3" if n == "mcp-kanban" else "1.2.3",
-        "config_compatible": True,
-    }
-    for n in CAPABILITY_NAMES
-}
+CAPS = {n: {"version": "1.2.3", "config_compatible": True} for n in CAPABILITY_NAMES}
 MOUNTS = {r: "/home/vossi/devpod/" + r.rsplit(".", 1)[1] for r in SHARED_ROOTS}
 
 
@@ -38,6 +32,16 @@ def test_all_good_is_complete_and_fresh():
         assert r["inventory_complete"] is True and r["expires_at"] == int(NOW) + 300
         assert [c["id"] for c in r["consumers"]] == ["a", "b"]
         assert r["consumers"][0]["components"]["mcp-playwright"] == CAPS["mcp-playwright"]
+
+
+def test_older_probe_still_reporting_mcp_kanban_is_complete_without_it():
+    old_caps = {**CAPS, "mcp-kanban": {"version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3",
+                                       "config_compatible": True}}
+    p = build_proof([_member("a", report=_report(capabilities=old_caps)), _member("b")], now=NOW)
+    for root in SHARED_ROOTS:
+        r = _root(p, root)
+        assert r["inventory_complete"] is True
+        assert all("mcp-kanban" not in c["components"] for c in r["consumers"])
 
 
 def test_failed_probe_makes_its_roots_incomplete():

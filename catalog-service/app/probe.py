@@ -106,12 +106,10 @@ class ProbeActivity(BaseModel):
         return None
 
 
-CAPABILITY_NAMES = ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright", "mcp-kanban")
+CAPABILITY_NAMES = ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright")
 SEMVER_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+")
-SHA_RE = re.compile(r"[0-9a-f]{40}")
 MAX_VERSION = 64
-# mcp-kanban reports a 40-hex git SHA instead of a semver; every other
-# capability reports x.y.z, which real tools suffix (Cursor's is
+# Every capability reports x.y.z, which real tools suffix (Cursor's is
 # "2026.09.18-9a7762b"). SEMVER_RE is deliberately a prefix match, matching
 # aicoding's own gate.
 
@@ -130,8 +128,7 @@ def _parse_capability(name: str, raw: object) -> ProbeCapability | None:
     compatible = raw.get("config_compatible")
     if not isinstance(version, str) or len(version) > MAX_VERSION or not isinstance(compatible, bool):
         return None
-    shape_ok = SHA_RE.fullmatch(version) if name == "mcp-kanban" else SEMVER_RE.match(version)
-    if not shape_ok:
+    if not SEMVER_RE.match(version):
         return None
     return ProbeCapability(version=version, config_compatible=compatible)
 
