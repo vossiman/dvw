@@ -13,7 +13,7 @@ def test_create_get_list(client):
     assert r.status_code == 201
     body = r.json()
     assert body["id"] == "proj-git-main"
-    assert body["ide"] == "ssh"  # fixed default; cursor is a per-connect choice
+    assert body["ide"] == "ssh"
     assert body["provider"] == "vossisrv"
 
     r = client.get("/v1/workspaces/proj-git-main")
@@ -112,3 +112,18 @@ def test_inspect_exposes_agents_git_and_probe(client, inspector):
 def test_inspect_defaults_when_probe_missing(client, inspector):
     body = client.get("/v1/workspaces/ws-zzz/inspect").json()
     assert body["probe"] == "missing" and body["agents"] == [] and body["git"] is None
+
+
+def test_create_ignores_legacy_ide(client):
+    r = client.post(
+        "/v1/workspaces",
+        json={"id": "old-client", "repo": "r", "branch": "main", "ide": "cursor"},
+    )
+    assert r.status_code == 201
+    assert r.json()["ide"] == "ssh"
+
+
+def test_legacy_stored_cursor_ide_is_served_as_ssh():
+    from app.models import Workspace
+    w = Workspace.model_validate({"id": "x", "repo": "r", "branch": "b", "ide": "cursor"})
+    assert w.ide == "ssh"

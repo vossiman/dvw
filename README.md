@@ -34,7 +34,7 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw pull [<file>…] [--from <ws>] [--all]` | take files back *out* of a workspace through its `out/` outbox (`/workspaces/<ws>/out`). Lists what is there, multi-select picker (`fzf --multi`, or a numbered `1,3` / `2-4` / `all` fallback), downloads into the directory `dvw` ran from, preserving subpaths. Prompts overwrite/rename/skip/cancel on a local collision; never deletes the remote file. Same running-workspace gate as `push`. |
 | `dvw watch [status\|start\|stop\|run]` | bastion push watcher: relays fresh Termius paste-uploads (`/tmp/<uuid>.<ext>`) into `/tmp/` of every workspace this machine is attached to, unattended, so a phone paste is paste, pause, enter in one tab. Armed on connect when `DVW_PUSH_WATCH=1` is in the dvw config (`install-bastion.sh` sets it); exits by itself once no session is live. Images, pdf, txt, md only. |
 | `dvw -l` | list workspaces (MRU order) |
-| `dvw new` | bare: opens the TUI's new-workspace wizard (same requirements as bare `dvw`). Flag-driven (no TUI/tty needed): `dvw new --repo <url> --name <name> [--branch <b>] [--ide ssh\|cursor] [--init-empty] [--seed-devcontainer] [--yes]` — creates the workspace and appends it to the catalog. See [Create a new workspace](#create-a-new-workspace). |
+| `dvw new` | bare: opens the TUI's new-workspace wizard (same requirements as bare `dvw`). Flag-driven (no TUI/tty needed): `dvw new --repo <url> --name <name> [--branch <b>] [--init-empty] [--seed-devcontainer] [--yes]` — creates the workspace and appends it to the catalog. See [Create a new workspace](#create-a-new-workspace). |
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
 | `dvw stop <id>` | `devpod stop` |
 | `dvw start <id>` | `devpod up` with the workspace's saved IDE |
@@ -225,18 +225,17 @@ dvw -l               # list and exit
 dvw new
 ```
 
-Bare `dvw new` opens the TUI's new-workspace wizard (same requirements as bare `dvw`: `uv` + a tty; `DVW_NO_TUI=1` makes it error out naming the reason instead). In the wizard: pick repo (from the catalog's saved list, or enter a new URL) → branch (picker of the branches that exist on the remote, sorted, first one highlighted) → workspace name (auto-suggested) → confirm. There is no IDE step: every workspace is created `ssh` (Enter connects over ssh; Cursor is opened per connect from the menu). On success, `devpod up` runs and the catalog is updated.
+Bare `dvw new` opens the TUI's new-workspace wizard (same requirements as bare `dvw`: `uv` + a tty; `DVW_NO_TUI=1` makes it error out naming the reason instead). In the wizard: pick repo (from the catalog's saved list, or enter a new URL) → branch (picker of the branches that exist on the remote, sorted, first one highlighted) → workspace name (auto-suggested) → confirm. There is no IDE step and workspaces store no IDE: start, recreate and pin-rebuild always run `devpod up --ide none`, Enter connects over ssh, and Cursor is opened per connect from the `x` menu or `dvw <id> --cursor`. On success, `devpod up` runs and the catalog is updated.
 
 For scripting, or when the TUI can't run, drive it with flags instead — no prompts, no tty required:
 
 ```bash
 dvw new --repo <url> --name <name> \
-  [--branch <branch>] [--ide ssh|cursor] [--init-empty] [--seed-devcontainer] [--yes]
+  [--branch <branch>] [--init-empty] [--seed-devcontainer] [--yes]
 ```
 
 - `--repo` (required) — clone URL. An `https://github.com/...` URL that fails over HTTPS (no credential helper in the devbox) is retried as its SSH form automatically; `dvw new` reports the swap.
 - `--name` (required) — workspace ID; sanitized, capped at DevPod's 48-char limit, and rejected if it collides with an existing catalog or DevPod entry.
-- `--ide` — `ssh` (default) or `cursor`. `cursor` makes `dvw start`/`recreate` open a Cursor window; normally leave it unset and open Cursor per connect instead.
 - `--branch` — defaults to `main` when combined with `--init-empty`; otherwise required.
 - `--init-empty` — if the repo has no branches yet, create an initial commit (seeded with the aiCodingBaseSetup blueprint `devcontainer.json` when reachable) instead of erroring.
 - `--seed-devcontainer` — if the target branch has no `devcontainer.json` DevPod would find, commit the blueprint one before `devpod up`.

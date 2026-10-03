@@ -100,7 +100,7 @@ _stdout_only() { main "$@" 2>/dev/null; }
 @test "main new with real flags still goes through the pre-flights" {
   # The early dispatch must be narrow: only the two plumbing flags.
   cmd_new() { echo "cmd_new:$*"; }
-  run main new --repo R --branch b --name n --ide ssh --yes
+  run main new --repo R --branch b --name n --yes
   [ -e "$BATS_TEST_TMPDIR/preflight-ran" ]
   echo "$output" | grep -q 'cmd_new:--repo R'
   echo "$output" | grep -q 'behind main'

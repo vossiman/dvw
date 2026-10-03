@@ -204,12 +204,12 @@ teardown() {
   export ADD_CAPTURE="$capture"
   catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  run catalog_workspace_add new-ws git@github.com:foo/bar.git main cursor vossisrv testhost
+  run catalog_workspace_add new-ws git@github.com:foo/bar.git main vossisrv testhost
   [ "$status" -eq 0 ]
   jq -e '.id == "new-ws"'          "$capture"
   jq -e '.repo == "git@github.com:foo/bar.git"' "$capture"
   jq -e '.branch == "main"'        "$capture"
-  jq -e '.ide == "cursor"'         "$capture"
+  jq -e 'has("ide") | not'        "$capture"
   jq -e '.provider == "vossisrv"'  "$capture"
   jq -e '.created_on == "testhost"' "$capture"
 }
@@ -223,7 +223,7 @@ teardown() {
   }
   catalog_stub_install
   source "$DVW_ROOT/lib/catalog.sh"
-  run catalog_workspace_add myrepo-feature-x git@github.com:foo/bar.git main cursor vossisrv testhost
+  run catalog_workspace_add myrepo-feature-x git@github.com:foo/bar.git main vossisrv testhost
   [ "$status" -ne 0 ]
   [[ "$output" == *"already exists"* ]]
 }

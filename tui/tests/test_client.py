@@ -41,7 +41,6 @@ def ok_handler(request: httpx.Request) -> httpx.Response:
 async def test_workspaces_parsed():
     ws = await make_client(ok_handler).workspaces()
     assert [w.id for w in ws] == ["alpha", "beta"]
-    assert ws[0].ide == "cursor"
 
 
 def test_short_repo_strips_github_prefixes():

@@ -40,8 +40,7 @@ def _default_provider() -> str:
 
 class Defaults(BaseModel):
     # `ide` used to live here; `extra="allow"` keeps legacy catalog files
-    # loading. New workspaces are always `ssh` — Cursor is opened per-connect
-    # from the menu, not stored as a workspace property.
+    # loading. Cursor is opened per connect from the menu, never stored.
     model_config = ConfigDict(extra="allow")
     provider: str = Field(default_factory=_default_provider)
 
@@ -61,6 +60,8 @@ class Workspace(BaseModel):
     id: str = Field(pattern=_ID_PATTERN, min_length=1, max_length=128)
     repo: str
     branch: str
+    # dvw ignores this. Forced to `ssh` (legacy `cursor` included) so older
+    # clients that still read `.ide` run `devpod up --ide none`.
     ide: str = "ssh"
     always_on: bool = False
     idle_timeout_minutes: int = Field(default=60, ge=1, le=10080, strict=True)
@@ -75,6 +76,11 @@ class Workspace(BaseModel):
     uid: str | None = None
     # Verbatim snapshot of devpod's client-side workspace.json. Opaque.
     devpod_state: dict[str, Any] | None = None
+
+    @field_validator("ide", mode="before")
+    @classmethod
+    def _ide_is_always_ssh(cls, _v: object) -> str:
+        return "ssh"
 
     @property
     def workspace_path(self) -> str:
@@ -113,6 +119,7 @@ class WorkspaceCreate(BaseModel):
     id: str = Field(pattern=_ID_PATTERN, min_length=1, max_length=128)
     repo: str
     branch: str
+    # Accepted and ignored: dvw clients older than the IDE removal still send it.
     ide: str | None = None
     provider: str | None = None
     created_on: str | None = None
@@ -126,7 +133,6 @@ class WorkspacePatch(BaseModel):
     idle_timeout_minutes: int = Field(default=60, ge=1, le=10080, strict=True)
     repo: str | None = None
     branch: str | None = None
-    ide: str | None = None
     provider: str | None = None
     uid: str | None = None
     devpod_state: dict[str, Any] | None = None

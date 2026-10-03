@@ -166,18 +166,13 @@ cmd_start() {
     stopped|absent|unknown|*) : ;;
   esac
 
-  local ide="none"
-  if catalog_workspace_get "$id" >/dev/null 2>&1; then
-    ide=$(catalog_workspace_get "$id" | jq -r '.ide')
-    [[ "$ide" == "ssh" ]] && ide="none"
-  fi
-  ui_action "starting" "$id (ide=$ide, state=$state)"
-  _dvw_safe_devpod_up "$id" --ide "$ide" || return 1
+  ui_action "starting" "$id (state=$state)"
+  _dvw_safe_devpod_up "$id" --ide none || return 1
   catalog_workspace_set_devpod_state "$id" 2>/dev/null || true
 }
 
 # Force-rebuild the container so a freshly-pushed devcontainer.json (or any
-# image/postCreate change) takes effect. Same IDE resolution as cmd_start.
+# image/postCreate change) takes effect.
 cmd_recreate() {
   local id="${1:-}"
   if [[ -z "$id" ]]; then
@@ -187,11 +182,6 @@ cmd_recreate() {
   _dvw_ensure_local_devpod_state "$id" || return 1
   _dvw_resolve_canonical_container "$id" || return 1
   _dvw_reap_stale_masters "$id"
-  local ide="none"
-  if catalog_workspace_get "$id" >/dev/null 2>&1; then
-    ide=$(catalog_workspace_get "$id" | jq -r '.ide')
-    [[ "$ide" == "ssh" ]] && ide="none"
-  fi
   # The committed pin is what devpod builds from, so a stale one silently
   # rebuilds you onto the old image. Offer to fix it first; declining just
   # proceeds. Fail-open — see _dvw_pin_preflight.
@@ -209,8 +199,8 @@ cmd_recreate() {
   _dvw_pull_latest >/dev/null || {
     ui_error "couldn't pull the newest image on $DVW_CATALOG_HOST; not rebuilding onto a stale one"
     return 1; }
-  ui_action "recreating" "$id (ide=$ide)"
-  _dvw_run_or_print devpod up "$id" --recreate --ide "$ide" || return 1
+  ui_action "recreating" "$id"
+  _dvw_run_or_print devpod up "$id" --recreate --ide none || return 1
   # devpod up rewrote its own SSH stanza (ForwardAgent yes) — reconcile it.
   # This path bypasses _dvw_safe_devpod_up, so it needs its own call.
   _dvw_ensure_ssh_alias "$id" || true
