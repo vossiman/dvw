@@ -86,11 +86,16 @@ catalog_workspace_remove() {
   return 0
 }
 
-# Bump last_used_at. Returns success even if ID missing (best-effort, as before).
+# Bump last_used_at. This also resets the workspace's idle countdown and
+# waits for an automatic stop in flight, so it can take up to ~25 s.
+# Success for 2xx and for an unknown id (best-effort, as before). Any other
+# outcome, including 503 "stop has not settled" and an unreachable catalog,
+# is a failure the caller should surface.
 catalog_workspace_touch() {
   local id="$1"
-  _catalog_req POST "/v1/workspaces/$id/touch" >/dev/null
-  return 0
+  _catalog_req POST "/v1/workspaces/$id/touch" >/dev/null && return 0
+  [[ "$DVW_CAT_STATUS" == "404" ]] && return 0
+  return 1
 }
 
 # ---- client-local: devpod context + per-machine workspace.json -------------

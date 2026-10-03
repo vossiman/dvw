@@ -228,6 +228,27 @@ EOF
   chmod +x "$STUB_BIN/ssh"
 }
 
+@test "_connect_ssh: touches the catalog before any start check" {
+  _load_order
+  catalog_workspace_touch() { echo "touch:$1" >> "$MODES_LOG"; }
+  _dvw_ws_container_state() { echo "state" >> "$MODES_LOG"; echo no; }
+  run _connect_ssh myws
+  [ "$status" -eq 0 ]
+  [ "$(sed -n 1p "$MODES_LOG")" = "touch:myws" ]
+  [ "$(grep -c '^touch:' "$MODES_LOG")" -eq 1 ]
+}
+
+@test "_connect_ssh: a failed touch warns and still connects" {
+  _load_order
+  ui_status_warn() { echo "WARN:$*"; }
+  catalog_workspace_touch() { return 1; }
+  _dvw_ws_container_state() { echo yes; }
+  run _connect_ssh myws
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WARN:"*"automatic stop"* ]]
+  grep -q "session:myws" "$MODES_LOG"
+}
+
 @test "_connect_ssh: cold workspace ups before any alias touch" {
   _load_order
   _dvw_ws_container_state() { echo no; }

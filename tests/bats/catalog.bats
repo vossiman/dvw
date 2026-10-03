@@ -270,6 +270,22 @@ teardown() {
   [ -f "$hit" ]
 }
 
+@test "catalog_workspace_touch: an unknown workspace is still success" {
+  catalog_route() { _stub_emit '{}' 404; }
+  catalog_stub_install
+  source "$DVW_ROOT/lib/catalog.sh"
+  run catalog_workspace_touch nope
+  [ "$status" -eq 0 ]
+}
+
+@test "catalog_workspace_touch: an unsettled stop (503) is a failure" {
+  catalog_route() { _stub_emit '{"detail":"not settled"}' 503; }
+  catalog_stub_install
+  source "$DVW_ROOT/lib/catalog.sh"
+  run catalog_workspace_touch myws
+  [ "$status" -eq 1 ]
+}
+
 # --- repos ------------------------------------------------------------------
 
 @test "catalog_repo_upsert: POSTs the repo payload and succeeds on 2xx" {
