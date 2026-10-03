@@ -1,7 +1,7 @@
 # Automatic workspace stop after idle: design
 
-Date: 2026-10-03. Ticket: DVW-18. Status: draft, revised after review round 1
-(Codex `gpt-6-astra`, 2026-10-03).
+Date: 2026-10-03. Ticket: DVW-18. Status: draft, revised after review rounds 1
+and 2 (Codex `gpt-6-astra`, 2026-10-03).
 
 ## Goal
 
@@ -68,6 +68,9 @@ Record the container id and a marker file in the workspace first.
    and show the marker file.
 5. Stop it again and reconnect within 5 seconds, to exercise the cached
    "still running" answer.
+5a. Start `docker stop -t 10` and run `dvw dataenv-git-devpod` while the
+   stop is still in progress. This shows what an unprotected client does
+   today, and is the behaviour the in-flight wait in section 2 replaces.
 6. Stop it again and run `dvw start dataenv-git-devpod`.
 7. Stop it again and open it with `--cursor`.
 8. Stop it again and connect from a second client machine, whose local
@@ -135,8 +138,13 @@ workspace whose view is `idle` with `remaining_seconds == 0`, and only when
 enforcement is on and the workspace is not `always_on`:
 
 1. **Recheck.** Take a fresh sample of that workspace, bypassing the 5 s
-   snapshot cache, and feed it through `ActivityObserver.update` like any
-   other sample. The recheck is therefore an ordinary observation: if it
+   snapshot cache, and apply it with the observer's own transition logic
+   as a single-record update. `ActivityObserver.update` replaces the whole
+   record set on every call (`activity.py:72`, `:125`), so it cannot be
+   called with one sample: that would wipe or blank every other
+   workspace's countdown. The per-record transition is factored out so a
+   full pass and a recheck share it; only a full pass prunes records. The
+   recheck is therefore an ordinary observation: if it
    shows activity, a T3 server, an unknown, a second container or a
    restarted container, the observer's existing rules clear or carry the
    credit. There is no separate "refused, try again next pass" state that
@@ -148,7 +156,10 @@ enforcement is on and the workspace is not `always_on`:
    same `(container id, StartedAt)`, and policy unchanged. Steps 2 and 3
    run without yielding to the event loop in between, so no touch can land
    between the final check and the dispatch.
-3. **Stop.** `POST /containers/<full id>/stop?t=10` through the proxy, with
+3. **Stop.** Mark the workspace as "stop in flight", recording the target
+   `(container id, StartedAt)`, in the same step that hands the call to
+   the worker thread. Then `POST /containers/<full id>/stop?t=10` through
+   the proxy, with
    a 25 s client deadline for this call only. The general Docker client
    timeout stays at 10 s (`config.py:68`); the proxy's 30 s upstream
    timeout (`dvw_docker_proxy.py:558`) already exceeds the grace period.
@@ -158,9 +169,17 @@ enforcement is on and the workspace is not `always_on`:
 
 One stop runs at a time, inside the observer loop.
 
-A touch that arrives after the stop is dispatched cannot cancel it. The
-session that sent it finds the container stopped and starts it again
-through the normal path; gate 0 step 5 tests exactly that.
+A touch that arrives after the stop is dispatched cannot cancel it, and
+the container keeps answering as "running" for up to 10 s while it shuts
+down. Left alone, `dvw start` would report "already running"
+(`lib/commands.sh:146-149`) and connect would open a session into a
+container that is about to die. So while a stop is in flight, the touch
+request does not return until the stop has finished or been reconciled
+(bounded by the 25 s deadline). The client then runs its normal liveness
+checks against the settled state and starts the workspace. For this to
+hold, the client's touch call must wait at least that long, and a touch
+that fails or times out during connect or start is reported to the user
+instead of being ignored as it is today (`lib/connect.sh:92`).
 
 Outcomes:
 
@@ -169,9 +188,17 @@ Outcomes:
 - **Failed** (proxy denial, Docker error status): history event
   `stop-failed` with a short reason. No retry for 10 minutes.
 - **Uncertain** (deadline passed or connection lost): nothing is assumed.
-  The next observer pass reports what the container actually is. If it is
-  stopped, record `stop`; if it is still running, record `stop-failed` and
-  apply the 10 minute back-off.
+  The stopper inspects the recorded target container by id (a route the
+  proxy already allows). The ordinary activity sample is not enough,
+  because it only looks at running containers and keeps no identity for a
+  stopped one (`docker_inspect.py:570-580`).
+  - Target not running: record `stop`.
+  - Target gone, or running with a different `StartedAt`: the stop worked
+    and something started the workspace again. Record `stop`.
+  - Target running with the same `StartedAt`: record `stop-failed` and
+    apply the 10 minute back-off.
+  - Inspect unavailable or ambiguous: the stop stays in flight. No new
+    stop is attempted for that workspace until it is resolved.
 
 Existing protections that continue to block a stop with no new code:
 unknown, partial or stale probes; duplicate running containers; a gap of
@@ -323,10 +350,15 @@ workspace shows `activity`, `mode`, `timeout` and `last stop`.
   Interleavings: a touch during the recheck cancels the stop; mature credit,
   then a recheck that sees an agent or T3, then quiet, needs a full new
   timeout; a stop whose response is lost is reconciled on the next pass in
-  both directions; the caches are invalidated after a stop; the catalog
-  shutting down mid-stop leaves no false record.
+  both directions, including a target that was restarted or replaced
+  before reconciliation and an inspect that stays unavailable; a recheck
+  of one workspace leaves every other workspace's credit untouched; a
+  touch during an in-flight stop returns only after it settles; the caches
+  are invalidated after a stop; the catalog shutting down mid-stop leaves
+  no false record.
 - **Client:** `_connect_ssh`, `_connect_cursor` and `cmd_start` each send
-  the touch before their start checks.
+  the touch before their start checks, wait for it, and report a failed
+  touch.
 - **Proxy:** the allow case, and a denial for each of: wrong method, short
   id, container name, missing `t`, blank `t`, `t` out of range, duplicate
   `t`, extra query key, percent-encoded key or value, non-empty body,
@@ -358,7 +390,8 @@ what happens to a running workspace.
    catalog.
 6. Supervised first stop: set `idle_timeout_minutes` to 5 on one idle
    workspace, watch it stop, reconnect with `dvw <id>`, restore the
-   timeout.
+   timeout. Repeat once connecting during the stop itself, and confirm the
+   client waits and then starts the workspace.
 
 Rollback at any point: set `CATALOG_ACTIVITY_ENFORCE=false` and restart the
 catalog. Stopped workspaces start again on connect.
@@ -377,3 +410,10 @@ open in the first draft are settled as the reviewer recommended:
 - **A `dvw` command for `always_on`:** not needed for this change. The
   PATCH field is enough, with the exemption check written into rollout
   step 4.
+
+Round 2 (same reviewer, final): one P1 and two P2, all confirmed and
+folded in. A connect or start during an in-flight stop now waits for it;
+the recheck is a single-record update instead of a call to `update`; an
+uncertain stop is reconciled against the recorded target container. There
+is no third round: anything further goes to the implementation plan and
+its tests.
