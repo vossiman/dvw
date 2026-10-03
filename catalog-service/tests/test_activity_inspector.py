@@ -5,7 +5,8 @@ from tests.test_resolver import FakeContainer, _inspector
 
 def container(**changes):
     report = dict(schema=1, ts=int(time.time()), partial=False, agents=[],
-                  activity=dict(tmux_sessions=0, terminals=0, cursor_connections=0, vscode_connections=0))
+                  activity=dict(tmux_sessions=0, terminals=0, cursor_connections=0,
+                                vscode_connections=0, t3_servers=0))
     report.update(changes)
     c = FakeContainer('c', 'n', 'u', '/workspaces/w', probe=report)
     c.attrs['State']['StartedAt'] = '2026-09-09T01:00:00Z'
