@@ -21,6 +21,7 @@ import time
 from typing import Protocol
 
 import docker
+import requests
 from docker.models.containers import Container
 
 from .config import Settings
@@ -39,6 +40,7 @@ from .models import (
     WorkspaceWindows,
 )
 from .activity import ActivitySample
+from .stopper import StopRefused, StopUncertain
 from .fleet import FleetMember, parse_docker_time
 from .probe import ProbeMissing, ProbeReport, run_probe
 
@@ -95,7 +97,10 @@ class Inspector(Protocol):
     def orphans(self, catalog_ids: set[str]) -> list[Orphan]: ...
     def waiting_windows(self) -> list[WaitingWindow]: ...
     def windows_many(self) -> list[WorkspaceWindows]: ...
-    def activity_many(self, ids: list[str]) -> list[ActivitySample]: ...
+    def activity_many(self, ids: list[str], fresh: bool = False) -> list[ActivitySample]: ...
+    def stop_container(self, cid: str, grace: int) -> None: ...
+    def container_state(self, cid: str) -> tuple[str, str | None] | None: ...
+    def forget_snapshot(self, cid: str) -> None: ...
 
 
 class Snapshot:
@@ -559,7 +564,7 @@ class DockerInspector:
             pass
         return None
 
-    def activity_many(self, ids: list[str]) -> list[ActivitySample]:
+    def activity_many(self, ids: list[str], fresh: bool = False) -> list[ActivitySample]:
         """Read-only background samples; duplicate running siblings are unknown.
 
         Do not use the status endpoint's 250ms attachment deadline: an activity
@@ -587,7 +592,8 @@ class DockerInspector:
             sample.started_at = c.attrs.get("State", {}).get("StartedAt")
             sample.running = True
             try:
-                report = self._snapshot(c).report
+                # fresh: the stop decision must not rest on a cached snapshot.
+                report = (self._probe_snapshot(c) if fresh else self._snapshot(c)).report
             except Exception:
                 sample.note = "probe unavailable"
                 continue
@@ -615,6 +621,33 @@ class DockerInspector:
         return result
 
     # ---- fleet proof -------------------------------------------------------
+
+    def stop_container(self, cid: str, grace: int) -> None:
+        """The only mutating Docker call in the catalog. docker-py waits
+        docker_timeout + grace for the answer."""
+        try:
+            self._client.api.stop(cid, timeout=grace)
+        except docker.errors.APIError as exc:
+            # The proxy answers 502 when dockerd broke off after the request
+            # was forwarded: the container may or may not have stopped.
+            if exc.status_code == 502:
+                raise StopUncertain("proxy 502") from None
+            raise StopRefused(f"docker: {exc}") from None
+        except (requests.exceptions.RequestException, OSError) as exc:
+            raise StopUncertain(type(exc).__name__) from None
+
+    def container_state(self, cid: str) -> tuple[str, str | None] | None:
+        """(status, StartedAt) of exactly this container, or None when gone."""
+        try:
+            attrs = self._client.api.inspect_container(cid)
+        except docker.errors.NotFound:
+            return None
+        state = attrs.get("State", {})
+        return state.get("Status"), state.get("StartedAt")
+
+    def forget_snapshot(self, cid: str) -> None:
+        with self._snap_lock:
+            self._snap_cache.pop(cid, None)
 
     def fleet_members(self) -> list[FleetMember]:
         """Every running devpod container, duplicates included, one probe each."""

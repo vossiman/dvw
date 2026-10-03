@@ -138,6 +138,12 @@ cmd_start() {
     ui_error "usage: dvw start <workspace-id>"
     return 1
   fi
+  # Before any liveness check: resets the idle countdown and waits out an
+  # automatic stop in flight, so "already running" below cannot be a
+  # container that is about to stop.
+  if ! catalog_workspace_touch "$id" 2>/dev/null; then
+    ui_status_warn "$id: the catalog did not confirm this start; an automatic stop may be in progress. Check with: dvw status"
+  fi
   _dvw_ensure_local_devpod_state "$id" || return 1
   _dvw_ensure_ssh_alias "$id" || return 1
   _dvw_resolve_canonical_container "$id" || return 1

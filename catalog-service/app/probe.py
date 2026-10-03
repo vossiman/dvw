@@ -90,6 +90,9 @@ class ProbeActivity(BaseModel):
     terminals: Annotated[int, Field(ge=0, le=100000, strict=True)] | None = None
     cursor_connections: Annotated[int, Field(ge=0, le=100000, strict=True)] | None = None
     vscode_connections: Annotated[int, Field(ge=0, le=100000, strict=True)] | None = None
+    # Exemption, not an activity signal: a workspace serving T3 is reached
+    # through its tunnel, so nothing would start it again after a stop.
+    t3_servers: Annotated[int, Field(ge=0, le=100000, strict=True)] | None = None
     # Why tmux_sessions is null. Lenient on purpose: an unknown or malformed
     # reason drops to None instead of rejecting the whole report, and only a
     # short slug survives, since it is shown in the activity history note.

@@ -218,13 +218,41 @@ class CatalogClient:
 
 ACTIVITY_REASONS = {
     "tmux": "tmux", "cursor": "Cursor connected", "vscode": "VS Code connected",
-    "terminal": "terminal", "agent": "agent",
+    "terminal": "terminal", "agent": "agent", "t3": "T3 server",
 }
+ACTIVITY_SIGNALS = ("tmux_sessions", "terminals", "agents", "cursor_connections",
+                    "vscode_connections", "t3_servers")
+
+
+def _parse_signals(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for key in ACTIVITY_SIGNALS:
+        if key not in value:
+            continue
+        n = value[key]
+        if n is None or (type(n) is int and 0 <= n <= 100000):
+            out[key] = n
+        else:
+            return {}
+    return out
+
+
+def _parse_stop(value: object) -> dict | None:
+    if not isinstance(value, dict) or value.get("result") not in ("stopped", "failed"):
+        return None
+    at, idle = value.get("at"), value.get("idle_seconds")
+    if type(at) not in (int, float) or not 0 <= at <= 253402300799:
+        return None
+    if idle is not None and (type(idle) is not int or not 0 <= idle <= 10**12):
+        return None
+    return {"result": value["result"], "at": at, "idle_seconds": idle}
 
 
 def parse_activity(entry: object) -> dict | None:
     """Only render bounded numeric values and known labels from the wire."""
-    if not isinstance(entry, dict) or entry.get("observation_only") is not True:
+    if not isinstance(entry, dict) or type(entry.get("observation_only")) is not bool:
         return None
     state = entry.get("state")
     if not isinstance(state, str) or state not in {"active", "idle", "always-on", "unknown", "stopped"}:
@@ -234,7 +262,10 @@ def parse_activity(entry: object) -> dict | None:
         not isinstance(r, str) or r not in ACTIVITY_REASONS for r in reasons
     ):
         return None
-    clean = {"state": state, "reasons": list(dict.fromkeys(reasons)), "observation_only": True}
+    clean = {"state": state, "reasons": list(dict.fromkeys(reasons)),
+             "observation_only": entry["observation_only"],
+             "signals": _parse_signals(entry.get("signals")),
+             "stop": _parse_stop(entry.get("stop"))}
     for field in ("observed_at", "idle_since", "idle_seconds", "remaining_seconds", "timeout_seconds"):
         value = entry.get(field, 3600 if field == "timeout_seconds" else None)
         limit = 253402300799 if field.endswith("_at") or field == "idle_since" else 10**12

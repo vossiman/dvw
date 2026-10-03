@@ -778,3 +778,130 @@ def test_denied_target_is_logged_as_a_repr(stack, caplog, evil):
     denies = [r.getMessage() for r in caplog.records if "verdict=deny" in r.getMessage()]
     assert denies
     assert any(repr(target.decode("latin-1")) in m for m in denies)
+
+
+# ---- stop route ------------------------------------------------------------
+
+CID = "36d6aa80c87bc614ce329f1aaa64fcc4a7cc30e8d4e75edb63ddb7614c07339b"
+
+
+def stop_handler(labels={"dev.containers.id": "default-da-1"}, inspect_status="200 OK",
+                 inspect_body=None, cid=CID):
+    def handler(method, target, headers, body, conn):
+        if method == "GET" and target == f"/containers/{cid}/json":
+            if inspect_body is not None:
+                return http(inspect_status, inspect_body)
+            return http(inspect_status, json.dumps(
+                {"Id": cid, "Config": {"Labels": labels}}).encode())
+        if method == "POST" and target.startswith(f"/containers/{cid}/stop"):
+            return http("204 No Content")
+        return http("404 Not Found", b"{}")
+    return handler
+
+
+def forwarded_stops(stack):
+    return [r for r in stack.upstream.requests if r[0] == "POST"]
+
+
+def test_stop_of_a_workspace_container_is_forwarded_canonically(stack):
+    stack.set_handler(stop_handler())
+    resp = stack.send(req("POST", f"/v1.47/containers/{CID}/stop?t=10"))
+    assert status_of(resp) == 204
+    method, target, headers, body = forwarded_stops(stack)[0]
+    assert target == f"/containers/{CID}/stop?t=10" and body == b""
+
+
+def test_stop_is_allowed_when_the_inspect_answer_is_chunked(stack):
+    payload = json.dumps({"Id": CID, "Config": {"Labels": {"dev.containers.id": "x"}}}).encode()
+    cut = len(payload) // 2
+    parts = [payload[:cut], payload[cut:cut + 7], payload[cut + 7:]]
+    chunked = b"".join(f"{len(p):x}\r\n".encode() + p + b"\r\n" for p in parts) + b"0\r\n\r\n"
+    inspect = (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+               b"Transfer-Encoding: chunked\r\n\r\n" + chunked)
+    plain = stop_handler()
+
+    def handler(method, target, headers, body, conn):
+        if method == "GET" and target == f"/containers/{CID}/json":
+            return inspect
+        return plain(method, target, headers, body, conn)
+    stack.set_handler(handler)
+    assert status_of(stack.send(req("POST", f"/containers/{CID}/stop?t=10"))) == 204
+    assert len(forwarded_stops(stack)) == 1
+
+
+def test_stop_of_unlabelled_container_is_denied(stack):
+    stack.set_handler(stop_handler(labels={"com.docker.swarm.service.name": "dokploy"}))
+    assert status_of(stack.send(req("POST", f"/containers/{CID}/stop?t=10"))) == 403
+    assert forwarded_stops(stack) == []
+
+
+@pytest.mark.parametrize("labels", [None, {}, {"dev.containers.id": ""}, {"dev.containers.id": 7}, "x"])
+def test_stop_needs_a_real_devpod_label(stack, labels):
+    stack.set_handler(stop_handler(labels=labels))
+    assert status_of(stack.send(req("POST", f"/containers/{CID}/stop?t=10"))) == 403
+    assert forwarded_stops(stack) == []
+
+
+@pytest.mark.parametrize("status, body", [
+    ("404 Not Found", b'{"message":"no such container"}'),
+    ("500 Internal Server Error", b"{}"),
+    ("200 OK", b"not json"),
+    ("200 OK", b"[]"),
+    ("200 OK", json.dumps({"Id": "f" * 64, "Config": {"Labels": {"dev.containers.id": "u"}}}).encode()),
+])
+def test_stop_is_denied_when_the_inspect_is_not_trustworthy(stack, status, body):
+    stack.set_handler(stop_handler(inspect_status=status, inspect_body=body))
+    assert status_of(stack.send(req("POST", f"/containers/{CID}/stop?t=10"))) == 403
+    assert forwarded_stops(stack) == []
+
+
+@pytest.mark.parametrize("target", [
+    f"/containers/{CID}/stop",                     # missing t
+    f"/containers/{CID}/stop?t=",                  # blank
+    f"/containers/{CID}/stop?t=0",
+    f"/containers/{CID}/stop?t=21",
+    f"/containers/{CID}/stop?t=10&t=10",           # duplicate
+    f"/containers/{CID}/stop?t=10&signal=SIGKILL", # extra key
+    f"/containers/{CID}/stop?%74=10",              # encoded key
+    f"/containers/{CID}/stop?t=1%30",              # encoded value
+    f"/containers/{CID}/stop?t=010",
+    f"/containers/{CID[:12]}/stop?t=10",           # short id
+    "/containers/ecstatic_northcutt/stop?t=10",    # name
+    f"/containers/{CID.upper()}/stop?t=10",
+])
+def test_malformed_stop_requests_never_reach_upstream(stack, target):
+    stack.set_handler(stop_handler())
+    assert status_of(stack.send(req("POST", target))) == 403
+    assert stack.upstream.requests == []
+
+
+def test_stop_with_a_body_is_denied(stack):
+    stack.set_handler(stop_handler())
+    assert status_of(stack.send(req("POST", f"/containers/{CID}/stop?t=10", b"{}"))) == 403
+    assert stack.upstream.requests == []
+
+
+@pytest.mark.parametrize("method, verb", [
+    ("POST", "start"), ("POST", "restart"), ("POST", "kill"), ("POST", "pause"),
+    ("POST", "unpause"), ("POST", "update"), ("POST", "rename"), ("GET", "stop"),
+])
+def test_sibling_verbs_stay_denied(stack, method, verb):
+    stack.set_handler(stop_handler())
+    assert status_of(stack.send(req(method, f"/containers/{CID}/{verb}?t=10"))) == 403
+    assert stack.upstream.requests == []
+
+
+def test_delete_stays_denied(stack):
+    stack.set_handler(stop_handler())
+    assert status_of(stack.send(req("DELETE", f"/containers/{CID}"))) == 403
+    assert stack.upstream.requests == []
+
+
+def test_stop_error_from_docker_is_relayed(stack):
+    def handler(method, target, headers, body, conn):
+        if method == "GET":
+            return http("200 OK", json.dumps(
+                {"Id": CID, "Config": {"Labels": {"dev.containers.id": "u"}}}).encode())
+        return http("500 Internal Server Error", b'{"message":"boom"}')
+    stack.set_handler(handler)
+    assert status_of(stack.send(req("POST", f"/containers/{CID}/stop?t=10"))) == 500

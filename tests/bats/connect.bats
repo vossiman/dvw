@@ -228,6 +228,50 @@ EOF
   chmod +x "$STUB_BIN/ssh"
 }
 
+# cmd_connect-level: the touch must precede every container-state read.
+_load_touch_order() {
+  _load_order
+  _dvw_ensure_local_devpod_state() { echo "ensure_state" >> "$MODES_LOG"; }
+  _dvw_ensure_ssh_alias() { echo "ensure_alias" >> "$MODES_LOG"; }
+  _dvw_resolve_canonical_container() { echo "resolve" >> "$MODES_LOG"; }
+  _dvw_reap_stale_masters() { echo "reap" >> "$MODES_LOG"; }
+  _dvw_ws_container_state() { echo "state" >> "$MODES_LOG"; echo yes; }
+  catalog_workspace_touch() { echo "touch:$1" >> "$MODES_LOG"; }
+}
+
+@test "cmd_connect: touches the catalog before any state read or probe" {
+  _load_touch_order
+  run cmd_connect myws
+  [ "$status" -eq 0 ]
+  [ "$(sed -n 1p "$MODES_LOG")" = "touch:myws" ]
+  grep -q "^ensure_state$" "$MODES_LOG"
+  grep -q "^resolve$" "$MODES_LOG"
+  grep -q "^state$" "$MODES_LOG"
+  grep -q "^sshprobe$" "$MODES_LOG"
+  grep -q "^session:myws" "$MODES_LOG"
+}
+
+@test "cmd_connect: exactly one touch for --ssh, --cursor and --both" {
+  _load_touch_order
+  for flag in --ssh --cursor --both; do
+    : > "$MODES_LOG"
+    run cmd_connect myws "$flag"
+    [ "$status" -eq 0 ]
+    [ "$(sed -n 1p "$MODES_LOG")" = "touch:myws" ]
+    [ "$(grep -c '^touch:' "$MODES_LOG")" -eq 1 ]
+  done
+}
+
+@test "cmd_connect: a failed touch warns and still connects" {
+  _load_touch_order
+  ui_status_warn() { echo "WARN:$*"; }
+  catalog_workspace_touch() { return 1; }
+  run cmd_connect myws
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WARN:"*"automatic stop"* ]]
+  grep -q "session:myws" "$MODES_LOG"
+}
+
 @test "_connect_ssh: cold workspace ups before any alias touch" {
   _load_order
   _dvw_ws_container_state() { echo no; }

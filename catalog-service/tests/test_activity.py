@@ -9,7 +9,8 @@ def ws(**kw):
 def sample(**kw):
     values = dict(workspace_id='w', container_id='c', started_at='start',
                   running=True, signals=dict(tmux_sessions=0, terminals=0,
-                  cursor_connections=0, vscode_connections=0, agents=0))
+                  cursor_connections=0, vscode_connections=0, agents=0,
+                  t3_servers=0))
     values.update(kw)
     return ActivitySample(**values)
 
@@ -35,7 +36,8 @@ def test_active_resets_countdown_and_includes_all_reasons():
     o = ActivityObserver()
     tick(o, 0)
     active = sample(signals=dict(tmux_sessions=1, terminals=1,
-                               cursor_connections=2, vscode_connections=1, agents=1))
+                               cursor_connections=2, vscode_connections=1, agents=1,
+                               t3_servers=0))
     r = tick(o, 30, [active])
     assert r.state == 'active'
     assert set(r.reasons) == {'tmux', 'terminal', 'cursor', 'vscode', 'agent'}
@@ -146,7 +148,7 @@ def test_lifespan_starts_and_stops_observer(monkeypatch, settings):
     import asyncio
     events = []
     class Observer(ActivityObserver):
-        async def run(self, store, inspector):
+        async def run(self, store, inspector, *, after_pass=None):
             events.append('started')
             try: await asyncio.Event().wait()
             finally: events.append('stopped')
@@ -157,6 +159,38 @@ def test_lifespan_starts_and_stops_observer(monkeypatch, settings):
         assert c.get('/v1/containers/activity').json() == []
         assert events == ['started']
     assert events == ['started', 'stopped']
+
+
+def _wired_app(monkeypatch, settings):
+    import app.main as main
+    import asyncio
+    class Observer(ActivityObserver):
+        async def run(self, store, inspector, *, after_pass=None):
+            await asyncio.Event().wait()
+    monkeypatch.setattr(main, 'get_settings', lambda: settings)
+    monkeypatch.setattr(main, 'DockerInspector', lambda _: object())
+    monkeypatch.setattr(main, 'ActivityObserver', Observer)
+    return main.create_app()
+
+
+def test_lifespan_wires_the_enforcement_switch_and_grace(monkeypatch, settings):
+    from fastapi.testclient import TestClient
+    settings.activity_enforce = True
+    settings.activity_stop_grace = 7
+    app = _wired_app(monkeypatch, settings)
+    with TestClient(app):
+        assert app.state.stopper.enforce is True
+        assert app.state.stopper.grace == 7
+        assert app.state.activity_observer.enforce is True
+        assert app.state.stopper.wait_timeout == settings.docker_timeout + 7 + 5
+
+
+def test_lifespan_default_settings_leave_enforcement_off(monkeypatch, settings):
+    from fastapi.testclient import TestClient
+    app = _wired_app(monkeypatch, settings)
+    with TestClient(app):
+        assert app.state.stopper.enforce is False
+        assert app.state.activity_observer.enforce is False
 
 
 def test_slow_batch_does_not_retimestamp_old_sample_as_fresh():
@@ -209,7 +243,7 @@ def test_silent_countdown_reset_is_logged_even_though_the_state_is_unchanged(cap
         result = tick(o, 60, samples=[sample(started_at='restarted')])
     lines = [r.getMessage() for r in caplog.records]
     assert lines == ['activity w: idle countdown reset [agents=0, cursor_connections=0, '
-                     'terminals=0, tmux_sessions=0, vscode_connections=0]']
+                     't3_servers=0, terminals=0, tmux_sessions=0, vscode_connections=0]']
     assert result.state == 'idle' and result.idle_seconds == 0
 
 
@@ -261,3 +295,105 @@ def test_unknown_without_container_identity_never_carries():
     tick(o, 630, [sample(container_id=None, started_at=None, running=None, signals={},
                          note='2 running containers')])
     assert tick(o, 660).idle_seconds == 0
+
+
+def signals(**kw):
+    base = dict(tmux_sessions=0, terminals=0, cursor_connections=0,
+                vscode_connections=0, agents=0, t3_servers=0)
+    base.update(kw)
+    return base
+
+
+def mature(observer, workspace=None):
+    """Earn a full timeout of idle credit, ending at t=3600."""
+    for t in range(0, 3601, 30):
+        result = tick(observer, t, workspace=workspace)
+    assert result.remaining_seconds == 0
+    return result
+
+
+def test_t3_server_makes_the_workspace_always_on_with_reason():
+    o = ActivityObserver()
+    r = tick(o, 0, [sample(signals=signals(t3_servers=1))])
+    assert r.state == 'always-on' and r.reasons == ['t3']
+    assert r.signals['t3_servers'] == 1
+    assert r.idle_seconds is None
+
+
+def test_t3_appearing_clears_earned_credit():
+    o = ActivityObserver()
+    mature(o)
+    tick(o, 3630, [sample(signals=signals(t3_servers=1))])
+    assert tick(o, 3660).remaining_seconds == 3600
+
+
+def test_missing_t3_signal_is_unknown():
+    o = ActivityObserver()
+    old_probe = dict(tmux_sessions=0, terminals=0, cursor_connections=0,
+                     vscode_connections=0, agents=0)
+    assert tick(o, 0, [sample(signals=old_probe)]).state == 'unknown'
+    assert tick(o, 30, [sample(signals=signals(t3_servers=None))]).state == 'unknown'
+
+
+def test_stored_always_on_wins_over_t3():
+    o = ActivityObserver()
+    w = ws(always_on=True)
+    r = tick(o, 0, [sample(signals=signals(t3_servers=1))], workspace=w)
+    assert r.state == 'always-on' and r.reasons == []
+
+
+def test_update_one_leaves_other_workspaces_untouched():
+    o = ActivityObserver()
+    a = Workspace(id='a', repo='r', branch='main')
+    b = Workspace(id='b', repo='r', branch='main')
+    for t in range(0, 601, 30):
+        o.update([a, b], [sample(workspace_id='a'), sample(workspace_id='b')],
+                 now=t, wall=10000 + t)
+    o.update_one(a, sample(workspace_id='a', signals=signals(agents=1)),
+                 now=610, wall=10610)
+    va, vb = o.views([a, b], now=610)
+    assert va.state == 'active'
+    assert vb.state == 'idle' and vb.idle_seconds == 600
+
+
+def test_reset_starts_a_new_countdown():
+    o = ActivityObserver()
+    mature(o)
+    o.reset('w')
+    assert o.credit('w') is None
+    assert tick(o, 3630).remaining_seconds == 3600
+
+
+def test_credit_identifies_the_countdown():
+    o = ActivityObserver()
+    tick(o, 0)
+    first = o.credit('w')
+    tick(o, 30)
+    assert o.credit('w') == first                      # same countdown
+    tick(o, 60, [sample(signals=signals(agents=1))])
+    assert o.credit('w') is None                       # not idle
+    tick(o, 90)
+    assert o.credit('w') != first                      # a new countdown
+
+
+def test_observation_only_reflects_the_enforce_switch():
+    assert tick(ActivityObserver(), 0).observation_only is True
+    assert tick(ActivityObserver(enforce=True), 0).observation_only is False
+    # the fallback view for an unobserved workspace carries it too
+    assert ActivityObserver(enforce=True).views([ws()], now=0)[0].observation_only is False
+
+
+def test_record_stop_is_served_and_logged(tmp_path):
+    from app.activity_history import ActivityHistory
+    h = ActivityHistory(tmp_path / 'h.jsonl')
+    o = ActivityObserver(history=h)
+    mature(o)
+    o.record_stop('w', 'stopped', at=13600.0, idle_seconds=3600)
+    view = o.views([ws()], now=3600)[0]
+    assert view.stop.result == 'stopped' and view.stop.at == 13600.0
+    assert view.stop.idle_seconds == 3600
+    events = [e for e in h.tail(50, 'w') if e.event == 'stop']
+    assert len(events) == 1 and events[0].idle_seconds == 3600
+    o.record_stop('w', 'failed', at=13700.0, idle_seconds=3600, note='docker: 500')
+    assert o.views([ws()], now=3600)[0].stop.result == 'failed'
+    assert [e.event for e in h.tail(50, 'w')][-1] == 'stop-failed'

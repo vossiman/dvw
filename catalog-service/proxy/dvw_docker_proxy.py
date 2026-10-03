@@ -44,6 +44,12 @@ GATEWAY_BODY = b'{"message":"dvw-docker-proxy: upstream error"}'
 # Container and exec ids: hex digests in practice, but names are accepted too.
 # The leading class excludes a leading dot, so "." and ".." never match.
 _ID = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}"
+# The one mutating route. A full id only: a name or prefix would let the
+# caller pick which container dockerd resolves it to.
+_FULL_ID = r"[0-9a-f]{64}"
+# Matched against the raw, undecoded query, so "%74=10" and "t=1%30" fail.
+_STOP_QUERY = re.compile(r"t=([1-9]|1[0-9]|20)\Z")
+STOP_LABEL = "dev.containers.id"
 _VERSION_PREFIX = re.compile(r"^/v\d+\.\d+(?=/)")
 _ROUTES = [
     ("GET", re.compile(r"/_ping\Z"), "plain"),
@@ -55,6 +61,7 @@ _ROUTES = [
     ("POST", re.compile(rf"/containers/(?P<cid>{_ID})/exec\Z"), "exec_create"),
     ("POST", re.compile(rf"/exec/(?P<eid>{_ID})/start\Z"), "exec_start"),
     ("GET", re.compile(rf"/exec/(?P<eid>{_ID})/json\Z"), "exec_inspect"),
+    ("POST", re.compile(rf"/containers/(?P<cid>{_FULL_ID})/stop\Z"), "stop"),
 ]
 _STREAM_OFF = {"false", "0", "False"}
 # RFC 7230 field-name token, and the only headers forwarded upstream. The
@@ -101,12 +108,13 @@ class Request:
 
 
 class Route:
-    __slots__ = ("kind", "container_id", "exec_id")
+    __slots__ = ("kind", "container_id", "exec_id", "grace")
 
-    def __init__(self, kind, container_id=None, exec_id=None):
+    def __init__(self, kind, container_id=None, exec_id=None, grace=None):
         self.kind = kind
         self.container_id = container_id
         self.exec_id = exec_id
+        self.grace = grace
 
 
 def _recv_until(sock, marker, limit):
@@ -214,6 +222,11 @@ def route(req: Request) -> Route:
             if len(stream) != 1 or stream[0] not in _STREAM_OFF:
                 raise Forbidden("stats without exactly one stream=false")
             return Route("plain", container_id=cid)
+        if kind == "stop":
+            m_q = _STOP_QUERY.match(req.query)
+            if not m_q:
+                raise Forbidden("stop without exactly one t=1..20")
+            return Route("stop", container_id=cid, grace=m_q.group(1))
         return Route(kind, container_id=cid, exec_id=eid)
     raise Forbidden(f"{req.method} {req.path}")
 
@@ -520,7 +533,51 @@ def _decide(req: Request, registry: ExecRegistry) -> tuple[Route, bytes, str]:
             raise Forbidden("unknown exec id")
         if r.kind == "exec_start":
             _check_exec_start_body(body)
+    elif r.kind == "stop":
+        if req.body:
+            raise Forbidden("stop with a body")
     return r, body, label
+
+
+def _is_workspace_container(upstream: str, cid: str) -> bool:
+    """Ask dockerd itself whether cid is a DevPod workspace container.
+
+    The caller's word is not evidence: this host also runs containers that
+    are not workspaces, and this check is what keeps the stop route off them.
+    Anything short of a clean answer for exactly this id is a no.
+    """
+    try:
+        up = connect_upstream(upstream)
+    except (OSError, ValueError):
+        return False
+    try:
+        up.settimeout(10)
+        up.sendall((f"GET /containers/{cid}/json HTTP/1.1\r\nHost: docker\r\n"
+                    "Connection: close\r\n\r\n").encode("ascii"))
+        head, rest = _read_response_head(up)
+        if _upstream_status(head) != b"200":
+            return False
+        data = json.loads(_strip_chunked(head, _drain(up, rest)))
+    except (OSError, ValueError, IndexError, BadRequest):
+        return False
+    finally:
+        up.close()
+    if not isinstance(data, dict) or data.get("Id") != cid:
+        return False
+    config = data.get("Config")
+    labels = config.get("Labels") if isinstance(config, dict) else None
+    label = labels.get(STOP_LABEL) if isinstance(labels, dict) else None
+    return isinstance(label, str) and bool(label)
+
+
+def _relay_stop(client, up, req: Request, r: Route) -> None:
+    """Forward a rebuilt target, never the client's own."""
+    head = (f"POST /containers/{r.container_id}/stop?t={r.grace} HTTP/1.1\r\n"
+            "Host: docker\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    up.sendall(head.encode("ascii"))
+    resp_head, rest = _read_response_head(up)
+    client.sendall(_with_connection_close(resp_head) + rest[:MAX_RELAY])
+    _copy_capped(client, up, req, len(rest[:MAX_RELAY]))
 
 
 def handle_connection(client, upstream: str, registry: ExecRegistry) -> None:
@@ -539,6 +596,11 @@ def handle_connection(client, upstream: str, registry: ExecRegistry) -> None:
             # raw one in the journal is a log-injection primitive.
             log.info("verdict=deny method=%s path=%r reason=%s",
                      req.method, req.target[:200], e)
+            _send_response(client, "403 Forbidden", DENY_BODY)
+            return
+        if r.kind == "stop" and not _is_workspace_container(upstream, r.container_id):
+            log.info("verdict=deny method=%s path=%r reason=%s",
+                     req.method, req.target[:200], "not a workspace container")
             _send_response(client, "403 Forbidden", DENY_BODY)
             return
         log.info("verdict=allow method=%s path=%s%s", req.method, req.path,
@@ -560,6 +622,8 @@ def handle_connection(client, upstream: str, registry: ExecRegistry) -> None:
                 _relay_exec_start(out, up, req, body)
             elif r.kind == "exec_create":
                 _relay_exec_create(out, up, req, body, registry)
+            elif r.kind == "stop":
+                _relay_stop(out, up, req, r)
             else:
                 _relay_plain(out, up, req, body)
         except (BadRequest, ValueError, IndexError) as e:

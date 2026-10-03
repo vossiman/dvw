@@ -7,6 +7,8 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import source as source_mod
 from ..deps import (
+    ActivityDep,
+    StopperDep,
     LatestImageDep,
     InspectorDep,
     SettingsDep,
@@ -85,11 +87,19 @@ async def patch_workspace(
 
 
 @router.post("/{ws_id}/touch", response_model=Workspace)
-async def touch_workspace(ws_id: WsId, store: StoreDep) -> Workspace:
+async def touch_workspace(ws_id: WsId, store: StoreDep, observer: ActivityDep,
+                          stopper: StopperDep) -> Workspace:
+    """Mark use. Also resets the idle countdown, and does not return while an
+    automatic stop of this workspace is still in flight, so the caller's
+    liveness check sees the settled state."""
     try:
-        return await store.touch_workspace(ws_id)
+        ws = await store.touch_workspace(ws_id)
     except NotFoundError:
         raise HTTPException(404, f"workspace not found: {ws_id}")
+    observer.reset(ws_id)
+    if not await stopper.wait(ws_id):
+        raise HTTPException(503, f"an automatic stop of {ws_id} has not settled; retry")
+    return ws
 
 
 @router.delete("/{ws_id}", status_code=204)

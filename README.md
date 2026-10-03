@@ -512,15 +512,21 @@ Bash logic is covered by bats (`tests/bats/`, including wizard seed/probe and TU
 - [`tmux/README.md`](tmux/README.md) — host-side tmux config installation
 - [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — current quirks log
 
-### Activity observation
+### Activity and automatic stop
 
-The workspace TUI now shows coding activity alongside running state: tmux,
+The workspace TUI shows coding activity alongside running state: tmux,
 Cursor/VS Code connected, terminal, agent, always-on, or activity unknown.
-When all supported coding signals are absent, it shows `idle 23m · would stop
-in 37m`. The inspect pane includes the last observation, idle start and timeout.
-This is **observation only**: no containers are automatically stopped.
+An idle workspace shows `idle 23m` in the list. The inspect pane carries the
+detail: when it stops (or would stop), the mode, the raw signal counts, when
+it went idle, the timeout, and the last automatic stop.
 
 The catalogue samples independently of the TUI, so clients share a countdown.
 The default is 60 minutes, configurable per workspace through the catalogue's
-`idle_timeout_minutes` and `always_on` PATCH fields. See
-[catalogue activity setup and detection limits](catalog-service/README.md#workspace-activity-observation-only).
+`idle_timeout_minutes` and `always_on` PATCH fields. A workspace running a T3
+server is exempt and shows `always-on (t3)`.
+
+Stopping is off unless the catalogue runs with `CATALOG_ACTIVITY_ENFORCE=true`.
+When it is on, an idle workspace is stopped at the end of its countdown and
+starts again on the next `dvw <id>`. Update every client (`dvw update`) before
+turning it on: an older TUI still says "no automatic stops". See
+[catalogue activity and automatic stop](catalog-service/README.md#workspace-activity-and-automatic-stop).

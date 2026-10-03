@@ -5,7 +5,8 @@ from tests.test_resolver import FakeContainer, _inspector
 
 def container(**changes):
     report = dict(schema=1, ts=int(time.time()), partial=False, agents=[],
-                  activity=dict(tmux_sessions=0, terminals=0, cursor_connections=0, vscode_connections=0))
+                  activity=dict(tmux_sessions=0, terminals=0, cursor_connections=0,
+                                vscode_connections=0, t3_servers=0))
     report.update(changes)
     c = FakeContainer('c', 'n', 'u', '/workspaces/w', probe=report)
     c.attrs['State']['StartedAt'] = '2026-09-09T01:00:00Z'
@@ -87,3 +88,101 @@ def test_malformed_tmux_unmeasured_is_dropped_not_fatal(monkeypatch, reason):
                                 vscode_connections=0, tmux_unmeasured=reason))
     s, = _inspector([c], monkeypatch).activity_many(['w'])
     assert s.note is None and s.signals['terminals'] == 0
+
+
+def test_fresh_sample_bypasses_the_snapshot_cache(monkeypatch):
+    import app.docker_inspect as di
+    from app.config import Settings
+    c = container()
+    monkeypatch.setattr(di.docker, "DockerClient",
+                        lambda base_url=None, timeout=None: __import__(
+                            'tests.test_resolver', fromlist=['FakeClient']).FakeClient([c]))
+    insp = di.DockerInspector(Settings(docker_host="unix:/nonexistent", probe_snapshot_ttl=60))
+    insp.activity_many(['w'])
+    insp.activity_many(['w'])
+    assert len(c.exec_calls) == 1                      # second call was cached
+    insp.activity_many(['w'], fresh=True)
+    assert len(c.exec_calls) == 2
+
+
+class FakeApi:
+    def __init__(self):
+        self.calls = []
+        self.error = None
+        self.inspect = {"State": {"Status": "running", "StartedAt": "s1"}}
+
+    def stop(self, cid, timeout=None):
+        self.calls.append((cid, timeout))
+        if self.error:
+            raise self.error
+
+    def inspect_container(self, cid):
+        if self.error:
+            raise self.error
+        return self.inspect
+
+
+def _with_api(monkeypatch):
+    from types import SimpleNamespace
+    insp = _inspector([], monkeypatch)
+    api = FakeApi()
+    insp._client = SimpleNamespace(api=api)
+    return insp, api
+
+
+def test_stop_container_calls_docker_with_the_grace(monkeypatch):
+    insp, api = _with_api(monkeypatch)
+    insp.stop_container('c' * 64, 10)
+    assert api.calls == [('c' * 64, 10)]
+
+
+def test_stop_container_maps_an_api_error_to_refused(monkeypatch):
+    import docker.errors
+    from app.stopper import StopRefused
+    insp, api = _with_api(monkeypatch)
+    api.error = docker.errors.APIError('boom')
+    with pytest.raises(StopRefused):
+        insp.stop_container('c' * 64, 10)
+
+
+def _api_error(status):
+    import docker.errors
+    from types import SimpleNamespace
+    return docker.errors.APIError('x', response=SimpleNamespace(status_code=status, content=b'', text='', url='u', reason='r'))
+
+
+def test_stop_container_maps_a_502_to_uncertain(monkeypatch):
+    from app.stopper import StopUncertain
+    insp, api = _with_api(monkeypatch)
+    api.error = _api_error(502)
+    with pytest.raises(StopUncertain):
+        insp.stop_container('c' * 64, 10)
+
+
+@pytest.mark.parametrize('status', [500, 403])
+def test_stop_container_maps_other_api_errors_to_refused(monkeypatch, status):
+    from app.stopper import StopRefused
+    insp, api = _with_api(monkeypatch)
+    api.error = _api_error(status)
+    with pytest.raises(StopRefused):
+        insp.stop_container('c' * 64, 10)
+
+
+def test_stop_container_maps_a_transport_error_to_uncertain(monkeypatch):
+    import requests
+    from app.stopper import StopUncertain
+    insp, api = _with_api(monkeypatch)
+    api.error = requests.exceptions.ReadTimeout('slow')
+    with pytest.raises(StopUncertain):
+        insp.stop_container('c' * 64, 10)
+
+
+def test_container_state_reports_status_and_start(monkeypatch):
+    import docker.errors
+    insp, api = _with_api(monkeypatch)
+    assert insp.container_state('c') == ('running', 's1')
+    api.error = docker.errors.NotFound('gone')
+    assert insp.container_state('c') is None
+    api.error = RuntimeError('down')
+    with pytest.raises(RuntimeError):
+        insp.container_state('c')

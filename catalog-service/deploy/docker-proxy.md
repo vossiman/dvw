@@ -15,6 +15,7 @@ only non-root member of the docker group, and forwards exactly these routes:
 | POST | `/containers/{id}/exec` | body must be `Cmd == ["dvw-probe"]` (transitional: `tmux list-sessions` / `list-windows`); no `Privileged`, `Tty`, `AttachStdin`, `User`, `Env`, `WorkingDir` |
 | POST | `/exec/{id}/start` | only ids this proxy issued in the last 60 s |
 | GET | `/exec/{id}/json` | same |
+| POST | `/containers/{id}/stop?t=1..20` | full 64-hex id only, empty body, and only when the proxy's own inspect finds the `dev.containers.id` label. The target is rebuilt, not forwarded. Used by the catalog's automatic idle stop. A compromised catalog could stop any labelled workspace container; it cannot start, kill, remove or touch anything else. |
 
 Everything else is `403` and never reaches dockerd. Every request is logged
 to the journal with one of these verdicts:

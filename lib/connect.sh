@@ -7,6 +7,16 @@
 # running `devpod up <repo>@<branch> --id <id>`, which provisions a brand-new
 # workspace and would clobber the existing remote state.
 
+# Tell the catalog this workspace is about to be used BEFORE any liveness
+# check. The touch resets the idle countdown and waits out an automatic stop
+# in flight, so the checks that follow see a settled container state.
+_dvw_touch_first() {
+  local ws="$1"
+  catalog_workspace_touch "$ws" 2>/dev/null && return 0
+  ui_status_warn "$ws: the catalog did not confirm this connect; an automatic stop may be in progress. If the session drops, run: dvw $ws"
+  return 0
+}
+
 cmd_connect() {
   local ws="$1"
   shift || true
@@ -38,6 +48,9 @@ cmd_connect() {
       *) ui_error "unknown flag: $1 (expected --ssh, --cursor, --both, or --window <id>)"; return 1 ;;
     esac
   done
+
+  # First, before any container-state read below.
+  _dvw_touch_first "$ws"
 
   # Materialize devpod local state from the catalog snapshot if missing,
   # then resolve which container is canonical by direct observation of the
@@ -89,7 +102,6 @@ _connect_ssh() {
       catalog_workspace_set_devpod_state "$ws" 2>/dev/null || true
     fi
   fi
-  catalog_workspace_touch "$ws" 2>/dev/null || true
   _dvw_ssh_session "$ws" "$win"
 }
 
@@ -364,7 +376,6 @@ _dvw_ssh_session() {
 # involvement to be openable in Cursor.
 _connect_cursor() {
   local ws="$1"
-  catalog_workspace_touch "$ws" 2>/dev/null || true
 
   # Single-initiator ordering (2026-08-09): a definitively cold workspace is
   # brought up here, before the health check — _dvw_workspace_health probes

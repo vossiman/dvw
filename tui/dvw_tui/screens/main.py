@@ -375,10 +375,17 @@ class MainScreen(Screen):
         # Inspect responses are cached separately. Always use the latest
         # central observation from the workspace refresh, never that cache.
         workspace = next((w for w in self._workspaces if w.id == ws_id), None)
-        if workspace is None or workspace.liveness in ("stopped", "absent"):
+        if workspace is None or workspace.liveness == "absent":
             return
-        for label, value in activity_lines(workspace.activity):
-            text.append(f" {label:<11}", style=SUBTLE)
+        lines = activity_lines(workspace.activity)
+        if workspace.liveness == "stopped":
+            # A stopped workspace has nothing live to report; keep the lines
+            # that explain why it is stopped and what would happen next.
+            lines = [(k, v) for k, v in lines if k in ("activity", "mode", "timeout", "last stop")]
+            if not any(k == "last stop" for k, _ in lines):
+                return
+        for label, value in lines:
+            text.append(f" {label:<14}", style=SUBTLE)
             text.append(f"{value}\n")
         text.append("\n")
 
