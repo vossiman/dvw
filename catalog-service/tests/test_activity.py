@@ -161,6 +161,38 @@ def test_lifespan_starts_and_stops_observer(monkeypatch, settings):
     assert events == ['started', 'stopped']
 
 
+def _wired_app(monkeypatch, settings):
+    import app.main as main
+    import asyncio
+    class Observer(ActivityObserver):
+        async def run(self, store, inspector, *, after_pass=None):
+            await asyncio.Event().wait()
+    monkeypatch.setattr(main, 'get_settings', lambda: settings)
+    monkeypatch.setattr(main, 'DockerInspector', lambda _: object())
+    monkeypatch.setattr(main, 'ActivityObserver', Observer)
+    return main.create_app()
+
+
+def test_lifespan_wires_the_enforcement_switch_and_grace(monkeypatch, settings):
+    from fastapi.testclient import TestClient
+    settings.activity_enforce = True
+    settings.activity_stop_grace = 7
+    app = _wired_app(monkeypatch, settings)
+    with TestClient(app):
+        assert app.state.stopper.enforce is True
+        assert app.state.stopper.grace == 7
+        assert app.state.activity_observer.enforce is True
+        assert app.state.stopper.wait_timeout == settings.docker_timeout + 7 + 5
+
+
+def test_lifespan_default_settings_leave_enforcement_off(monkeypatch, settings):
+    from fastapi.testclient import TestClient
+    app = _wired_app(monkeypatch, settings)
+    with TestClient(app):
+        assert app.state.stopper.enforce is False
+        assert app.state.activity_observer.enforce is False
+
+
 def test_slow_batch_does_not_retimestamp_old_sample_as_fresh():
     o = ActivityObserver()
     s = sample(sampled_at=1)

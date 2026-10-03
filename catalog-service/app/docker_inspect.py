@@ -628,6 +628,10 @@ class DockerInspector:
         try:
             self._client.api.stop(cid, timeout=grace)
         except docker.errors.APIError as exc:
+            # The proxy answers 502 when dockerd broke off after the request
+            # was forwarded: the container may or may not have stopped.
+            if exc.status_code == 502:
+                raise StopUncertain("proxy 502") from None
             raise StopRefused(f"docker: {exc}") from None
         except (requests.exceptions.RequestException, OSError) as exc:
             raise StopUncertain(type(exc).__name__) from None

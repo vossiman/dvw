@@ -88,6 +88,21 @@ def test_sidebar_signals_lists_non_zero_counts():
     assert 'stops in' not in d and 'would stop in' not in d      # only when idle
 
 
+def test_sidebar_signals_unknown_when_empty():
+    d = dict(render.activity_lines({**record(), 'signals': {}}, now=1000))
+    assert d['signals'] == 'unknown'
+
+
+def test_sidebar_signals_unknown_when_any_value_is_null():
+    entry = {**record(), 'signals': {'tmux_sessions': 0, 'terminals': None, 'agents': 0}}
+    assert dict(render.activity_lines(entry, now=1000))['signals'] == 'unknown'
+
+
+def test_sidebar_signals_none_when_all_zero():
+    entry = {**record(), 'signals': {'tmux_sessions': 0, 'terminals': 0}}
+    assert dict(render.activity_lines(entry, now=1000))['signals'] == 'none'
+
+
 def test_sidebar_last_stop_line():
     stopped = {**record(), 'state': 'stopped', 'idle_since': None, 'idle_seconds': None,
                'remaining_seconds': None,

@@ -53,7 +53,7 @@ class FakeInspector:
 
 
 class Rig:
-    def __init__(self, enforce=True, workspace=None):
+    def __init__(self, enforce=True, workspace=None, **stopper_kw):
         self.t = 0.0
         self.w = workspace or ws()
         self.observer = ActivityObserver(enforce=enforce)
@@ -61,7 +61,8 @@ class Rig:
         self.invalidated = []
         self.stopper = Stopper(self.observer, self.inspector, enforce=enforce,
                                invalidate=self.invalidated.append,
-                               clock=lambda: self.t, wall=lambda: 10000 + self.t)
+                               clock=lambda: self.t, wall=lambda: 10000 + self.t,
+                               **stopper_kw)
 
     def mature(self):
         for t in range(0, 3601, 30):
@@ -294,4 +295,30 @@ async def test_cancelled_mid_stop_leaves_no_record():
     with pytest.raises(asyncio.CancelledError):
         await run
     release.set()
+    assert r.view().stop is None
+
+
+async def test_wait_uses_the_configured_timeout_and_gives_up():
+    r = Rig(wait_timeout=0.05)
+    r.mature()
+    started = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    release = asyncio.Event()
+
+    def never_returns(cid, grace):
+        loop.call_soon_threadsafe(started.set)
+        asyncio.run_coroutine_threadsafe(release.wait(), loop).result(5)
+    r.inspector.stop_container = never_returns
+    run = asyncio.create_task(r.run())
+    await started.wait()
+    assert await r.stopper.wait('w') is False        # no explicit timeout
+    release.set()
+    await run
+
+
+async def test_workspace_removed_from_the_catalog_is_not_stopped():
+    r = Rig(still_listed=lambda ws_id: False)
+    r.mature()
+    await r.run()
+    assert r.inspector.stops == []
     assert r.view().stop is None

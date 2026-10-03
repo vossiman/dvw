@@ -811,6 +811,24 @@ def test_stop_of_a_workspace_container_is_forwarded_canonically(stack):
     assert target == f"/containers/{CID}/stop?t=10" and body == b""
 
 
+def test_stop_is_allowed_when_the_inspect_answer_is_chunked(stack):
+    payload = json.dumps({"Id": CID, "Config": {"Labels": {"dev.containers.id": "x"}}}).encode()
+    cut = len(payload) // 2
+    parts = [payload[:cut], payload[cut:cut + 7], payload[cut + 7:]]
+    chunked = b"".join(f"{len(p):x}\r\n".encode() + p + b"\r\n" for p in parts) + b"0\r\n\r\n"
+    inspect = (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+               b"Transfer-Encoding: chunked\r\n\r\n" + chunked)
+    plain = stop_handler()
+
+    def handler(method, target, headers, body, conn):
+        if method == "GET" and target == f"/containers/{CID}/json":
+            return inspect
+        return plain(method, target, headers, body, conn)
+    stack.set_handler(handler)
+    assert status_of(stack.send(req("POST", f"/containers/{CID}/stop?t=10"))) == 204
+    assert len(forwarded_stops(stack)) == 1
+
+
 def test_stop_of_unlabelled_container_is_denied(stack):
     stack.set_handler(stop_handler(labels={"com.docker.swarm.service.name": "dokploy"}))
     assert status_of(stack.send(req("POST", f"/containers/{CID}/stop?t=10"))) == 403

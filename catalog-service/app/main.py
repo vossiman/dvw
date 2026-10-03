@@ -89,7 +89,9 @@ async def lifespan(app: FastAPI):
     app.state.stopper = Stopper(
         app.state.activity_observer, app.state.inspector,
         enforce=settings.activity_enforce, grace=settings.activity_stop_grace,
-        invalidate=invalidate_resolve_cache)
+        invalidate=invalidate_resolve_cache,
+        wait_timeout=settings.docker_timeout + settings.activity_stop_grace + 5,
+        still_listed=lambda ws_id: ws_id in app.state.store.workspace_ids())
     log.info("automatic idle stop: %s", "ON" if settings.activity_enforce else "off (observation only)")
     activity_task = asyncio.create_task(app.state.activity_observer.run(
         app.state.store, app.state.inspector, after_pass=app.state.stopper.run_pass))

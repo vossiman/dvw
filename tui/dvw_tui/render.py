@@ -205,9 +205,13 @@ def activity_lines(activity: dict | None, now: float | None = None) -> list[tupl
         pairs.append(("would stop in" if watching else "stops in",
                       f"{(remaining + 59) // 60}m" if remaining else "now"))
     pairs.append(("mode", "observation-only" if watching else "automatic stop"))
-    counts = [f"{label} {clean['signals'][key]}" for key, label in _SIGNAL_LABELS
-              if clean["signals"].get(key)]
-    pairs.append(("signals", " · ".join(counts) or "none"))
+    signals = clean["signals"]
+    if not signals or any(v is None for v in signals.values()):
+        pairs.append(("signals", "unknown"))     # a null is never a measured zero
+    else:
+        counts = [f"{label} {signals[key]}" for key, label in _SIGNAL_LABELS
+                  if signals.get(key)]
+        pairs.append(("signals", " · ".join(counts) or "none"))
     for label, field in (("idle since", "idle_since"), ("observed", "observed_at")):
         value = clean[field]
         if value is not None:

@@ -415,6 +415,18 @@ what happens to a running workspace.
 Rollback at any point: set `CATALOG_ACTIVITY_ENFORCE=false` and restart the
 catalog. Stopped workspaces start again on connect.
 
+## Implementation notes
+
+The stop call's deadline is the Docker client timeout plus the grace (20 s by
+default), not a dedicated 25 s, and the touch waits that long plus 5 s.
+
+The client touch is the first statement of `cmd_connect` (before any
+container-state read), not of `_connect_ssh`. `cmd_start` touches first as
+designed.
+
+The sidebar shows the activity block for a stopped workspace only when an
+automatic stop is on record. A manually stopped workspace looks as before.
+
 ## Review record
 
 Round 1 (Codex `gpt-6-astra`, high effort, 2026-10-03): eight findings,

@@ -145,6 +145,29 @@ def test_stop_container_maps_an_api_error_to_refused(monkeypatch):
         insp.stop_container('c' * 64, 10)
 
 
+def _api_error(status):
+    import docker.errors
+    from types import SimpleNamespace
+    return docker.errors.APIError('x', response=SimpleNamespace(status_code=status, content=b'', text='', url='u', reason='r'))
+
+
+def test_stop_container_maps_a_502_to_uncertain(monkeypatch):
+    from app.stopper import StopUncertain
+    insp, api = _with_api(monkeypatch)
+    api.error = _api_error(502)
+    with pytest.raises(StopUncertain):
+        insp.stop_container('c' * 64, 10)
+
+
+@pytest.mark.parametrize('status', [500, 403])
+def test_stop_container_maps_other_api_errors_to_refused(monkeypatch, status):
+    from app.stopper import StopRefused
+    insp, api = _with_api(monkeypatch)
+    api.error = _api_error(status)
+    with pytest.raises(StopRefused):
+        insp.stop_container('c' * 64, 10)
+
+
 def test_stop_container_maps_a_transport_error_to_uncertain(monkeypatch):
     import requests
     from app.stopper import StopUncertain

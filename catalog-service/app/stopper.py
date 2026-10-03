@@ -38,6 +38,8 @@ class Stopper:
     def __init__(self, observer: ActivityObserver, inspector, *, enforce: bool,
                  grace: int = 10, backoff: float = 600.0,
                  invalidate=lambda ws_id: None,
+                 wait_timeout: float = 25.0,
+                 still_listed=lambda ws_id: True,
                  clock=time.monotonic, wall=time.time):
         self.observer = observer
         self.inspector = inspector
@@ -45,6 +47,8 @@ class Stopper:
         self.grace = grace
         self.backoff = backoff
         self._invalidate = invalidate
+        self.wait_timeout = wait_timeout
+        self._still_listed = still_listed
         self._clock = clock
         self._wall = wall
         # Stops dispatched and not yet settled, by workspace id.
@@ -66,11 +70,13 @@ class Stopper:
                 continue
             await self._attempt(w)
 
-    async def wait(self, ws_id: str, timeout: float = 25.0) -> bool:
+    async def wait(self, ws_id: str, timeout: float | None = None) -> bool:
         """Let a connecting client wait out a stop. True when none is pending after."""
         attempt = self._pending.get(ws_id)
         if attempt is None:
             return True
+        if timeout is None:
+            timeout = self.wait_timeout
         try:
             await asyncio.wait_for(attempt.returned.wait(), timeout)
         except asyncio.TimeoutError:
@@ -97,6 +103,8 @@ class Stopper:
         if (self.observer.credit(w.id) != before or view.state != 'idle'
                 or view.remaining_seconds != 0):
             return
+        if not self._still_listed(w.id):
+            return                      # removed from the catalog mid-pass
         container_id, started_at = before[1]
         attempt = _Attempt(container_id, started_at, view.idle_seconds)
         self._pending[w.id] = attempt

@@ -265,7 +265,7 @@ with automatic stop on, the workspace is stopped (see
 The matching `aiCodingBaseSetup` probe extension is required for idle detection.
 Older schema-1 probes remain compatible but cannot establish idle. Install/sync
 the new blueprint probe in workspaces, redeploy the catalogue service, and update
-the TUI client to see this feature end to end. No Docker proxy permissions change.
+the TUI client to see this feature end to end.
 Validate the observation against real Cursor connect/disconnect and detached
 agent sessions before turning on automatic stop.
 
@@ -285,6 +285,8 @@ once it has accumulated its idle timeout. It is off by default.
 
 - Exempt: workspaces with `always_on: true`, and any workspace running a T3
   server (reported by the probe as `t3_servers`, shown as `always-on (t3)`).
+- Update the Docker proxy first (`dvw-docker-proxy`, see `deploy/docker-proxy.md`).
+  With an old proxy every stop is denied and recorded as `stop-failed`.
 - Before stopping, the catalog takes a fresh uncached sample and stops only if
   the countdown is unchanged. Any unknown, partial or stale measurement blocks
   the stop.
