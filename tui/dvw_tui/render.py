@@ -155,9 +155,9 @@ def activity_cell(activity: dict | None) -> Text:
     if state == "active":
         return Text(", ".join(ACTIVITY_REASONS[r] for r in activity["reasons"]), style=GREEN)
     if state == "idle":
-        remaining = activity["remaining_seconds"]
-        countdown = f"would stop in {(remaining + 59) // 60}m" if remaining else "would stop now"
-        return Text(f"idle {activity['idle_seconds'] // 60}m · {countdown}", style=YELLOW)
+        return Text(f"idle {activity['idle_seconds'] // 60}m", style=YELLOW)
+    if state == "always-on" and "t3" in activity["reasons"]:
+        return Text("always-on (t3)", style=SUBTLE)
     return Text(state, style=SUBTLE)
 
 
@@ -173,18 +173,51 @@ def activity_row_cell(activity: dict | None) -> Text:
     return activity_cell(clean)
 
 
-def activity_lines(activity: dict | None) -> list[tuple[str, str]]:
-    from datetime import datetime, timezone
+_SIGNAL_LABELS = (("tmux_sessions", "tmux"), ("terminals", "terminals"), ("agents", "agents"),
+                  ("cursor_connections", "cursor"), ("vscode_connections", "vscode"),
+                  ("t3_servers", "t3"))
+
+
+def _clock(value: float) -> str:
+    from datetime import datetime
+    return datetime.fromtimestamp(value).strftime("%H:%M")
+
+
+def _ago(value: float, now: float) -> str:
+    seconds = max(0, int(now - value))
+    return f"{seconds}s ago" if seconds < 60 else f"{seconds // 60}m ago"
+
+
+def activity_lines(activity: dict | None, now: float | None = None) -> list[tuple[str, str]]:
+    """(label, value) pairs for the inspect pane. The countdown lives here,
+    not in the tree row."""
+    import time
 
     clean = parse_activity(activity)
-    pairs = [("activity", activity_cell(clean).plain),
-             ("mode", "observation-only; no automatic stops")]
     if clean is None:
-        return pairs
-    pairs.append(("reasons", ", ".join(ACTIVITY_REASONS[r] for r in clean["reasons"]) or "none"))
+        # Never claim a mode we could not read.
+        return [("activity", "activity unknown"), ("mode", "unknown")]
+    now = time.time() if now is None else now
+    watching = clean["observation_only"]
+    pairs = [("activity", activity_cell(clean).plain)]
+    if clean["state"] == "idle":
+        remaining = clean["remaining_seconds"]
+        pairs.append(("would stop in" if watching else "stops in",
+                      f"{(remaining + 59) // 60}m" if remaining else "now"))
+    pairs.append(("mode", "observation-only" if watching else "automatic stop"))
+    counts = [f"{label} {clean['signals'][key]}" for key, label in _SIGNAL_LABELS
+              if clean["signals"].get(key)]
+    pairs.append(("signals", " · ".join(counts) or "none"))
     for label, field in (("idle since", "idle_since"), ("observed", "observed_at")):
         value = clean[field]
-        stamp = datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC") if value is not None else "—"
-        pairs.append((label, stamp))
+        if value is not None:
+            pairs.append((label, f"{_clock(value)} ({_ago(value, now)})"))
     pairs.append(("timeout", f"{(clean['timeout_seconds'] + 59) // 60}m"))
+    stop = clean["stop"]
+    if stop is not None:
+        if stop["result"] == "stopped":
+            idle = f" after {stop['idle_seconds'] // 60}m idle" if stop["idle_seconds"] is not None else ""
+            pairs.append(("last stop", f"auto-stopped {_clock(stop['at'])}{idle}"))
+        else:
+            pairs.append(("last stop", f"stop failed {_clock(stop['at'])}"))
     return pairs

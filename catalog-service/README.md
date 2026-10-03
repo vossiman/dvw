@@ -240,7 +240,9 @@ All env vars are prefixed `CATALOG_` (see `deploy/catalog.env.example`):
 A background task samples catalogued workspaces every 30 seconds, even with no
 TUI open. Each row reports `state`, `reasons`, `signals`, `observed_at`,
 `idle_since`, `idle_seconds`, `remaining_seconds`, `timeout_seconds`, and
-`observation_only: true`. No automatic stop operation exists in this feature.
+`observation_only` (`true` while automatic stop is off, `false` when
+`CATALOG_ACTIVITY_ENFORCE=true`; see [Automatic stop](#automatic-stop) below),
+plus `stop` when an automatic stop was recorded.
 
 The default timeout is 60 minutes. Configure a workspace through the existing
 `PATCH /v1/workspaces/{id}` API with `{"idle_timeout_minutes":30}` or
@@ -255,15 +257,17 @@ requires every signal to be measured and zero, a complete probe, and a single
 running container with a known start time. Missing/old probes, failed scans,
 duplicate running siblings and observations older than 90 seconds report
 unknown. A gap longer than 90 seconds or a container restart resets idle time.
-Slow batches cannot refresh the age of an earlier sample. An expired countdown
-only says **would stop now**; it never stops anything.
+Slow batches cannot refresh the age of an earlier sample. When the countdown
+reaches zero, observation mode only reports that the workspace would stop now;
+with automatic stop on, the workspace is stopped (see
+[Automatic stop](#automatic-stop)).
 
 The matching `aiCodingBaseSetup` probe extension is required for idle detection.
 Older schema-1 probes remain compatible but cannot establish idle. Install/sync
 the new blueprint probe in workspaces, redeploy the catalogue service, and update
 the TUI client to see this feature end to end. No Docker proxy permissions change.
 Validate the observation against real Cursor connect/disconnect and detached
-agent sessions before considering a separate automatic-shutdown feature.
+agent sessions before turning on automatic stop.
 
 Detection currently covers the workspace user, default tmux socket (other tmux
 servers prevent an absence conclusion), and DevPod TCP connections to recognized
