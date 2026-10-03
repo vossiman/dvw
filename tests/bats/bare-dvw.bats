@@ -73,7 +73,7 @@ setup() {
 
 @test "dvw new with flags dispatches to cmd_new" {
   cmd_new() { echo "cmd_new:$*"; }
-  run main new --repo R --branch b --name n --ide ssh --yes
+  run main new --repo R --branch b --name n --yes
   echo "$output" | grep -q "cmd_new:--repo R"
 }
 

@@ -44,7 +44,6 @@ class Workspace:
     id: str
     repo: str
     branch: str
-    ide: str
     provider: str
     last_used_at: str | None = None
     created_on: str | None = None
@@ -66,7 +65,6 @@ class Workspace:
             id=d["id"],
             repo=d.get("repo", ""),
             branch=d.get("branch", ""),
-            ide=d.get("ide", "none"),
             provider=d.get("provider", ""),
             last_used_at=d.get("last_used_at"),
             created_on=d.get("created_on"),
