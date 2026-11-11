@@ -397,7 +397,7 @@ EOF2
   script="$DVW_ROOT/catalog-service/deploy/host-update.sh"
   ! grep -q 'sudo cmp' "$script"
   grep -q '^  if ! cmp -s "\$rendered" "/etc/systemd/system/\$u"; then' "$script"
-  grep -q 'sudo -n install -m 0644 "\$rendered" "/etc/systemd/system/\$u"' "$script"
+  grep -q '"\${SUDO_INSTALL\[@\]}" install -m 0644 "\$rendered" "/etc/systemd/system/\$u"' "$script"
 }
 
 # DVW-13: GitHub answers an unauthenticated fetch with 401 on roughly half

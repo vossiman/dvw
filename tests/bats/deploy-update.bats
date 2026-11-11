@@ -59,3 +59,25 @@ STUB
   run_update
   [[ "$output" == *"updater changed by the pull; re-running the new copy"* ]]
 }
+
+@test "a changed unit without a terminal fails fast and says to re-run with ssh -t" {
+  cat > "$HOME/stubs/sudo" <<'STUB'
+#!/bin/sh
+echo "sudo $*" >> "$HOME/calls"
+case "$*" in "-n install"*) exit 1 ;; esac
+exit 0
+STUB
+  chmod +x "$HOME/stubs/sudo"
+  run_update
+  [ "$status" -eq 1 ]
+  grep -qE '^sudo -n install ' "$HOME/calls"
+  [[ "$output" == *"no terminal to ask on"* ]]
+  [[ "$output" == *"ssh -t <host> $SVC_DIR/deploy/host-update.sh"* ]]
+}
+
+@test "update finds uv in ~/.local/bin when a non-login ssh PATH lacks it" {
+  mkdir -p "$HOME/.local/bin"
+  mv "$HOME/stubs/uv" "$HOME/.local/bin/uv"
+  run_update
+  grep -qE '^uv sync' "$HOME/calls"
+}

@@ -4,6 +4,10 @@
 # that host-install.sh laid down).
 #
 #   /opt/dvw/catalog-service/deploy/host-update.sh
+#   ssh -t vossisrv /opt/dvw/catalog-service/deploy/host-update.sh
+#
+# Keep the -t when running it over ssh: a changed unit file needs sudo with a
+# password, and sudo can only ask for it on a terminal.
 set -euo pipefail
 # On a 401 git would otherwise stop at a "Username for" prompt, and the
 # retry below never runs. Fail fast instead; the pull is anonymous anyway.
@@ -54,6 +58,8 @@ fi
 "$SVC_DIR/deploy/configure-backup-remote.sh" /var/lib/dvw-catalog "$SVC_DIR/catalog.env" "$GH_HELPER"
 
 echo "==> uv sync --frozen"
+# A non-login ssh command does not get ~/.local/bin, where uv installs.
+command -v uv >/dev/null 2>&1 || PATH="$HOME/.local/bin:$PATH"
 ( cd "$SVC_DIR" && uv sync --frozen --no-dev )
 
 # Reinstall units if they changed in this pull. Render User=/Group= for the
@@ -68,6 +74,10 @@ render_unit() {  # $1 = unit file; renders User/Group and SocketUser/SocketGroup
       -e "s|^ReadWritePaths=-/home/vossi/|ReadWritePaths=-$HOME/|" \
       "$SVC_DIR/deploy/$1"
 }
+# Installing a changed unit is outside the passwordless drop-in. sudo -n never
+# prompts, so an unattended run fails fast; with a terminal, let sudo ask.
+SUDO_INSTALL=(sudo -n)
+[ -t 0 ] && SUDO_INSTALL=(sudo)
 changed=0
 proxy_changed=0
 for u in dvw-catalog.service dvw-catalog-backup.service dvw-catalog-backup.timer \
@@ -77,9 +87,15 @@ for u in dvw-catalog.service dvw-catalog-backup.service dvw-catalog-backup.timer
   # Units are 0644, so the comparison needs no sudo; only installing a
   # changed one does, and that is outside the passwordless drop-in.
   if ! cmp -s "$rendered" "/etc/systemd/system/$u"; then
-    if ! sudo -n install -m 0644 "$rendered" "/etc/systemd/system/$u"; then
-      echo "ERROR: $u changed and installing it needs a password." >&2
-      echo "       Re-run from a terminal (ssh -t), or run host-install.sh." >&2
+    if ! "${SUDO_INSTALL[@]}" install -m 0644 "$rendered" "/etc/systemd/system/$u"; then
+      echo "ERROR: $u changed and installing it needs sudo with a password." >&2
+      if [ -t 0 ]; then
+        echo "       sudo failed. Run $SVC_DIR/deploy/host-install.sh instead." >&2
+      else
+        echo "       This run has no terminal to ask on. Re-run with one:" >&2
+        echo "         ssh -t <host> $SVC_DIR/deploy/host-update.sh" >&2
+        echo "       or run $SVC_DIR/deploy/host-install.sh." >&2
+      fi
       rm -f "$rendered"
       exit 1
     fi
