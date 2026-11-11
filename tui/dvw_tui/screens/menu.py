@@ -17,7 +17,7 @@ MENU_ITEMS = [
     ("stop", "s      stop"),
     ("start", "S      start"),
     ("rebuild", "r      rebuild"),
-    ("pin-rebuild", "u      update pin & rebuild"),
+    ("pin-rebuild", "u      rebuild onto newest image"),
     ("remove", "X      remove"),
     ("new", "n      new workspace"),
     ("doctor", "d      doctor"),

@@ -29,7 +29,7 @@ setup() {
 }
 
 @test "recreate ignores a legacy stored cursor IDE" {
-  DVW_SKIP_PIN_PREFLIGHT=1 run cmd_recreate legacy
+  run cmd_recreate legacy
   [ "$status" -eq 0 ]
   grep -qx "devpod up legacy --recreate --ide none" "$CALLS"
   ! grep -q cursor "$CALLS"

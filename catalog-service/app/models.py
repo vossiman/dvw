@@ -297,28 +297,6 @@ class ContainerInspect(BaseModel):
     probe: str = "missing"
 
 
-class WorkspaceSource(BaseModel):
-    """The devpod source clone a workspace's rebuild actually builds from.
-
-    `committed_pin` is read from the WORKING TREE, not GitHub: the working
-    tree is what `devpod up --recreate` reads, so it is the only copy whose
-    value predicts the rebuild's outcome.
-    """
-
-    workspace_id: str
-    path: str
-    present: bool = False
-    branch: str | None = None
-    head: str | None = None
-    # dirty: anything git reports, untracked included (display).
-    # dirty_tracked: only what actually blocks a fast-forward (the pull gate).
-    dirty: bool = False
-    dirty_tracked: bool = False
-    detached: bool = False
-    remote: str | None = None
-    committed_pin: str | None = None
-
-
 class WorkspaceStatus(BaseModel):
     """Bulk per-workspace state, replacing dvw's _dvw_load_probe.
 

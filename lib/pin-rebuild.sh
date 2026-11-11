@@ -1,72 +1,17 @@
 #!/usr/bin/env bash
-# dvw pin-rebuild, one-stop: resolve the build branch from the source clone,
-# PR the stale pin (build branch + main baseline), verify the merge via gh,
-# ff-pull the clone, rebuild, and assert the running image. Every step that
-# can silently no-op is followed by an assertion; silent no-ops in this chain
-# are exactly what shipped stale rebuilds before.
-# Spec: docs/superpowers/specs/2026-09-01-pin-rebuild-one-stop-design.md
+# dvw pin-rebuild: rebuild onto the newest :latest image and assert the
+# running container actually got it. `dvw recreate` does the pull and the
+# rebuild; this adds the catalog's image_current check, so a rebuild that
+# silently lands on a stale image fails loudly.
 
-DVW_PIN_REBUILD_POLL_SECS="${DVW_PIN_REBUILD_POLL_SECS:-10}"
-
-# Poll until the PR is merged. rc 0 merged / 1 timeout or gh failure /
-# 2 closed-unmerged. Enter re-checks immediately; Ctrl-C aborts the command.
-_dvw_pin_wait_merged() {
-  local url="$1" timeout="${2:-1800}" waited=0 state
-  ui_info "waiting for merge (Enter re-checks, Ctrl-C aborts): $url"
-  while :; do
-    state=$(gh pr view "$url" --json state --jq '.state' 2>/dev/null) || state=""
-    case "$state" in
-      MERGED) return 0 ;;
-      CLOSED) ui_error "PR closed without merging: $url"; return 2 ;;
-    esac
-    (( waited >= timeout )) && { ui_error "timed out after ${timeout}s: $url"; return 1; }
-    # `read -t` on non-tty stdin (cron, pipes, bats) returns instantly at
-    # EOF instead of waiting out the timeout, turning this into a gh
-    # request busy-spin. Only use the interactive Enter-to-recheck read on
-    # an actual terminal; otherwise just sleep the poll interval.
-    if [[ -t 0 ]]; then
-      read -r -t "$DVW_PIN_REBUILD_POLL_SECS" _ 2>/dev/null || true
-    else
-      sleep "$DVW_PIN_REBUILD_POLL_SECS"
-    fi
-    waited=$(( waited + DVW_PIN_REBUILD_POLL_SECS ))
-  done
-}
-
-# Baseline PR against main so future workspaces start current. Never blocks:
-# skipped when main is the build branch, already current, or unpinned; a
-# failure is a warning, not an error.
-_dvw_pin_main_pr() {
-  local slug="$1" branch="$2" bp="$3" cur url
-  [[ "$branch" == "main" ]] && return 0
-  cur=$(_dvw_repo_pin "$slug" main) || {
-    ui_status_warn "couldn't read main's pin; skipping the baseline PR"; return 0; }
-  [[ -z "$cur" || "$cur" == "$bp" ]] && return 0
-  if url=$(_dvw_pin_open_pr "$slug" main "$bp"); then
-    [[ -n "$url" ]] && ui_status_ok "baseline PR (main): $url"
-  else
-    ui_status_warn "couldn't open the baseline PR against main (not blocking)"
-  fi
-  return 0
-}
-
-DVW_PIN_REBUILD_USAGE="usage: dvw pin-rebuild [<workspace-id>...] [--pr-only] [--no-wait] [--timeout <s>]"
+DVW_PIN_REBUILD_USAGE="usage: dvw pin-rebuild [<workspace-id>...]"
 
 # cmd_pin_rebuild [<workspace-id>...] — no ids = every catalog workspace.
-# --pr-only stops after the PRs (the fleet sweep); the default runs the whole
-# chain per workspace: PR, wait for the merge, pull the source clone, rebuild,
-# assert the running image.
 cmd_pin_rebuild() {
-  local timeout=1800 no_wait=0 pr_only=0 ids=()
+  local ids=()
   while (($#)); do
     case "$1" in
-      --pr-only) pr_only=1 ;;
-      --no-wait) no_wait=1 ;;
-      --timeout)
-        shift
-        [[ "${1:-}" =~ ^[0-9]+$ ]] || { ui_error "$DVW_PIN_REBUILD_USAGE"; return 1; }
-        timeout="$1" ;;
-      -*) ui_error "unknown flag: $1"; return 1 ;;
+      -*) ui_error "unknown flag: $1"; ui_info "$DVW_PIN_REBUILD_USAGE"; return 1 ;;
       *) ids+=("$1") ;;
     esac
     shift
@@ -74,173 +19,33 @@ cmd_pin_rebuild() {
 
   local ids_raw
   ids_raw=$(_dvw_pin_resolve_ids ${ids[@]+"${ids[@]}"}) || {
-    ui_error "couldn't list catalog workspaces — pin-rebuild cannot know what to rebuild"
+    ui_error "couldn't list catalog workspaces, so pin-rebuild cannot know what to rebuild"
     return 1
   }
   mapfile -t ids <<<"$ids_raw"
 
-  if (( pr_only )); then
-    _dvw_pin_pr_only "${ids[@]}"
-    return $?
-  fi
-
-  # A single workspace propagates its exact code (2 = PR closed unmerged, which
-  # callers distinguish); several failing collapse to 1, since one number
-  # cannot carry two verdicts.
-  local id rc=0 one_rc
+  local id rc=0
   for id in "${ids[@]}"; do
     [[ -n "$id" ]] || continue
-    one_rc=0
-    _dvw_pin_rebuild_one "$id" "$timeout" "$no_wait" || one_rc=$?
-    (( one_rc == 0 )) && continue
-    if (( rc == 0 )); then rc="$one_rc"; else rc=1; fi
+    _dvw_pin_rebuild_one "$id" || rc=1
   done
   return $rc
 }
 
-# The whole chain for one workspace.
 _dvw_pin_rebuild_one() {
-  local id="$1" timeout="$2" no_wait="$3"
-  command -v gh >/dev/null 2>&1 || {
-    ui_error "pin-rebuild needs the gh CLI (it opens and watches the PR)"
-    return 1; }
+  local id="$1"
+  catalog_workspace_get "$id" >/dev/null || { ui_error "unknown workspace: $id"; return 1; }
+  ui_banner "dvw pin-rebuild" "$id → $(_dvw_blueprint_pin)"
 
-  local ws repo slug bp
-  ws=$(catalog_workspace_get "$id") || { ui_error "unknown workspace: $id"; return 1; }
-  repo=$(jq -r '.repo // empty' <<<"$ws")
-  slug=$(_dvw_repo_slug "$repo") || {
-    ui_error "$id: $repo is not a GitHub repo; pin-rebuild cannot PR it"; return 1; }
-  bp=$(_dvw_blueprint_pin) || {
-    ui_error "couldn't resolve the devbox-base image ref"
-    return 1; }
-
-  # 1. Build branch = the source clone's live HEAD; that is literally what
-  #    `devpod up --recreate` reads. The source API is required so a stale
-  #    catalog branch can never select a different branch for the rebuild.
-  local src branch tree_pin src_dirty=0
-  if src=$(_dvw_catalog_source_get "$id" 2>/dev/null); then
-    [[ $(jq -r '.present' <<<"$src") == "true" ]] || {
-      ui_error "$id: no source clone on the provider; has devpod ever built it?"
-      return 1; }
-    [[ $(jq -r '.detached' <<<"$src") == "true" ]] && {
-      ui_error "$id: source clone is on a detached HEAD; check out a branch first"
-      return 1; }
-    [[ $(jq -r '.dirty_tracked' <<<"$src") == "true" ]] && src_dirty=1
-    branch=$(jq -r '.branch // empty' <<<"$src")
-    tree_pin=$(jq -r '.committed_pin // empty' <<<"$src")
-  else
-    ui_error "$id: catalog source API unavailable; update the catalog service before pin-rebuild"
-    return 1
-  fi
-  [[ -n "$branch" ]] || { ui_error "$id: couldn't resolve a build branch"; return 1; }
-
-  ui_banner "dvw pin-rebuild" "$id, $slug@$branch → $(_dvw_pin_short "$bp")"
-
-  # 2+3. Decide the PR and the pull independently. aicoding's boot sync
-  # rewrites .devcontainer/devcontainer.json in the container, which is the
-  # SAME file as the source clone's working tree (bind mount), and
-  # deliberately never commits it. So the common stale workspace has
-  # tree_pin already equal to the blueprint while the remote branch still
-  # carries the old pin. Treating tree_pin == bp as "nothing to do" (as this
-  # used to) skips the PR in exactly that case, and the repo never gets
-  # fixed. Check the remote explicitly instead.
-  local remote_pin="" remote_ok=0 need_pr=0 need_pull=0
-  if remote_pin=$(_dvw_repo_pin "$slug" "$branch"); then
-    [[ "$remote_pin" != "$bp" ]] && need_pr=1
-  else
-    remote_ok=1
-    ui_status_warn "couldn't read $branch's remote pin; falling back to the working-tree pin to decide"
-    [[ "$tree_pin" != "$bp" ]] && need_pr=1
-  fi
-  [[ "$tree_pin" != "$bp" ]] && need_pull=1
-
-  # Preflight the pull's own precondition BEFORE opening a PR and sitting on
-  # the merge gate. The clone's dirty state is already in the step-1 read, so
-  # discovering it at step 5 only means the wait was wasted.
-  if (( need_pull && src_dirty )); then
-    ui_error "$id: the source clone has uncommitted changes to tracked files; the pull would refuse"
-    ui_info "  devpod builds from that working tree; commit or stash inside the workspace (/workspaces/$id), then re-run: dvw pin-rebuild $id"
-    return 1
-  fi
-
-  local pr_url=""
-  if (( need_pr )); then
-    ui_action "stale" "$branch pins $(_dvw_pin_short "${remote_pin:-${tree_pin:-<none>}}")"
-    pr_url=$(_dvw_pin_open_pr "$slug" "$branch" "$bp") || {
-      ui_error "couldn't open the pin PR for $slug@$branch"; return 1; }
-    [[ -n "$pr_url" ]] && ui_status_ok "PR: $pr_url"
-  elif (( need_pull )); then
-    # The pin PR merged earlier (remote already carries it) and this clone
-    # just hasn't pulled yet. Opening another PR in that case fails
-    # (byte-identical rewrite, nothing to PUT).
-    ui_info "remote already current on $branch (clone hasn't pulled yet); skipping the PR"
-  else
-    if (( remote_ok == 0 )); then
-      ui_status_ok "working-tree pin already current on $branch; remote verified current too; skipping PR and pull"
-    else
-      ui_status_ok "working-tree pin already current on $branch; skipping PR and pull"
-    fi
-  fi
-  (( need_pr || need_pull )) && _dvw_pin_main_pr "$slug" "$branch" "$bp"
-
-  if (( need_pr || need_pull )) && [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
-    if (( need_pull )); then
-      ui_info "[dry-run] would wait for the merge, pull the source clone, rebuild $id, and verify the image"
-    else
-      ui_info "[dry-run] would wait for the merge, rebuild $id, and verify the image"
-    fi
-    return 0
-  fi
-
-  if (( need_pr )); then
-    # 4. Merge gate, verified via gh; the user's say-so is not an input.
-    if [[ -n "$pr_url" ]]; then
-      if (( no_wait )); then
-        ui_info "--no-wait: merge the PR, then re-run: dvw pin-rebuild $id"
-        return 0
-      fi
-      _dvw_pin_wait_merged "$pr_url" "$timeout" || return $?
-      ui_status_ok "merged: $pr_url"
-    fi
-  fi
-
-  if (( need_pull )); then
-    # 5. Pull the clone; devpod builds from its working tree.
-    local pull_body rc=0
-    pull_body=$(_dvw_catalog_source_pull "$id") || rc=$?
-    if (( rc != 0 )); then
-      local detail
-      detail=$(jq -r '.error.message // .detail // .error // empty' <<<"$pull_body" 2>/dev/null)
-      ui_error "couldn't pull the source clone${detail:+: $detail}"
-      return 1
-    fi
-    ui_status_ok "source clone pulled"
-
-    # 6. Assert the working tree now carries the blueprint pin. This is the
-    #    assertion that catches a merge that landed somewhere the clone
-    #    doesn't point.
-    tree_pin=$(jq -r '.committed_pin // empty' <<<"$pull_body")
-    if [[ "$tree_pin" != "$bp" ]]; then
-      ui_error "after the pull, $branch's working tree still pins $(_dvw_pin_short "${tree_pin:-<none>}"), expected $(_dvw_pin_short "$bp")"
-      ui_info "  did the PR target the branch the clone has checked out?"
-      return 1
-    fi
-    ui_status_ok "working tree pin verified"
-  elif (( need_pr )); then
-    ui_info "working tree already carries the blueprint pin (boot sync rewrote it uncommitted); repo fixed via PR, the clone reconciles on a later pull"
-  fi
-
-  # Dry-run for the already-current path (the stale path returned above).
   if [[ "${DVW_DRY_RUN:-}" == "1" ]]; then
     ui_info "[dry-run] would rebuild $id and verify the image"
     return 0
   fi
 
-  # 7. Rebuild. Skip recreate's own preflight; this command IS the preflight.
-  DVW_SKIP_PIN_PREFLIGHT=1 cmd_recreate "$id" || return 1
+  cmd_recreate "$id" || return 1
 
-  # 8. Assert the running image via the catalog's verdict. Under :latest the
-  #    container reports an image ID, so digests are never compared here.
+  # Under :latest the container reports an image ID, so digests are never
+  # compared here; the catalog resolves the tag and gives the verdict.
   local insp current
   insp=$(_catalog_req GET "/v1/workspaces/$id/inspect" 2>/dev/null) || insp=""
   current=$(jq -r '.image_current' <<<"$insp" 2>/dev/null) || current=""

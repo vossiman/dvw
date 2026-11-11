@@ -188,19 +188,6 @@ cmd_recreate() {
   _dvw_ensure_local_devpod_state "$id" || return 1
   _dvw_resolve_canonical_container "$id" || return 1
   _dvw_reap_stale_masters "$id"
-  # The committed pin is what devpod builds from, so a stale one silently
-  # rebuilds you onto the old image. Offer to fix it first; declining just
-  # proceeds. Fail-open — see _dvw_pin_preflight.
-  if [[ "${DVW_SKIP_PIN_PREFLIGHT:-}" != "1" ]] \
-     && declare -F _dvw_pin_preflight >/dev/null 2>&1; then
-    local pf_rc=0
-    _dvw_pin_preflight "$id" || pf_rc=$?
-    if (( pf_rc == 1 )); then
-      return 0          # pin-rebuild took over and rebuilt; nothing left to do
-    elif (( pf_rc > 1 )); then
-      return 1          # it took over and failed; do not rebuild over that
-    fi
-  fi
   ui_action "pulling" "$(_dvw_blueprint_pin) on $DVW_CATALOG_HOST"
   _dvw_pull_latest >/dev/null || {
     ui_error "couldn't pull the newest image on $DVW_CATALOG_HOST; not rebuilding onto a stale one"

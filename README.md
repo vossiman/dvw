@@ -38,9 +38,8 @@ The DevPod Desktop app stores workspace metadata locally per machine. Switching 
 | `dvw rm <id>` | delete workspace + remove from catalog (confirm if running) |
 | `dvw stop <id>` | `devpod stop` |
 | `dvw start <id>` | `devpod up` with the workspace's saved IDE |
-| `dvw recreate <id>` (alias `rebuild`) | pull the newest base image (`:latest`) on the provider, then rebuild the container (`devpod up --recreate`). Offers to hand over to `pin-rebuild` if the repo still pins an old digest |
-| `dvw pin-rebuild [<id>…]` | rebuild onto the newest image and verify it. A repo still pinning a digest gets a one-time PR to `:latest` first (no args = every catalog workspace) |
-| `dvw pin-rebuild --pr-only [<id>…]` | stop after the PRs — the fleet-wide sweep, or a workspace whose provider is unreachable from here |
+| `dvw recreate <id>` (alias `rebuild`) | pull the newest base image (`:latest`) on the provider, then rebuild the container (`devpod up --recreate`) |
+| `dvw pin-rebuild [<id>…]` | `recreate`, then verify the container runs the newest image (no args = every catalog workspace) |
 | `dvw update` | Update to the latest released tooling and refresh the version marker. Standalone checkout: pull `main` + reinstall. Submodule checkout: follow the parent's pins (ff the parent, check out pinned submodules, reinstall) — never commits or pushes. Startup/`dvw doctor` nudge when behind `origin/main`. |
 | `dvw status` | one-line per workspace: id, repo@branch, ide, state (`● running` / `⚠ stale` / `○ stopped` / `✗ absent` / `? unreachable` / `? unknown`), last used |
 | `dvw doctor` | health check: catalog endpoint + transport note, provider probe, catalog service, ssh-sync, devpod, per-orphan summary, duplicate-sibling containers |
