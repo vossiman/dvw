@@ -88,7 +88,7 @@ class MainScreen(Screen):
         Binding("s", "stop", "stop"),
         Binding("S", "start", "start"),
         Binding("r", "rebuild", "rebuild"),
-        Binding("u", "pin_rebuild", "update pin"),
+        Binding("u", "pin_rebuild", "update image"),
         Binding("X", "remove", "remove"),
         Binding("n", "new", "new"),
         Binding("d", "doctor", "doctor"),

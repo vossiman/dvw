@@ -87,21 +87,6 @@ class Settings(BaseSettings):
     # Registry lookup cache TTL, seconds.
     latest_image_ttl: float = 900.0
 
-    # devpod agent workspace dirs on this box; each workspace's build source
-    # is <dir>/<id>/content. "~" is the service account (vossi on vossisrv).
-    devpod_agent_workspaces_dir: Path = Path(
-        "~/.devpod/agent/contexts/default/workspaces")
-
-    # git credential helper for the source pull. The service account has no
-    # GitHub login of its own, so a private repo's `git pull` would sit on a
-    # username prompt (in a daemon: "could not read Username ... No such
-    # device or address"). This is the same helper the deploy scripts use: it
-    # answers from the shared secrets store, so the token never reaches a
-    # command line, git config, or a log. Set to a path that is not
-    # executable to disable, in which case pulls stay anonymous.
-    git_credential_helper: Path = (
-        Path(__file__).resolve().parent.parent / "deploy" / "gh-token-helper")
-
     @property
     def fleet_proof_file(self) -> Path | None:
         return Path(self.fleet_proof_path).expanduser() if self.fleet_proof_path else None
@@ -131,17 +116,6 @@ class Settings(BaseSettings):
     @property
     def blueprint_legacy_backup_path(self) -> Path:
         return self.data_dir / self.blueprint_legacy_backup_filename
-
-    def source_path(self, ws_id: str) -> Path:
-        # ws_id reaches here via a route pattern that allows "." and "-", so
-        # ".." or a path with a leading "/" is a legal ws_id string as far as
-        # FastAPI is concerned. Resolve and assert containment so a crafted
-        # ws_id can't walk the source path outside the agent workspaces dir.
-        base = self.devpod_agent_workspaces_dir.expanduser().resolve()
-        p = (base / ws_id / "content").resolve()
-        if not p.is_relative_to(base):
-            raise ValueError(f"ws_id resolves outside the workspaces dir: {ws_id!r}")
-        return p
 
 
 @lru_cache

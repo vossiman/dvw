@@ -1,11 +1,10 @@
 #!/usr/bin/env bats
-# The devpod agent dir must actually be writable by the service.
+# Home paths the service writes must be real paths for the running user.
 #
 # %h in a SYSTEM unit is the service manager's home (/root); User= does not
-# change it. With the "-" prefix tolerating the absent dir, the unit granted
-# /root/.devpod/agent and every source pull died on
-# "cannot open '.git/FETCH_HEAD': Read-only file system". Observed 2026-09-09
-# on dataprospectors-web, after the merge gate had already been waited on.
+# change it. With the "-" prefix tolerating an absent dir, a %h grant silently
+# points at /root and the write fails read-only. Observed 2026-09-09 with the
+# (since removed) devpod agent dir grant.
 
 setup() {
   DVW_ROOT="${BATS_TEST_DIRNAME}/../.."
@@ -14,9 +13,9 @@ setup() {
   UPDATE="$DVW_ROOT/catalog-service/deploy/host-update.sh"
 }
 
-@test "the unit grants a real home path, not %h" {
-  grep -qE '^ReadWritePaths=-/home/vossi/\.devpod/agent$' "$UNIT"
+@test "the unit grants real home paths, not %h, and no devpod agent dir" {
   ! grep -qE '^ReadWritePaths=.*%h' "$UNIT"
+  ! grep -qE '^ReadWritePaths=.*\.devpod' "$UNIT"
 }
 
 @test "both installers rewrite that path for the running user" {
@@ -33,9 +32,8 @@ setup() {
       SVC_DIR="$2"; render_unit dvw-catalog.service' _ "$script" \
       "$DVW_ROOT/catalog-service"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"ReadWritePaths=-/home/someone/.devpod/agent"* ]]
     [[ "$output" == *"User=someone"* ]]
-    [[ "$output" != *"/home/vossi/.devpod"* ]]
+    [[ "$output" != *"/home/vossi/"* ]]
   done
 }
 

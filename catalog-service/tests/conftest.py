@@ -87,7 +87,6 @@ def settings(tmp_path):
         data_dir=tmp_path,
         docker_host="unix:/nonexistent",
         token=None,
-        devpod_agent_workspaces_dir=tmp_path / "agent",
         fleet_proof_path="",
     )
 

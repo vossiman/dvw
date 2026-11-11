@@ -27,9 +27,7 @@ but this is not enforced: `main` carries no branch protection or rulesets
   no digests to sync. `dvw recreate` pulls `:latest` on the provider first
   (Docker never refreshes a tag it already has), and the catalog's
   `image_current` says whether a container runs it. `dvw pin-rebuild <id>`
-  is recreate plus that check; for a repo still carrying an old digest it
-  first opens a one-time PR moving it to `:latest` (source-clone pull via the
-  catalog service).
+  is recreate plus that check.
 
 ### Naming: “blueprint” means two things
 

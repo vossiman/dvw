@@ -1,12 +1,7 @@
 #!/usr/bin/env bats
 #
-# Pin helpers: `dvw pin-rebuild --pr-only` and the rebuild pre-flight.
-#
-# Context: aicoding-sync rewrites .devcontainer/devcontainer.json in the
-# container working tree but never commits it, so repo copies drift and
-# `devpod up --recreate` (which builds from the COMMITTED pin) reinstalls the
-# stale image. These tests pin the classification and the offer-before-rebuild
-# behavior. All GitHub/network access is stubbed — no gh, no curl.
+# Base-image helpers (lib/pin.sh) and cmd_recreate's use of them. All
+# network access is stubbed.
 
 setup() {
   # Plain source on purpose — see the note in dispatch.bats about set +o and
@@ -19,100 +14,22 @@ setup() {
   catalog_init_if_missing() { :; }
   ssh_sync_refresh() { :; }
   wsl_bridge_refresh() { :; }
-  _dvw_catalog_source_get() { return 2; }
-
-  BP_IMAGE="ghcr.io/vossiman/devbox-base@sha256:$(printf 'a%.0s' {1..64})"
-  OLD_IMAGE="ghcr.io/vossiman/devbox-base@sha256:$(printf 'b%.0s' {1..64})"
-  export BP_IMAGE OLD_IMAGE
-
-  _dvw_blueprint_pin() { printf '%s\n' "$BP_IMAGE"; }
-  catalog_workspace_get() {
-    jq -n --arg r "git@github.com:vossiman/demo.git" --arg b main \
-      '{repo:$r, branch:$b, ide:"ssh"}'
-  }
-  catalog_workspace_ids() { printf 'demo\n'; }
-  command() { builtin command "$@"; }   # real lookups unless overridden below
 }
 
-@test "pin state: repo pin equal to the blueprint is ok" {
-  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
-  run _dvw_pin_state demo
-  [ "$status" -eq 0 ]
-  [[ "$output" == ok$'\t'vossiman/demo$'\t'main* ]]
+@test "pin target is the floating :latest tag" {
+  run _dvw_blueprint_pin
+  [ "$output" = "ghcr.io/vossiman/devbox-base:latest" ]
 }
 
-@test "pin state: an older digest is stale" {
-  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
-  run _dvw_pin_state demo
-  [ "$status" -eq 0 ]
-  [[ "$output" == stale$'\t'vossiman/demo$'\t'main* ]]
-}
-
-@test "pin state: a repo with no devcontainer image is 'none', not stale" {
-  _dvw_repo_pin() { printf '\n'; }
-  run _dvw_pin_state demo
-  [ "$status" -eq 0 ]
-  [[ "$output" == none$'\t'* ]]
-}
-
-# review 2026-08-21: any gh failure used to `return 0`, classifying transient
-# network/auth errors as "unpinned" and silently passing preflight.
-@test "repo pin lookup: a transient gh failure is unknown (rc 1), not none" {
-  gh() { echo "gh: error (HTTP 502)" >&2; return 1; }
-  run _dvw_repo_pin vossiman/demo main
-  [ "$status" -ne 0 ]
-}
-
-@test "repo pin lookup: HTTP 404 stays 'none' (rc 0, empty output)" {
-  gh() { echo "gh: Not Found (HTTP 404)" >&2; return 1; }
-  run _dvw_repo_pin vossiman/demo main
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
-}
-
-@test "repo slug: both remote forms the fleet uses resolve to owner/name" {
-  run _dvw_repo_slug "git@github.com:vossiman/demo.git"
-  [ "$output" = "vossiman/demo" ]
-  run _dvw_repo_slug "https://github.com/vossiman/demo"
-  [ "$output" = "vossiman/demo" ]
-}
-
-@test "repo slug: a non-GitHub remote is refused (the gh PR path can't serve it)" {
-  run _dvw_repo_slug "https://gitlab.com/vossiman/demo.git"
-  [ "$status" -ne 0 ]
-}
-
-@test "pr-only: a stale workspace gets a PR opened" {
-  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
-  _dvw_pin_open_pr() { printf 'https://github.com/%s/pull/1\n' "$1"; }
-  run _dvw_pin_pr_only demo
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -q "stale"
-  echo "$output" | grep -q "https://github.com/vossiman/demo/pull/1"
-}
-
-@test "pr-only: a current workspace opens nothing" {
-  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
-  _dvw_pin_open_pr() { echo "SHOULD NOT RUN"; return 1; }
-  run _dvw_pin_pr_only demo
-  [ "$status" -eq 0 ]
-  ! echo "$output" | grep -q "SHOULD NOT RUN"
-  echo "$output" | grep -q "already at"
-}
-
-# review 2026-08-21: every PR failing still returned 0, so automation saw a
-# healthy run while nothing was synced.
-@test "pr-only: a failed PR open fails the command" {
-  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
-  _dvw_pin_open_pr() { return 1; }
-  run _dvw_pin_pr_only demo
-  [ "$status" -ne 0 ]
-  echo "$output" | grep -q "couldn't open the PR"
+@test "recreate pulls :latest on the provider before rebuilding" {
+  _dvw_run_or_print() { echo "RUN $*"; }
+  run _dvw_pull_latest
+  [[ "$output" == *"ssh"*"vossisrv docker pull -q ghcr.io/vossiman/devbox-base:latest"* ]]
 }
 
 @test "id resolution: catalog discovery failure is not a silent success" {
   catalog_workspace_ids() { return 1; }
-  run cmd_pin_rebuild --pr-only
+  run cmd_pin_rebuild
   [ "$status" -ne 0 ]
 }
 
@@ -123,87 +40,6 @@ setup() {
   [ "$output" = $'alpha\nbeta' ]
 }
 
-_install_pin_pr_gh_stub() {
-  PIN_FILE_CONTENT="$1"
-  gh() {
-    if [[ "$*" == *"pr list -R vossiman/demo"* ]]; then printf '\n'; return 0; fi
-    if [[ "$*" == *" -X PUT "*repos/vossiman/demo/contents/* ]]; then
-      local i; for ((i=1; i<=$#; i++)); do [[ "${!i}" == content=* ]] && break; done
-      printf '%s' "${!i#content=}" | base64 -d > "$BATS_TEST_TMPDIR/put.json"
-      return 0
-    fi
-    if [[ "$*" == *repos/vossiman/demo/contents/.devcontainer/devcontainer.json* ]]; then
-      jq -n --arg c "$(printf '%s' "$PIN_FILE_CONTENT" | base64 -w0)" '{sha:"deadbeef",content:$c}'
-      return 0
-    fi
-    if [[ "$*" == *repos/vossiman/demo/git/ref/heads/main* ]]; then printf 'abc123\n'; return 0; fi
-    if [[ "$*" == *repos/vossiman/demo/git/refs* ]]; then return 0; fi
-    if [[ "$*" == *"pr create -R vossiman/demo"* ]]; then printf 'https://github.com/vossiman/demo/pull/9\n'; return 0; fi
-    echo "unexpected gh call: $*" >&2; return 99
-  }
-}
-
-# review 2026-08-21: the digest-only sed no-oped on tag pins, PUT a
-# byte-identical file and reported an empty PR as success. The production
-# transition is tag -> blueprint digest, not the tag -> tag case alone.
-@test "pin PR: an existing tag is replaced by the blueprint digest" {
-  _install_pin_pr_gh_stub '{"image":"ghcr.io/vossiman/devbox-base:2026-08-01"}'
-  run _dvw_pin_open_pr vossiman/demo main "$BP_IMAGE"
-  [ "$status" -eq 0 ]
-  grep -qF "$BP_IMAGE" "$BATS_TEST_TMPDIR/put.json"
-}
-
-@test "pin PR: registry-less existing refs are replaced completely" {
-  _install_pin_pr_gh_stub '{"image":"vossiman/devbox-base:old.tag"}'
-  run _dvw_pin_open_pr vossiman/demo main "$BP_IMAGE"
-  [ "$status" -eq 0 ]
-  grep -qF "$BP_IMAGE" "$BATS_TEST_TMPDIR/put.json"
-}
-
-@test "pin PR: JSONC comments around the image key survive" {
-  _install_pin_pr_gh_stub $'{\n  // old example: "image": "example.invalid/do-not-edit:latest"\n  "image": "ghcr.io/vossiman/devbox-base:old.tag", // keep this note\n  "customizations": {}\n}'
-  run _dvw_pin_open_pr vossiman/demo main "$BP_IMAGE"
-  [ "$status" -eq 0 ]
-  grep -qF "$BP_IMAGE" "$BATS_TEST_TMPDIR/put.json"
-  grep -qF '"image": "example.invalid/do-not-edit:latest"' "$BATS_TEST_TMPDIR/put.json"
-  grep -qF '// keep this note' "$BATS_TEST_TMPDIR/put.json"
-}
-
-# review 2026-08-24: a `/* */` block-comment example ahead of the real property
-# was rewritten instead of the pin. The file changed, so the no-op guard never
-# fired and a stale pin was PUT as a "successful" PR.
-@test "pin PR: a block-comment image example is not mistaken for the pin" {
-  _install_pin_pr_gh_stub $'{\n  /*\n  "image": "example.invalid/do-not-edit:latest",\n  */\n  "image": "ghcr.io/vossiman/devbox-base:old.tag"\n}'
-  run _dvw_pin_open_pr vossiman/demo main "$BP_IMAGE"
-  [ "$status" -eq 0 ]
-  # the real pin is rewritten...
-  grep -qF "$BP_IMAGE" "$BATS_TEST_TMPDIR/put.json"
-  # ...and the commented example survives byte-identically.
-  grep -qF '"image": "example.invalid/do-not-edit:latest"' "$BATS_TEST_TMPDIR/put.json"
-}
-
-# review (final pass): the dry-run info line was on stdout, so a caller
-# capturing the PR URL via `url=$(_dvw_pin_open_pr ...)` got the [dry-run]
-# banner text as the "URL" instead of nothing. It belongs on stderr.
-@test "pin PR: dry-run's info line does not corrupt the captured stdout" {
-  DVW_DRY_RUN=1
-  gh() {
-    if [[ "$*" == *"pr list -R vossiman/demo"* ]]; then printf '\n'; return 0; fi
-    echo "unexpected gh call: $*" >&2; return 99
-  }
-  local out
-  out=$(_dvw_pin_open_pr vossiman/demo main "$BP_IMAGE" 2>/dev/null)
-  [ -z "$out" ]
-}
-
-@test "rebuild pre-flight: a current pin passes straight through" {
-  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
-  ui_confirm() { echo "SHOULD NOT ASK"; return 0; }
-  run _dvw_pin_preflight demo
-  [ "$status" -eq 0 ]
-  ! echo "$output" | grep -q "SHOULD NOT ASK"
-}
-
 # WIRING: cmd_recreate calls `devpod up --recreate` directly, bypassing
 # _dvw_safe_devpod_up. --configure-ssh defaults true, so the rebuild rewrites
 # the stanza with `ForwardAgent yes`; without an explicit reconcile here every
@@ -212,16 +48,16 @@ _stub_recreate_deps() {
   _dvw_ensure_local_devpod_state()     { return 0; }
   _dvw_resolve_canonical_container()   { return 0; }
   _dvw_reap_stale_masters()            { :; }
-  _dvw_pin_preflight()                 { return 0; }
   catalog_workspace_set_devpod_state() { :; }
   _dvw_run_or_print() { echo "ran:$*" >> "$BATS_TEST_TMPDIR/calls"; return "${UP_RC:-0}"; }
   _dvw_ensure_ssh_alias() { echo "reconciled:$1" >> "$BATS_TEST_TMPDIR/calls"; return 0; }
 }
 
-@test "cmd_recreate: reconciles the ssh alias after the rebuild" {
+@test "cmd_recreate: pulls :latest, then rebuilds and reconciles the ssh alias" {
   _stub_recreate_deps
   run cmd_recreate demo
   [ "$status" -eq 0 ]
+  grep -q "ran:ssh .* docker pull -q ghcr.io/vossiman/devbox-base:latest" "$BATS_TEST_TMPDIR/calls"
   grep -q "ran:devpod up demo --recreate" "$BATS_TEST_TMPDIR/calls"
   grep -qx "reconciled:demo" "$BATS_TEST_TMPDIR/calls"
 }
@@ -234,125 +70,14 @@ _stub_recreate_deps() {
   ! grep -q "reconciled:demo" "$BATS_TEST_TMPDIR/calls"
 }
 
-# The offer has to be the whole chain: pin-sync's PR alone left the source
-# clone stale, so the recreate right after it rebuilt the old image anyway
-# (hit live 2026-09-09 on devmachine).
-@test "rebuild pre-flight: a stale pin hands over to pin-rebuild when accepted" {
-  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
-  ui_confirm() { return 0; }          # user says yes
-  cmd_pin_rebuild() { echo "PIN REBUILD RAN:$*"; }
-  run _dvw_pin_preflight demo
-  [ "$status" -eq 1 ]                 # non-zero = cmd_recreate skips the rebuild
-  echo "$output" | grep -q "PIN REBUILD RAN:demo"
-}
-
-# Astra review of PR #79: the handoff swallowed pin-rebuild's status, so a
-# failed pull/rebuild/verify still let `dvw recreate` exit 0.
-@test "rebuild pre-flight: a failing hand-over is rc 2, and fails the recreate" {
-  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
-  ui_confirm() { return 0; }
-  cmd_pin_rebuild() { return 1; }
-  run _dvw_pin_preflight demo
-  [ "$status" -eq 2 ]
-
-  _stub_recreate_deps
-  unset -f _dvw_pin_preflight
-  _dvw_pin_preflight() { return 2; }
-  run cmd_recreate demo
-  [ "$status" -ne 0 ]
-  ! grep -q "ran:devpod up" "$BATS_TEST_TMPDIR/calls" 2>/dev/null
-}
-
-@test "rebuild pre-flight: declining the offer proceeds with the rebuild" {
-  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
-  ui_confirm() { return 1; }          # user says no
-  cmd_pin_rebuild() { echo "SHOULD NOT RUN"; }
-  run _dvw_pin_preflight demo
-  [ "$status" -eq 0 ]                 # zero = cmd_recreate goes ahead
-  ! echo "$output" | grep -q "SHOULD NOT RUN"
-}
-
-@test "rebuild pre-flight: no gh CLI means silent pass-through, never a block" {
-  command() { if [ "$2" = gh ]; then return 1; fi; builtin command "$@"; }
-  _dvw_repo_pin() { printf '%s\n' "$OLD_IMAGE"; }
-  ui_confirm() { echo "SHOULD NOT ASK"; return 0; }
-  run _dvw_pin_preflight demo
-  [ "$status" -eq 0 ]
-  ! echo "$output" | grep -q "SHOULD NOT ASK"
-}
-
 @test "dispatch: dvw pin-rebuild reaches cmd_pin_rebuild with its args" {
   cmd_pin_rebuild() { printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/argv"; }
-  run main pin-rebuild --pr-only demo
+  run main pin-rebuild demo other
   [ "$status" -eq 0 ]
-  [ "$(cat "$BATS_TEST_TMPDIR/argv")" = $'--pr-only\ndemo' ]
+  [ "$(cat "$BATS_TEST_TMPDIR/argv")" = $'demo\nother' ]
 }
 
 @test "dispatch: pin-sync is gone, not silently accepted" {
   run main pin-sync demo
   [ "$status" -ne 0 ]
-}
-
-@test "pin state: prefers the source clone's live branch over the catalog" {
-  _dvw_catalog_source_get() {
-    jq -n '{present: true, detached: false, branch: "feat/live"}'
-  }
-  _dvw_repo_pin() {
-    [ "$2" = "feat/live" ] || { echo "wrong branch: $2" >&2; return 1; }
-    printf '%s\n' "$BP_IMAGE"
-  }
-  run _dvw_pin_state demo
-  [ "$status" -eq 0 ]
-  [[ "$output" == ok$'\t'vossiman/demo$'\t'feat/live* ]]
-}
-
-@test "pin state: falls back to the catalog branch when the service is unreachable" {
-  _dvw_catalog_source_get() { return 2; }
-  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
-  run _dvw_pin_state demo
-  [[ "$output" == ok$'\t'vossiman/demo$'\t'main* ]]
-}
-
-@test "pin state: detached or absent clone falls back to the catalog branch" {
-  _dvw_catalog_source_get() { jq -n '{present: true, detached: true, branch: null}'; }
-  _dvw_repo_pin() { printf '%s\n' "$BP_IMAGE"; }
-  run _dvw_pin_state demo
-  [[ "$output" == ok$'\t'vossiman/demo$'\t'main* ]]
-}
-
-@test "pin head branch: differs for main vs a feature base, same image" {
-  local main_branch feat_branch
-  main_branch=$(_dvw_pin_head_branch main "$BP_IMAGE")
-  feat_branch=$(_dvw_pin_head_branch feat/x "$BP_IMAGE")
-  [[ "$main_branch" != "$feat_branch" ]]
-  # main keeps the historical (unsuffixed) name so existing open PRs match.
-  [[ "$main_branch" == "$DVW_PIN_BRANCH_PREFIX-"* ]]
-  [[ "$main_branch" != *"-main" ]]
-  [[ "$feat_branch" == "$main_branch-feat-x" ]]
-}
-
-@test "pin PR: an existing branch ref is not an error" {
-  _install_pin_pr_gh_stub '{"image":"ghcr.io/vossiman/devbox-base@sha256:abc"}'
-  eval "_orig_gh() $(declare -f gh | tail -n +2)"
-  gh() {
-    if [[ "$*" == *" -X POST "*git/refs* ]]; then echo "gh: Reference already exists (HTTP 422)" >&2; return 1; fi
-    _orig_gh "$@"
-  }
-  run _dvw_pin_open_pr vossiman/demo main ghcr.io/vossiman/devbox-base:latest
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"pull/9"* ]]
-  grep -q '"image":"ghcr.io/vossiman/devbox-base:latest"' "$BATS_TEST_TMPDIR/put.json"
-}
-
-@test "pin PR: a failed branch create prints gh's error" {
-  _install_pin_pr_gh_stub '{"image":"ghcr.io/vossiman/devbox-base@sha256:abc"}'
-  eval "_orig_gh() $(declare -f gh | tail -n +2)"
-  gh() {
-    if [[ "$*" == *" -X POST "*git/refs* ]]; then echo "gh: Resource not accessible by personal access token (HTTP 403)" >&2; return 1; fi
-    _orig_gh "$@"
-  }
-  run _dvw_pin_open_pr vossiman/demo main ghcr.io/vossiman/devbox-base:latest
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"create branch chore/pin-devbox-base-latest"* ]]
-  [[ "$output" == *"HTTP 403"* ]]
 }
